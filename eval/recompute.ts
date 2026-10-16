@@ -7,9 +7,10 @@
  * `run.json` и `report.md`. Живые LLM-вызовы НЕ выполняются: cost/tokens/время/
  * sessionID берутся из прежнего `run.json` как есть.
  *
- * Legacy-прогон (метки ролей до переименования, `schemaForRole(role)` отсутствует
- * в `loadSchemas()`) пересчитывается и печатается, но НЕ записывается: иначе
- * валидные метрики заменились бы на all-invalid (`E_UNKNOWN_SCHEMA`).
+ * Legacy-прогон (несовместимый с текущими схемами: метки ролей до переименования, либо
+ * тексты отчётов объявляют схему, которой нет в `loadSchemas()`) пересчитывается и
+ * печатается, но НЕ записывается: иначе валидные метрики заменились бы на all-invalid
+ * (`E_UNKNOWN_SCHEMA`).
  *
  * Зачем: после правки сигнатур ключа или кода матчера не нужно (и не нужно платить
  * за) повторный прогон ролей — достаточно пере-матчить сохранённые отчёты.
@@ -76,16 +77,21 @@ async function main(): Promise<void> {
   const manifests = await loadManifests()
   const schemas = await loadSchemas()
 
-  // Legacy-прогон = у роли нет её схемы: `schemaForRole(role)` отсутствует в
-  // `loadSchemas()` (прогон до переименования ролей). Пересчёт такой ячейки даёт
-  // `valid=false (E_UNKNOWN_SCHEMA)` и потерял бы валидные метрики, поэтому при
-  // наличии хотя бы одной такой ячейки файлы прогона не пишутся вовсе.
+  // Legacy-прогон = прогон, несовместимый с текущими схемами. Признак — любой из двух:
+  //   1) у роли нет её схемы: `schemaForRole(role)` отсутствует в `loadSchemas()`
+  //      (прогон до переименования ролей);
+  //   2) метки ролей уже текущие, но текст отчёта объявляет чужую схему: вычисленный
+  //      `reportSchema` ячейки — строка, которой нет в `loadSchemas()`
+  //      (label-совместимый legacy).
+  // Пересчёт таких ячеек даёт `valid=false (E_UNKNOWN_SCHEMA)` и потерял бы валидные
+  // метрики, поэтому при наличии хотя бы одной такой ячейки файлы прогона не пишутся вовсе.
+  // Признак (2) известен только после расчёта — он добавляется ниже, в цикле; решение о
+  // записи принимается после цикла (до записи ничего не пишется).
   const missingSchemas = new Map<string, string>()
   for (const run of summary.runs) {
     const expected = schemaForRole(run.role)
     if (!schemas.has(expected)) missingSchemas.set(run.role, expected)
   }
-  const legacy = missingSchemas.size > 0
 
   for (const run of summary.runs) {
     const manifest = manifests.get(run.case)
@@ -96,17 +102,22 @@ async function main(): Promise<void> {
     const reportFile = run.reportPath ?? `${run.case}.${run.role}.md`
     const reportText = await readFile(path.join(target, reportFile), "utf8")
     Object.assign(run, deriveMetrics(manifest, run.role, reportText, schemas))
+    // Признак (2): объявленная отчётом схема отсутствует среди загруженных.
+    const declared = run.reportSchema
+    if (typeof declared === "string" && !schemas.has(declared)) missingSchemas.set(run.role, declared)
     console.log(
       `${run.case} / ${run.role}: valid=${run.reportValid} recall=${run.recall} major=${run.recallMajor} ` +
         `missed=[${run.missed.join(", ")}] кандидатов=${run.unmatched.length}`,
     )
   }
 
+  const legacy = missingSchemas.size > 0
+
   // Запись выполняется только для совместимого прогона: у legacy-прогона расчёт
   // печатается (выше), но `run.json`/`report.md`/baseline остаются побайтово как есть.
   if (legacy) {
     console.warn(
-      `legacy-прогон: метки ролей несовместимы со схемами — ${[...missingSchemas]
+      `legacy-прогон: несовместим с текущими схемами — ${[...missingSchemas]
         .map(([role, expected]) => `"${role}" (нет схемы ${expected})`)
         .join(", ")};\n` +
         `  расчёт напечатан выше, но run.json, report.md и baseline НЕ записаны: метрики таких\n` +

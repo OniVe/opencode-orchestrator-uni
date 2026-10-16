@@ -42,7 +42,7 @@ const SCHEMA_LESS_AGENTS = new Set(["orchestrator"])
 /** Stale identifiers that must not survive a rename: agent ids, tool ids, references. */
 const FORBIDDEN_PROSE: readonly { readonly what: string; readonly pattern: RegExp }[] = [
   { what: "old agent id", pattern: /\baudit-(?:factcheck|empiric|invariant|arbiter|meta|redteam)\b/g },
-  { what: "old tool id", pattern: /\baudit[-_](?:validate_report|snapshot|sessions)\b/g },
+  { what: "old tool id", pattern: /\baudit[-_](?:validate[-_]report|snapshot|sessions)\b/g },
   { what: "prefixed agent reference", pattern: /(agent|--agent)[^A-Za-z]{0,6}audit-/g },
 ]
 
