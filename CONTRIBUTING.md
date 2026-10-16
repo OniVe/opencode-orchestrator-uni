@@ -53,3 +53,18 @@ npm test             # bun test ./test/
 ```
 
 Tests run on [Bun](https://bun.sh); the release tooling needs Node.js 22.14+.
+
+## Translations
+
+Agent definitions and process documents ship per locale under `agents/<locale>/`
+and `docs/<locale>/`. `ru` is the reference locale; every other locale must
+mirror it. After editing either side, run:
+
+```sh
+npm run check:locales   # ru → en parity for every shipped file (tools/locale-check.ts)
+npm test                # translation.test.ts enforces the same contract
+```
+
+The contract (see `test/support/locales.ts`): same markdown shape, same
+frontmatter, same SGR templates, identical schema-bound enum tokens, no
+Cyrillic left behind, no forbidden ids. Inside JSON, never introduce a new `|`.

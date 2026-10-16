@@ -34,6 +34,13 @@
  * a Markdown agent file that sets its own model still wins, because config is
  * applied after package plugins.
  *
+ * Localization: agent definitions and process documents ship per locale
+ * (`agents/<locale>/`, `docs/<locale>/` — currently `ru` and `en`).
+ * `options.locale` selects one; otherwise the locale is auto-detected from
+ * `LC_ALL`/`LC_MESSAGES`/`LANG` and the runtime's Intl locale, falling back to
+ * `DEFAULT_LOCALE` (`en`). A locale that ships no content falls back with a
+ * warning — first to `DEFAULT_LOCALE`, then to the flat pre-locale layout.
+ *
  * The only runtime dependency is `gray-matter` (frontmatter parsing). OpenCode
  * installs package plugin dependencies automatically.
  */
@@ -50,16 +57,68 @@ export const PLUGIN_ID = "orchestrator.uni"
 /** Name of the reference that exposes the kit's process documents. */
 export const REFERENCE_NAME = "audit-kit"
 
-/** Absolute path to the shipped agent definitions (`agents/*.md`). */
+/** Absolute path to the shipped agent definitions (`agents/<locale>/*.md`). */
 export const AGENTS_DIRECTORY = fileURLToPath(new URL("./agents/", import.meta.url))
 
-/** Absolute path to the shipped process documents (`docs/*.md`). */
+/** Absolute path to the shipped process documents (`docs/<locale>/*.md`). */
 export const DOCS_DIRECTORY = fileURLToPath(new URL("./docs/", import.meta.url))
 
+/** Locales the kit ships; `DEFAULT_LOCALE` content is the fallback for others. */
+export const SUPPORTED_LOCALES = ["ru", "en"] as const
+
+export type Locale = (typeof SUPPORTED_LOCALES)[number]
+
+/** Fallback when no locale is configured or detected. */
+export const DEFAULT_LOCALE: Locale = "en"
+
+/** `<root>/<locale>/` — where one locale's content lives. */
+export function localeDirectory(root: string, locale: Locale): string {
+  return path.join(root, locale)
+}
+
+/** Language subtag of a locale-ish tag: `ru-RU`, `en_US.UTF-8` → `ru`, `en`. */
+export function parseLocaleTag(value: unknown): Locale | undefined {
+  if (typeof value !== "string") return undefined
+  const language = value
+    .trim()
+    .toLowerCase()
+    .split(/[-_.@]/, 1)[0]
+  return (SUPPORTED_LOCALES as readonly string[]).includes(language) ? (language as Locale) : undefined
+}
+
+/** First supported candidate wins; `DEFAULT_LOCALE` when none is. */
+export function pickLocale(candidates: readonly string[]): Locale {
+  for (const candidate of candidates) {
+    const locale = parseLocaleTag(candidate)
+    if (locale) return locale
+  }
+  return DEFAULT_LOCALE
+}
+
+/** Detection candidates: deliberate env overrides first, then the OS locale. */
+function localeCandidates(): string[] {
+  const candidates: string[] = []
+  for (const key of ["LC_ALL", "LC_MESSAGES", "LANG"] as const) {
+    const value = process.env[key]
+    if (value) candidates.push(value)
+  }
+  try {
+    candidates.push(Intl.DateTimeFormat().resolvedOptions().locale)
+  } catch {
+    // No Intl data in this runtime — the env values or the default decide.
+  }
+  return candidates
+}
+
 /** Description shown next to the `audit-kit` reference in session context. */
-const REFERENCE_DESCRIPTION =
-  "Process documents of the orchestrator agent kit (audit loop): call-mechanics.md, " +
-  "process-ready-loop.md, root-runbook.md, instruction-other-session.md."
+const REFERENCE_DESCRIPTIONS: Record<Locale, string> = {
+  ru:
+    "Процессные документы комплекта оркестратора (аудиторский цикл): call-mechanics.md, " +
+    "process-ready-loop.md, root-runbook.md, instruction-other-session.md.",
+  en:
+    "Process documents of the orchestrator agent kit (audit loop): call-mechanics.md, " +
+    "process-ready-loop.md, root-runbook.md, instruction-other-session.md.",
+}
 
 /** Frontmatter keys this loader understands; anything else is reported and ignored. */
 const SUPPORTED_KEYS: ReadonlySet<string> = new Set(["description", "mode", "model", "permissions"])
@@ -231,32 +290,81 @@ function parseAgentFile(id: string, source: string): KitAgent | undefined {
   }
 }
 
-/** Read and parse every shipped `agents/*.md` definition (stable file order). */
-async function loadKitAgents(): Promise<KitAgent[]> {
-  const entries = await readdir(AGENTS_DIRECTORY, { withFileTypes: true })
-  const files = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name)
-    .sort()
+/** Markdown file names in a directory, sorted; `[]` when the directory is absent. */
+async function listMarkdown(directory: string): Promise<string[]> {
+  try {
+    const entries = await readdir(directory, { withFileTypes: true })
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+      .map((entry) => entry.name)
+      .sort()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Resolve one content root for a locale: `<root>/<locale>/` first, then
+ * `<root>/<DEFAULT_LOCALE>/`, then the flat pre-locale layout. Every fallback
+ * is reported — a silently wrong language would be worse than a warning.
+ */
+async function resolveLocalized(
+  root: string,
+  what: string,
+  locale: Locale,
+): Promise<{ directory: string; files: string[] }> {
+  const steps: readonly { readonly directory: string; readonly label: string }[] = [
+    { directory: localeDirectory(root, locale), label: `"${locale}/"` },
+    { directory: localeDirectory(root, DEFAULT_LOCALE), label: `"${DEFAULT_LOCALE}/"` },
+    { directory: root, label: "the flat pre-locale layout" },
+  ]
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index]!
+    const files = await listMarkdown(step.directory)
+    if (files.length === 0) continue
+    if (index > 0) {
+      warn(`${what}: no content shipped for locale "${locale}" — falling back to ${step.label}`)
+    }
+    return { directory: step.directory, files }
+  }
+  return { directory: localeDirectory(root, locale), files: [] }
+}
+
+/** Read and parse every shipped `agents/<locale>/*.md` definition (stable file order). */
+async function loadKitAgents(locale: Locale): Promise<KitAgent[]> {
+  const { directory, files } = await resolveLocalized(AGENTS_DIRECTORY, "agents", locale)
   const agents: KitAgent[] = []
   for (const file of files) {
-    const source = await readFile(path.join(AGENTS_DIRECTORY, file), "utf8")
+    const source = await readFile(path.join(directory, file), "utf8")
     const agent = parseAgentFile(file.replace(/\.md$/, ""), source)
     if (agent) agents.push(agent)
   }
   return agents
 }
 
+/** `options.locale`, when present and supported; invalid values fall through to detection. */
+function readLocaleOptions(options: unknown): Locale | undefined {
+  if (typeof options !== "object" || options === null) return undefined
+  const raw = (options as Record<string, unknown>).locale
+  if (raw === undefined) return undefined
+  const locale = parseLocaleTag(raw)
+  if (!locale) {
+    warn(`options.locale: expected one of ${SUPPORTED_LOCALES.join("|")}, got ${JSON.stringify(raw)}, ignored`)
+  }
+  return locale
+}
+
 async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   const models = readModelOptions(ctx.options)
-  const agents = await loadKitAgents()
+  const locale = readLocaleOptions(ctx.options) ?? pickLocale(localeCandidates())
+  const agents = await loadKitAgents(locale)
   const defined = new Set(agents.map((agent) => agent.id))
   for (const id of models.perAgent.keys()) {
     if (!defined.has(id)) warn(`options.agents["${id}"]: unknown kit agent, override ignored`)
   }
   const overrides = new Map([...models.perAgent].filter(([id]) => defined.has(id)))
   if (agents.length === 0) {
-    warn(`no agent definitions found in ${AGENTS_DIRECTORY}`)
+    warn(`no agent definitions found for locale "${locale}" under ${AGENTS_DIRECTORY}`)
   } else {
     await ctx.agent.transform((editor) => {
       for (const agent of agents) {
@@ -283,11 +391,12 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   // rendered for models in session context. The promise editor's parameter type uses
   // the public client shape, which does not declare it, so the source is built as a
   // variable to keep the excess-property check out of the way.
+  const docs = await resolveLocalized(DOCS_DIRECTORY, "docs", locale)
   const docsReference = {
     type: "local" as const,
     // AbsolutePath is a branded schema type; the runtime value is a plain path.
-    path: DOCS_DIRECTORY as Reference.LocalSource["path"],
-    description: REFERENCE_DESCRIPTION,
+    path: docs.directory as Reference.LocalSource["path"],
+    description: REFERENCE_DESCRIPTIONS[locale],
   }
   await ctx.reference.transform((editor) => {
     if (editor.get(REFERENCE_NAME)) return

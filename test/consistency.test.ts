@@ -1,7 +1,8 @@
 /**
  * Guards identifier consistency across the kit: agent ids ↔ SGR schemas ↔ schema
- * file names ↔ tool ids ↔ prose on the shipping surface (`README.md`, `docs/**`,
- * `agents/**`, `lib/**`, `schemas/**`, `index.ts`, `package.json`).
+ * file names ↔ tool ids ↔ prose on the shipping surface (`README.md`, per-locale
+ * `docs/<locale>/**` and `agents/<locale>/**`, `lib/**`, `schemas/**`, `index.ts`,
+ * `package.json`).
  *
  * The drift this closes: after the `audit-`/`audit_` rename nothing tied the
  * shipping ids together, so stale agent references in the process documents, a
@@ -17,8 +18,9 @@ import { existsSync } from "node:fs"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
 import { schemaForRole } from "../eval/derive"
-import { AGENTS_DIRECTORY, DOCS_DIRECTORY, PLUGIN_ID } from "../index"
+import { AGENTS_DIRECTORY, DOCS_DIRECTORY, PLUGIN_ID, SUPPORTED_LOCALES } from "../index"
 import { loadSchemas, SCHEMAS_DIRECTORY, TOOL_IDS } from "../lib/tools"
+import { agentFiles as localeAgentFiles } from "./support/locales"
 
 const KIT_ROOT = path.resolve(AGENTS_DIRECTORY, "..")
 const BASELINES_DIRECTORY = path.join(KIT_ROOT, "eval", "baselines")
@@ -32,6 +34,7 @@ const SHIPPED_DIRECTORIES = [
 ]
 const SHIPPED_FILES = [
   path.join(KIT_ROOT, "README.md"),
+  path.join(KIT_ROOT, "README.ru.md"),
   path.join(KIT_ROOT, "index.ts"),
   path.join(KIT_ROOT, "package.json"),
 ]
@@ -108,11 +111,16 @@ function promptTemplates(markdown: string): Record<string, unknown>[] {
   return found
 }
 
+/** `locale/file.md` paths of every shipped agent definition. */
 async function agentFiles(): Promise<string[]> {
-  return (await readdir(AGENTS_DIRECTORY)).filter((name) => name.endsWith(".md")).sort()
+  const files: string[] = []
+  for (const locale of SUPPORTED_LOCALES) {
+    for (const name of await localeAgentFiles(locale)) files.push(`${locale}/${name}`)
+  }
+  return files
 }
 
-/** Agent id → the last SGR template found in its prompt (`.at(-1)` like the schema guard). */
+/** Agent file → the last SGR template found in its prompt (`.at(-1)` like the schema guard). */
 async function templatesByAgent(): Promise<Map<string, Record<string, unknown>>> {
   const templates = new Map<string, Record<string, unknown>>()
   for (const file of await agentFiles()) {
@@ -140,14 +148,14 @@ describe("agent ids and their report schemas", () => {
     const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
     const templates = await templatesByAgent()
     for (const file of await agentFiles()) {
-      const id = file.replace(/\.md$/, "")
-      const template = templates.get(id)
+      const id = path.basename(file).replace(/\.md$/, "")
+      const template = templates.get(file.replace(/\.md$/, ""))
       if (SCHEMA_LESS_AGENTS.has(id)) {
         expect(template, `${id} produces no SGR`).toBeUndefined()
         expect(schemas.has(`${id}/v1`), `${id} ships no schema`).toBe(false)
         continue
       }
-      expect(template, `agents/${id}.md carries an SGR template`).toBeDefined()
+      expect(template, `agents/${file} carries an SGR template`).toBeDefined()
       expect(template?.schema, `${id} template pins ${id}/v1`).toBe(`${id}/v1`)
       expect(schemas.has(`${id}/v1`), `${id}/v1 is loaded by loadSchemas()`).toBe(true)
       expect(existsSync(path.join(SCHEMAS_DIRECTORY, `${id}.v1.json`)), `schemas/${id}.v1.json exists`).toBe(true)
@@ -246,11 +254,13 @@ describe("package identity", () => {
     expect(lock.packages?.[""]?.name, 'package-lock.json packages[""].name').toBe(PACKAGE_NAME)
   })
 
-  test("PLUGIN_ID and README carry both identities", async () => {
+  test("PLUGIN_ID and both READMEs carry both identities", async () => {
     expect(PLUGIN_ID, "index.ts PLUGIN_ID").toBe(PLUGIN_ID_LITERAL)
-    const readme = await readFile(path.join(KIT_ROOT, "README.md"), "utf8")
-    expect(readme.includes(PACKAGE_NAME), `README.md names the package ${PACKAGE_NAME}`).toBe(true)
-    expect(readme.includes(PLUGIN_ID_LITERAL), `README.md names the plugin id ${PLUGIN_ID_LITERAL}`).toBe(true)
+    for (const name of ["README.md", "README.ru.md"]) {
+      const readme = await readFile(path.join(KIT_ROOT, name), "utf8")
+      expect(readme.includes(PACKAGE_NAME), `${name} names the package ${PACKAGE_NAME}`).toBe(true)
+      expect(readme.includes(PLUGIN_ID_LITERAL), `${name} names the plugin id ${PLUGIN_ID_LITERAL}`).toBe(true)
+    }
   })
 
   test("the shipping surface carries no pre-rename identity token", async () => {

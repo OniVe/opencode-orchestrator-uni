@@ -1,5 +1,7 @@
 # opencode-orchestrator-uni
 
+**English** · [Русский](./README.ru.md)
+
 A native [OpenCode V2](https://opencode.ai/v2/docs/build/plugins) package plugin that
 ships the **orchestrator agent kit**:
 
@@ -38,10 +40,10 @@ All agents ship **without a model**: models are deployment configuration (see
 [Models](#models)). Definitions live in [`agents/`](./agents) as plain Markdown agent
 files and are parsed at setup time — the files are the single source of truth.
 
-The `audit-kit` reference points at this package's `docs/` directory. OpenCode lists it
-in session context as an additional local directory, so the orchestrator (and any other
-agent) can read the process documents directly, for example
-`<reference path>/call-mechanics.md`.
+The `audit-kit` reference points at this package's per-locale `docs/<locale>/`
+directory (see [Locale](#locale)). OpenCode lists it in session context as an
+additional local directory, so the orchestrator (and any other agent) can read
+the process documents directly, for example `<reference path>/call-mechanics.md`.
 
 The plugin also registers three deterministic, **read-only** tools in the `orch_uni`
 namespace — see [Tools](#tools).
@@ -194,6 +196,34 @@ Agent definitions carry no `model`; models are configured on the plugin entry in
 - An `agents` config entry or a local Markdown agent file that defines its own
   model still wins — configuration is applied after package plugins.
 
+## Locale
+
+Agent definitions and process documents ship per locale — `agents/<locale>/`
+and `docs/<locale>/`; currently `ru` and `en` (the English content is a
+translation of the Russian originals). The kit picks one locale in this order:
+
+1. `options.locale` (`"ru"` or `"en"`; full tags such as `"ru-RU"` are accepted);
+2. auto-detection: `LC_ALL` / `LC_MESSAGES` / `LANG`, then the runtime's Intl
+   locale (the OS setting);
+3. the default: `en`.
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "opencode-orchestrator-uni",
+      "options": { "locale": "ru", "model": "deepseek/deepseek-flash" }
+    }
+  ]
+}
+```
+
+A requested locale that ships no content falls back to the default locale and is
+reported with a warning in the plugin log. Both locales register the same agents
+under the same ids — switching the locale only changes the language of the
+prompts, the process documents and the reference description.
+
 ## Requirements
 
 - **OpenCode 2.x** with the V2 plugin API (the `plugins` config field). V1's plugin
@@ -274,7 +304,7 @@ npm run lint         # biome check . (lint + format + import order; read-only)
 npm run lint:fix     # biome check --write . (applies safe fixes)
 ```
 
-`npm test` scans only `./test/` — the shipped suite (77 tests in 6 files, up from
+`npm test` scans only `./test/` — the shipped suite (90 tests in 8 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`
@@ -306,7 +336,7 @@ OpenCode watches them and reloads on change.
   for frontmatter parsing. OpenCode installs package plugin dependencies automatically.
 - Plugin id: `orchestrator.uni`.
 - Ships only the files listed in `package.json#files`: `index.ts`, `lib/`, `schemas/`,
-  `agents/`, `docs/`, `README.md`, `LICENSE`.
+  `agents/`, `docs/`, `README.md`, `README.ru.md`, `LICENSE`.
 
 ## License
 

@@ -7,8 +7,8 @@
  * Real end-to-end loading is verified separately against a live server.
  */
 import { describe, expect, test } from "bun:test"
-import { readdir } from "node:fs/promises"
-import plugin, { AGENTS_DIRECTORY, DOCS_DIRECTORY, PLUGIN_ID, REFERENCE_NAME } from "../index"
+import plugin, { DOCS_DIRECTORY, type Locale, localeDirectory, PLUGIN_ID, REFERENCE_NAME } from "../index"
+import { agentFiles, docFiles } from "./support/locales"
 
 interface RuleDraft {
   action: string
@@ -160,15 +160,28 @@ function seedExistingAgent(id: string): AgentDraft {
   }
 }
 
-const SYSTEM_MARKERS: Record<string, string> = {
-  orchestrator: "Ты — root-оркестратор",
-  "fix-runner": "Ты — fix-runner",
-  factcheck: "Ты — факт-чекер",
-  empiric: "Ты — эмпирический read-only аудитор",
-  invariant: "Ты — read-only аудитор защитных инвариантов",
-  arbiter: "Ты — арбитр",
-  meta: "Ты — мета-аудитор",
-  redteam: "Ты — приёмочный ред-тим",
+/** The opening role line of every shipped prompt, per locale (pinned markers). */
+const SYSTEM_MARKERS: Record<Locale, Record<string, string>> = {
+  ru: {
+    orchestrator: "Ты — root-оркестратор",
+    "fix-runner": "Ты — fix-runner",
+    factcheck: "Ты — факт-чекер",
+    empiric: "Ты — эмпирический read-only аудитор",
+    invariant: "Ты — read-only аудитор защитных инвариантов",
+    arbiter: "Ты — арбитр",
+    meta: "Ты — мета-аудитор",
+    redteam: "Ты — приёмочный ред-тим",
+  },
+  en: {
+    orchestrator: "You are the root orchestrator.",
+    "fix-runner": "You are the fix-runner of the audit loop.",
+    factcheck: "You are the fact-checker of the audit loop.",
+    empiric: "You are the empirical read-only auditor.",
+    invariant: "You are the read-only auditor of protective invariants.",
+    arbiter: "You are the arbiter of the audit loop.",
+    meta: "You are the meta-auditor",
+    redteam: "You are the acceptance red team.",
+  },
 }
 
 describe("opencode-orchestrator-uni", () => {
@@ -177,20 +190,29 @@ describe("opencode-orchestrator-uni", () => {
     expect(typeof plugin.setup).toBe("function")
   })
 
-  test("registers every shipped agent definition without warnings", async () => {
-    const shipped = (await readdir(AGENTS_DIRECTORY)).filter((name) => name.endsWith(".md"))
-    const { agents, warnings } = await runSetup()
+  for (const locale of ["ru", "en"] as const) {
+    test(`registers every shipped ${locale} agent definition without warnings`, async () => {
+      const shipped = await agentFiles(locale)
+      const { agents, warnings } = await runSetup({ locale })
 
-    expect(shipped.length).toBe(Object.keys(SYSTEM_MARKERS).length)
-    expect(warnings).toEqual([])
-    expect(agents.size).toBe(shipped.length)
-    for (const file of shipped) {
-      const id = file.replace(/\.md$/, "")
-      const agent = agents.get(id)
-      expect(agent, `${id} is registered`).toBeDefined()
-      expect(agent?.system ?? "").toContain(SYSTEM_MARKERS[id]!)
-      expect(agent?.description, `${id} has a description`).toBeTruthy()
-    }
+      expect(shipped.length).toBe(Object.keys(SYSTEM_MARKERS[locale]).length)
+      expect(shipped.length).toBe(8)
+      expect(warnings).toEqual([])
+      expect(agents.size).toBe(shipped.length)
+      for (const file of shipped) {
+        const id = file.replace(/\.md$/, "")
+        const agent = agents.get(id)
+        expect(agent, `${id} is registered`).toBeDefined()
+        expect(agent?.system ?? "").toContain(SYSTEM_MARKERS[locale][id]!)
+        expect(agent?.description, `${id} has a description`).toBeTruthy()
+      }
+    })
+  }
+
+  test("an unsupported options.locale warns and falls back to detection", async () => {
+    const { agents, warnings } = await runSetup({ locale: "fr" })
+    expect(warnings.some((line) => line.includes("options.locale"))).toBe(true)
+    expect(agents.size).toBe(8)
   })
 
   test("agents carry no model without options (subagents inherit the session model)", async () => {
@@ -283,22 +305,24 @@ describe("opencode-orchestrator-uni", () => {
     expect(updated.permissions).toEqual([])
   })
 
-  test("registers the audit-kit reference pointing at the shipped docs", async () => {
-    const { references } = await runSetup()
-    const reference = references.get(REFERENCE_NAME) as { type: string; path: string; description: string }
-    expect(reference.type).toBe("local")
-    expect(reference.path).toBe(DOCS_DIRECTORY)
-    expect(reference.description).toContain("call-mechanics.md")
-    const docs = await readdir(DOCS_DIRECTORY)
-    for (const name of [
-      "call-mechanics.md",
-      "process-ready-loop.md",
-      "root-runbook.md",
-      "instruction-other-session.md",
-    ]) {
-      expect(docs, name).toContain(name)
-    }
-  })
+  for (const locale of ["ru", "en"] as const) {
+    test(`registers the audit-kit reference pointing at the shipped ${locale} docs`, async () => {
+      const { references } = await runSetup({ locale })
+      const reference = references.get(REFERENCE_NAME) as { type: string; path: string; description: string }
+      expect(reference.type).toBe("local")
+      expect(reference.path).toBe(localeDirectory(DOCS_DIRECTORY, locale))
+      expect(reference.description).toContain("call-mechanics.md")
+      const docs = await docFiles(locale)
+      for (const name of [
+        "call-mechanics.md",
+        "process-ready-loop.md",
+        "root-runbook.md",
+        "instruction-other-session.md",
+      ]) {
+        expect(docs, name).toContain(name)
+      }
+    })
+  }
 
   test("an existing reference is not overridden", async () => {
     const harness = createHarness()

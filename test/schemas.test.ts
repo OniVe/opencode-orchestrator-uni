@@ -1,19 +1,20 @@
 /**
  * Guards against drift between the agent prompts and the shipped schemas.
  *
- * Source of truth: the SGR section of every `agents/*.md`. For each agent we
- * take the JSON template from its prompt, replace the documented enum
- * placeholders with concrete alternatives, and require that it validates
- * against the schema the same prompt names. Each alternative of every enum
- * placeholder is tried, so adding an enum value to a prompt without adding it to
- * the schema fails here.
+ * Source of truth: the SGR section of every `agents/<locale>/<id>.md` — each
+ * locale must carry the same report contract. For each agent we take the JSON
+ * template from its prompt, replace the documented enum placeholders with
+ * concrete alternatives, and require that it validates against the schema the
+ * same prompt names. Each alternative of every enum placeholder is tried, so
+ * adding an enum value to a prompt without adding it to the schema fails here.
  */
 import { describe, expect, test } from "bun:test"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
-import { AGENTS_DIRECTORY } from "../index"
+import { AGENTS_DIRECTORY, SUPPORTED_LOCALES } from "../index"
 import { collectSchemaKeywords, type JsonSchemaNode, SUPPORTED_KEYWORDS, validateValue } from "../lib/report-schema"
 import { loadSchemas, SCHEMAS_DIRECTORY } from "../lib/tools"
+import { agentFiles as localeAgentFiles, promptTemplates } from "./support/locales"
 
 /** `name.vN.json` → `name/vN` (the ids shipped with the kit). */
 const EXPECTED_SCHEMAS = [
@@ -64,50 +65,13 @@ function cloneWith(value: unknown, path: readonly (string | number)[], replaceme
   return { ...source, [head as string]: cloneWith(source[head as string], rest, replacement) }
 }
 
-/** Every JSON object in the text that carries a string `schema` field. */
-function promptTemplates(markdown: string): Record<string, unknown>[] {
-  const found: Record<string, unknown>[] = []
-  for (let start = 0; start < markdown.length; start += 1) {
-    if (markdown[start] !== "{") continue
-    let depth = 0
-    let inString = false
-    let escaped = false
-    for (let index = start; index < markdown.length; index += 1) {
-      const character = markdown[index]
-      if (inString) {
-        if (escaped) escaped = false
-        else if (character === "\\") escaped = true
-        else if (character === '"') inString = false
-        continue
-      }
-      if (character === '"') {
-        inString = true
-        continue
-      }
-      if (character === "{") depth += 1
-      else if (character === "}") {
-        depth -= 1
-        if (depth > 0) continue
-        try {
-          const value = JSON.parse(markdown.slice(start, index + 1)) as Record<string, unknown>
-          if (typeof value.schema === "string") found.push(value)
-        } catch {
-          // not a JSON object; ignore
-        }
-        break
-      }
-    }
+/** `locale/file.md` paths of every shipped agent definition. */
+async function agentFiles(): Promise<string[]> {
+  const files: string[] = []
+  for (const locale of SUPPORTED_LOCALES) {
+    for (const name of await localeAgentFiles(locale)) files.push(`${locale}/${name}`)
   }
-  return found
-}
-
-/** Replace every enum placeholder with its first alternative. */
-function concretize(template: Record<string, unknown>): Record<string, unknown> {
-  let value: unknown = template
-  for (const { path: where, alternatives } of collectEnumPaths(template)) {
-    value = cloneWith(value, where, alternatives[0])
-  }
-  return value as Record<string, unknown>
+  return files
 }
 
 describe("shipped report schemas", () => {
@@ -149,12 +113,10 @@ describe("shipped report schemas", () => {
 })
 
 describe("agent prompts and schemas agree", () => {
-  const agents = () => readdir(AGENTS_DIRECTORY).then((names) => names.filter((name) => name.endsWith(".md")).sort())
-
-  /** Agent id → SGR template found in its prompt (only report-producing agents have one). */
+  /** `locale/file.md` → SGR template found in its prompt (only report-producing agents have one). */
   async function templatesByAgent(): Promise<Map<string, Record<string, unknown>>> {
     const templates = new Map<string, Record<string, unknown>>()
-    for (const file of await agents()) {
+    for (const file of await agentFiles()) {
       const markdown = await readFile(path.join(AGENTS_DIRECTORY, file), "utf8")
       const template = promptTemplates(markdown).at(-1)
       if (template !== undefined) templates.set(file.replace(/\.md$/, ""), template)
@@ -162,16 +124,21 @@ describe("agent prompts and schemas agree", () => {
     return templates
   }
 
-  test("the report-producing agents are exactly the shipped schemas", async () => {
+  test("each locale's report-producing agents are exactly the shipped schemas", async () => {
     const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
     const templates = await templatesByAgent()
-    const produced = [...templates.values()].map((template) => template.schema as string)
-    expect(produced.sort()).toEqual([...EXPECTED_SCHEMAS].sort())
-    for (const [agent, template] of templates) {
-      expect(schemas.has(template.schema as string), `${agent} → ${String(template.schema)}`).toBe(true)
+    for (const locale of SUPPORTED_LOCALES) {
+      const produced = [...templates.entries()]
+        .filter(([file]) => file.startsWith(`${locale}/`))
+        .map(([, template]) => template.schema as string)
+      expect(produced.sort(), `${locale}: produced schemas`).toEqual([...EXPECTED_SCHEMAS].sort())
+      for (const [file, template] of templates) {
+        if (!file.startsWith(`${locale}/`)) continue
+        expect(schemas.has(template.schema as string), `${file} → ${String(template.schema)}`).toBe(true)
+      }
+      // The root orchestrator audits nothing itself: it has no SGR template.
+      expect(templates.has(`${locale}/orchestrator`)).toBe(false)
     }
-    // The root orchestrator audits nothing itself: it has no SGR template.
-    expect(templates.has("orchestrator")).toBe(false)
   })
 
   test("the SGR template of every agent validates against its schema", async () => {
@@ -197,3 +164,12 @@ describe("agent prompts and schemas agree", () => {
     }
   })
 })
+
+/** Replace every enum placeholder with its first alternative. */
+function concretize(template: Record<string, unknown>): Record<string, unknown> {
+  let value: unknown = template
+  for (const { path: where, alternatives } of collectEnumPaths(template)) {
+    value = cloneWith(value, where, alternatives[0])
+  }
+  return value as Record<string, unknown>
+}
