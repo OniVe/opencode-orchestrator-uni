@@ -4,6 +4,11 @@
   "tag": "fresh-orig-2026-10-15",
   "timestamp": "20261015-134552",
   "startedAt": "2026-10-15T05:45:53.007Z",
+  "provenance": {
+    "relabeled": true,
+    "origin": "pre-rename run (2026-10-15)",
+    "source": "eval/results/20261015-134552/ (original labels preserved locally)"
+  },
   "options": {
     "cases": [
       "csv-split-line",

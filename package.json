@@ -40,7 +40,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test test/",
+    "test": "bun test ./test/",
     "eval": "bun eval/run.ts",
     "eval:selfcheck": "bun eval/selfcheck.ts",
     "eval:recompute": "bun eval/recompute.ts"

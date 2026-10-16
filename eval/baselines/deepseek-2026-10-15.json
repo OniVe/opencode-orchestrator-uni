@@ -4,6 +4,11 @@
   "tag": "deepseek-baseline-2026-10-15",
   "timestamp": "20261015-122730",
   "startedAt": "2026-10-15T04:27:30.758Z",
+  "provenance": {
+    "relabeled": true,
+    "origin": "pre-rename run (2026-10-15)",
+    "source": "eval/results/20261015-122730/ (original labels preserved locally)"
+  },
   "options": {
     "cases": [
       "csv-split-line",

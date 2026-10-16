@@ -78,12 +78,32 @@ async function main(): Promise<void> {
   console.log(`\nобновлено: ${runJsonPath} и ${path.join(target, "report.md")}`)
 
   // Baseline — та же ревизия прогона; держим его согласованным с results/.
+  // Guard: baseline синхронизируется только когда набор ячеек `<кейс>::<роль>`
+  // совпадает. Расхождение = baseline перелейблен (переименование ролей) или
+  // устарел: перезапись вернула бы старые метки и откатила бы ренейм.
   const baseline = summary.options.baseline
   if (baseline) {
     const baselinePath = path.isAbsolute(baseline) ? baseline : path.join(EVAL_DIR, "..", baseline)
     if (existsSync(baselinePath)) {
-      await writeFile(baselinePath, JSON.stringify(summary, null, 2), "utf8")
-      console.log(`обновлён baseline: ${baselinePath}`)
+      const cellKeys = (value: unknown): string[] =>
+        ((value as { runs?: { case?: unknown; role?: unknown }[] }).runs ?? [])
+          .map((run) => `${String(run.case)}::${String(run.role)}`)
+          .sort()
+      const storedKeys = cellKeys(JSON.parse(await readFile(baselinePath, "utf8")))
+      const freshKeys = cellKeys(summary)
+      if (storedKeys.join("\n") === freshKeys.join("\n")) {
+        await writeFile(baselinePath, JSON.stringify(summary, null, 2), "utf8")
+        console.log(`обновлён baseline: ${baselinePath}`)
+      } else {
+        const onlyStored = storedKeys.filter((key) => !freshKeys.includes(key))
+        const onlyFresh = freshKeys.filter((key) => !storedKeys.includes(key))
+        console.warn(
+          `baseline НЕ обновлён: ${baselinePath}\n` +
+            `  метки ячеек разошлись — baseline перелейблен (переименование ролей) или устарел;\n` +
+            `  перезапись вернула бы старые метки. Только в baseline: [${onlyStored.join(", ")}];\n` +
+            `  только в results: [${onlyFresh.join(", ")}]. run.json и report.md обновлены, baseline оставлен как есть.`,
+        )
+      }
     }
   }
 
