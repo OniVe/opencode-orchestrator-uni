@@ -11,8 +11,8 @@ ships the **orchestrator agent kit**:
 - the kit's process documents, exposed as the **`audit-kit` reference**
   (`call-mechanics.md`, `process-ready-loop.md`, `root-runbook.md`,
   `instruction-other-session.md`);
-- three deterministic, read-only tools — `audit_validate_report`, `audit_snapshot`,
-  `audit_sessions` (see [Tools](#tools)).
+- three deterministic, read-only tools — `orch_uni_validate_report`, `orch_uni_snapshot`,
+  `orch_uni_sessions` (see [Tools](#tools)).
 
 The package is loaded directly from TypeScript: `exports` points at
 [`index.ts`](./index.ts). There is **no build step and no `dist/`** — OpenCode's
@@ -43,23 +43,23 @@ in session context as an additional local directory, so the orchestrator (and an
 agent) can read the process documents directly, for example
 `<reference path>/call-mechanics.md`.
 
-The plugin also registers three deterministic, **read-only** tools in the `audit`
+The plugin also registers three deterministic, **read-only** tools in the `orch_uni`
 namespace — see [Tools](#tools).
 
 ## Tools
 
 | Effective name           | Read-only | What it does                                                                  |
 | ------------------------ | --------- | ----------------------------------------------------------------------------- |
-| `audit_validate_report`  | yes       | Extract the SGR JSON block of a report, resolve its schema, validate it        |
-| `audit_snapshot`         | yes       | Deterministic revision of a directory tree (per-file sha256 + aggregate hash)  |
-| `audit_sessions`         | yes       | Child sessions of a session: agent, model, cost, tokens, time                  |
+| `orch_uni_validate_report`  | yes       | Extract the SGR JSON block of a report, resolve its schema, validate it        |
+| `orch_uni_snapshot`         | yes       | Deterministic revision of a directory tree (per-file sha256 + aggregate hash)  |
+| `orch_uni_sessions`         | yes       | Child sessions of a session: agent, model, cost, tokens, time                  |
 
 Every tool answers with a JSON text body. Failures are **typed codes** inside the body
 (`E_INPUT`, `E_NO_JSON`, …) instead of thrown tool errors, so an agent can branch on the
 code without parsing prose. None of the three writes to the workspace, the session store
 or the configuration.
 
-### `audit_validate_report`
+### `orch_uni_validate_report`
 
 ```jsonc
 { "text": "<report text>" }              // or
@@ -101,7 +101,7 @@ agent's SGR template and fails when a prompt field or enum value is not accepted
 schema. Schemas set `additionalProperties` permissively — agents may add fields of their
 own (`verdict_label`, `check`, …).
 
-### `audit_snapshot`
+### `orch_uni_snapshot`
 
 ```jsonc
 { "path": "lab/stack-test", "exclude": ["tmp"] }   // exclude is optional and additive
@@ -122,7 +122,7 @@ own (`verdict_label`, `check`, …).
   whole snapshot; a truncated snapshot would be a wrong aggregate). `E_NOT_FOUND` for a
   missing path or a non-directory, `E_ABORTED` when the session is stopped.
 
-### `audit_sessions`
+### `orch_uni_sessions`
 
 ```jsonc
 {}                                        // children of the calling session

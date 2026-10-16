@@ -2,7 +2,7 @@
  * snapshot — deterministic, read-only state revision for the audit loop.
  *
  * The orchestrator records "the state the verdict was fixed on" as a set of
- * file hashes plus one aggregate hash. `audit_snapshot` returns exactly that:
+ * file hashes plus one aggregate hash. `orch_uni_snapshot` returns exactly that:
  * a sorted file list with sha256 per file and a single `aggregate` that changes
  * whenever any file (or its path) changes.
  *

@@ -5,7 +5,7 @@
  * built-in audit loop, the read-only audit subagents (`factcheck`,
  * `empiric`, `invariant`, `arbiter`, `meta`,
  * `redteam`), and the `fix-runner` writer subagent — plus the `audit-kit`
- * document reference and the kit's deterministic `audit_*` tools, straight from
+ * document reference and the kit's deterministic `orch_uni_*` tools, straight from
  * this TypeScript entry point.
  *
  * The package is loaded natively by OpenCode's Bun runtime: `exports` points at
@@ -294,8 +294,8 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | void> {
     editor.add(REFERENCE_NAME, docsReference)
   })
 
-  // Deterministic, read-only audit tools: `audit_validate_report`,
-  // `audit_snapshot`, `audit_sessions` (see `lib/tools.ts` and README «Tools»).
+  // Deterministic, read-only audit tools: `orch_uni_validate_report`,
+  // `orch_uni_snapshot`, `orch_uni_sessions` (see `lib/tools.ts` and README «Tools»).
   // The returned cleanup only stops the background session-index subscription.
   return await registerAuditTools(ctx)
 }

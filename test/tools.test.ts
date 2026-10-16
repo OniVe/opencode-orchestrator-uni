@@ -1,5 +1,5 @@
 /**
- * Registration and executor tests for the `audit_*` tools, driven by a mock
+ * Registration and executor tests for the `orch_uni_*` tools, driven by a mock
  * plugin context (same style as `plugin.test.ts`: the harness mimics the engine
  * editors as observed in OpenCode 2.0.x).
  */
@@ -11,7 +11,7 @@ import { TOOL_IDS, TOOL_NAMESPACE } from "../lib/tools"
 import { createHarness, runTool } from "./support/harness"
 
 describe("audit tool registration", () => {
-  test("registers the three tools in the audit namespace", async () => {
+  test("registers the three tools in the orch_uni namespace", async () => {
     const harness = await createHarness()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_IDS].sort())
     expect(harness.namespaces.map((entry) => entry.name)).toEqual([TOOL_NAMESPACE])
@@ -28,7 +28,7 @@ describe("audit tool registration", () => {
     const harness = await createHarness()
     const inputs = Object.fromEntries([...harness.tools].map(([id, tool]) => [id, tool.input]))
     expect(Object.keys(inputs).sort()).toEqual([...TOOL_IDS].sort())
-    expect(inputs["audit_validate_report"]).toEqual({
+    expect(inputs["orch_uni_validate_report"]).toEqual({
       type: "object",
       properties: {
         text: { type: "string", description: expect.any(String) },
@@ -36,8 +36,8 @@ describe("audit tool registration", () => {
         schema: { type: "string", description: expect.any(String) },
       },
     })
-    expect((inputs["audit_snapshot"] as { required: string[] }).required).toEqual(["path"])
-    expect((inputs["audit_sessions"] as { properties: Record<string, unknown> }).properties).toEqual({
+    expect((inputs["orch_uni_snapshot"] as { required: string[] }).required).toEqual(["path"])
+    expect((inputs["orch_uni_sessions"] as { properties: Record<string, unknown> }).properties).toEqual({
       sessionID: { type: "string", description: expect.any(String) },
       recursive: { type: "boolean", description: expect.any(String) },
     })
@@ -52,7 +52,7 @@ describe("audit tool registration", () => {
   })
 })
 
-describe("audit_validate_report", () => {
+describe("orch_uni_validate_report", () => {
   test("validates text and reports the schema and warnings", async () => {
     const harness = await createHarness()
     const text = [
@@ -68,7 +68,7 @@ describe("audit_validate_report", () => {
       }),
       "```",
     ].join("\n")
-    const result = await runTool(harness, "audit_validate_report", { text })
+    const result = await runTool(harness, "orch_uni_validate_report", { text })
     expect(result).toEqual({ valid: true, schema: "meta/v1", errors: [], warnings: [] })
     harness.dispose()
   })
@@ -95,7 +95,7 @@ describe("audit_validate_report", () => {
       ].join("\n"),
       "utf8",
     )
-    const result = await runTool(harness, "audit_validate_report", {
+    const result = await runTool(harness, "orch_uni_validate_report", {
       path: "reports/empiric.md",
       schema: "empiric/v1",
     })
@@ -106,17 +106,17 @@ describe("audit_validate_report", () => {
 
   test("typed input errors", async () => {
     const harness = await createHarness()
-    expect(await runTool(harness, "audit_validate_report", {})).toMatchObject({ ok: false, code: "E_INPUT" })
-    expect(await runTool(harness, "audit_validate_report", { text: "x", path: "y" })).toMatchObject({
+    expect(await runTool(harness, "orch_uni_validate_report", {})).toMatchObject({ ok: false, code: "E_INPUT" })
+    expect(await runTool(harness, "orch_uni_validate_report", { text: "x", path: "y" })).toMatchObject({
       ok: false,
       code: "E_INPUT",
     })
-    expect(await runTool(harness, "audit_validate_report", { text: 42 })).toMatchObject({ ok: false, code: "E_INPUT" })
-    expect(await runTool(harness, "audit_validate_report", { path: "nope/missing.md" })).toMatchObject({
+    expect(await runTool(harness, "orch_uni_validate_report", { text: 42 })).toMatchObject({ ok: false, code: "E_INPUT" })
+    expect(await runTool(harness, "orch_uni_validate_report", { path: "nope/missing.md" })).toMatchObject({
       ok: false,
       code: "E_INPUT",
     })
-    expect(await runTool(harness, "audit_validate_report", "not an object")).toMatchObject({
+    expect(await runTool(harness, "orch_uni_validate_report", "not an object")).toMatchObject({
       ok: false,
       code: "E_INPUT",
     })
@@ -125,18 +125,18 @@ describe("audit_validate_report", () => {
 
   test("delegates schema failures to their own codes", async () => {
     const harness = await createHarness()
-    expect(await runTool(harness, "audit_validate_report", { text: "нет json" })).toMatchObject({ code: "E_NO_JSON" })
-    expect(await runTool(harness, "audit_validate_report", { text: "```json\n{nope\n```" })).toMatchObject({
+    expect(await runTool(harness, "orch_uni_validate_report", { text: "нет json" })).toMatchObject({ code: "E_NO_JSON" })
+    expect(await runTool(harness, "orch_uni_validate_report", { text: "```json\n{nope\n```" })).toMatchObject({
       code: "E_PARSE",
     })
-    expect(await runTool(harness, "audit_validate_report", { text: '```json\n{"schema":"x/v1"}\n```' })).toMatchObject({
+    expect(await runTool(harness, "orch_uni_validate_report", { text: '```json\n{"schema":"x/v1"}\n```' })).toMatchObject({
       code: "E_UNKNOWN_SCHEMA",
     })
     harness.dispose()
   })
 })
 
-describe("audit_snapshot", () => {
+describe("orch_uni_snapshot", () => {
   test("snapshots a directory and keeps the default exclusions with extras", async () => {
     const harness = await createHarness()
     const root = path.join(harness.directory, "state")
@@ -144,13 +144,13 @@ describe("audit_snapshot", () => {
     await writeFile(path.join(root, "node_modules", "x.js"), "x", "utf8")
     await writeFile(path.join(root, "a.txt"), "a", "utf8")
     await writeFile(path.join(root, "b.txt"), "b", "utf8")
-    const result = await runTool(harness, "audit_snapshot", { path: "state", exclude: ["b.txt"] })
+    const result = await runTool(harness, "orch_uni_snapshot", { path: "state", exclude: ["b.txt"] })
     expect(result.root).toBe(root)
     expect(result.files.map((file: { path: string }) => file.path)).toEqual(["a.txt"])
     expect(result.aggregate).toMatch(/^[0-9a-f]{64}$/)
-    const repeat = await runTool(harness, "audit_snapshot", { path: "state", exclude: ["b.txt"] })
+    const repeat = await runTool(harness, "orch_uni_snapshot", { path: "state", exclude: ["b.txt"] })
     expect(repeat.aggregate).toBe(result.aggregate)
-    const withoutExtras = await runTool(harness, "audit_snapshot", { path: root })
+    const withoutExtras = await runTool(harness, "orch_uni_snapshot", { path: root })
     expect(withoutExtras.files.map((file: { path: string }) => file.path)).toEqual(["a.txt", "b.txt"])
     expect(withoutExtras.aggregate).not.toBe(result.aggregate)
     harness.dispose()
@@ -158,13 +158,13 @@ describe("audit_snapshot", () => {
 
   test("typed input and path errors", async () => {
     const harness = await createHarness()
-    expect(await runTool(harness, "audit_snapshot", {})).toMatchObject({ ok: false, code: "E_INPUT" })
-    expect(await runTool(harness, "audit_snapshot", { path: "" })).toMatchObject({ ok: false, code: "E_INPUT" })
-    expect(await runTool(harness, "audit_snapshot", { path: "x", exclude: [1] })).toMatchObject({
+    expect(await runTool(harness, "orch_uni_snapshot", {})).toMatchObject({ ok: false, code: "E_INPUT" })
+    expect(await runTool(harness, "orch_uni_snapshot", { path: "" })).toMatchObject({ ok: false, code: "E_INPUT" })
+    expect(await runTool(harness, "orch_uni_snapshot", { path: "x", exclude: [1] })).toMatchObject({
       ok: false,
       code: "E_INPUT",
     })
-    expect(await runTool(harness, "audit_snapshot", { path: "no-such-dir" })).toMatchObject({
+    expect(await runTool(harness, "orch_uni_snapshot", { path: "no-such-dir" })).toMatchObject({
       ok: false,
       code: "E_NOT_FOUND",
     })
@@ -172,7 +172,7 @@ describe("audit_snapshot", () => {
   })
 })
 
-describe("audit_sessions", () => {
+describe("orch_uni_sessions", () => {
   test("lists children from the authoritative session list when available", async () => {
     const harness = await createHarness({
       sessions: {
@@ -188,7 +188,7 @@ describe("audit_sessions", () => {
         }),
       },
     })
-    const direct = await runTool(harness, "audit_sessions", { sessionID: "ses_parent" })
+    const direct = await runTool(harness, "orch_uni_sessions", { sessionID: "ses_parent" })
     expect(direct).toMatchObject({ source: "session.list", authoritative: true, count: 2 })
     expect(direct.sessions[0]).toEqual({
       sessionID: "ses_child_a",
@@ -202,7 +202,7 @@ describe("audit_sessions", () => {
       created: new Date(1_700_000_000_000).toISOString(),
       updated: new Date(1_700_000_001_000).toISOString(),
     })
-    const deep = await runTool(harness, "audit_sessions", { sessionID: "ses_parent", recursive: true })
+    const deep = await runTool(harness, "orch_uni_sessions", { sessionID: "ses_parent", recursive: true })
     expect(deep.count).toBe(3)
     expect(deep.sessions.map((session: { sessionID: string }) => session.sessionID)).toEqual([
       "ses_child_a",
@@ -217,7 +217,7 @@ describe("audit_sessions", () => {
       sessions: { get: async ({ sessionID }: { sessionID: string }) => child(sessionID, "ses_parent", "meta") },
       index: { ses_child_a: "ses_parent", ses_grand: "ses_child_a" },
     })
-    const result = await runTool(harness, "audit_sessions", { sessionID: "ses_parent", recursive: true })
+    const result = await runTool(harness, "orch_uni_sessions", { sessionID: "ses_parent", recursive: true })
     expect(result).toMatchObject({ source: "session.index", authoritative: false, count: 2 })
     expect(result.limitations).toHaveLength(3)
     expect(result.sessions.map((session: { sessionID: string }) => session.sessionID)).toEqual(["ses_child_a", "ses_grand"])
@@ -226,14 +226,14 @@ describe("audit_sessions", () => {
 
   test("defaults to the calling session and returns an empty list without children", async () => {
     const harness = await createHarness({ index: {} })
-    const result = await runTool(harness, "audit_sessions", {})
+    const result = await runTool(harness, "orch_uni_sessions", {})
     expect(result).toMatchObject({ sessionID: harness.sessionID, count: 0, sessions: [] })
     harness.dispose()
   })
 
   test("E_NO_API when neither listing nor events exist", async () => {
     const harness = await createHarness({ index: {}, events: false })
-    const result = await runTool(harness, "audit_sessions", {})
+    const result = await runTool(harness, "orch_uni_sessions", {})
     expect(result).toMatchObject({ ok: false, code: "E_NO_API" })
     expect(result.available).toContain("get")
     harness.dispose()
@@ -249,9 +249,9 @@ describe("audit_sessions", () => {
         list: async () => ({ data: [], cursor: {} }),
       },
     })
-    expect(await runTool(harness, "audit_sessions", { sessionID: "" })).toMatchObject({ ok: false, code: "E_INPUT" })
-    expect(await runTool(harness, "audit_sessions", { recursive: "yes" })).toMatchObject({ ok: false, code: "E_INPUT" })
-    expect(await runTool(harness, "audit_sessions", { sessionID: "ses_missing" })).toMatchObject({
+    expect(await runTool(harness, "orch_uni_sessions", { sessionID: "" })).toMatchObject({ ok: false, code: "E_INPUT" })
+    expect(await runTool(harness, "orch_uni_sessions", { recursive: "yes" })).toMatchObject({ ok: false, code: "E_INPUT" })
+    expect(await runTool(harness, "orch_uni_sessions", { sessionID: "ses_missing" })).toMatchObject({
       ok: false,
       code: "E_NOT_FOUND",
     })
@@ -276,7 +276,7 @@ describe("session index", () => {
 
     // A second plugin instance in the same process loads the persisted index.
     const reloaded = await createHarness({ storage: harness.storage })
-    const result = await runTool(reloaded, "audit_sessions", { sessionID: "ses_parent" })
+    const result = await runTool(reloaded, "orch_uni_sessions", { sessionID: "ses_parent" })
     expect(result.sessions.map((session: { sessionID: string }) => session.sessionID)).toEqual(["ses_child2"])
     reloaded.dispose()
     harness.dispose()
@@ -288,7 +288,7 @@ describe("shipped files", () => {
     const harness = await createHarness()
     const source = await readFile(new URL("../schemas/meta.v1.json", import.meta.url), "utf8")
     expect(JSON.parse(source).id).toBe("meta/v1")
-    const result = await runTool(harness, "audit_validate_report", { text: '```json\n{"schema":"meta/v1"}\n```' })
+    const result = await runTool(harness, "orch_uni_validate_report", { text: '```json\n{"schema":"meta/v1"}\n```' })
     expect(result.code).toBe("E_INVALID")
     expect(result.errors.map((error: { path: string }) => error.path)).toContain("$.verdict")
     harness.dispose()

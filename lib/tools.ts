@@ -1,8 +1,8 @@
 /**
  * tools — registration of the kit's deterministic, read-only audit tools.
  *
- * `registerAuditTools(ctx)` publishes three tools in the `audit` namespace
- * (effective names `audit_validate_report`, `audit_snapshot`, `audit_sessions`)
+ * `registerAuditTools(ctx)` publishes three tools in the `orch_uni` namespace
+ * (effective names `orch_uni_validate_report`, `orch_uni_snapshot`, `orch_uni_sessions`)
  * and returns a cleanup that stops the background session-index subscription:
  *
  * - `validate_report` — extract the SGR JSON block of an agent report, resolve
@@ -25,11 +25,11 @@ import type { Plugin } from "@opencode/plugin"
 import { checkReport, type JsonSchemaNode, type ValidationCode } from "./report-schema"
 import { DEFAULT_EXCLUDE, isSnapshotFailure, snapshotTree } from "./snapshot"
 
-/** Tool namespace; effective names become `audit_<name>`. */
-export const TOOL_NAMESPACE = "audit"
+/** Tool namespace; effective names become `orch_uni_<name>`. */
+export const TOOL_NAMESPACE = "orch_uni"
 
 /** Effective tool names as they appear to a model. */
-export const TOOL_IDS: readonly string[] = ["audit_validate_report", "audit_snapshot", "audit_sessions"]
+export const TOOL_IDS: readonly string[] = ["orch_uni_validate_report", "orch_uni_snapshot", "orch_uni_sessions"]
 
 /** Directory holding the shipped report schemas (`schemas/*.json`). */
 export const SCHEMAS_DIRECTORY = fileURLToPath(new URL("../schemas/", import.meta.url))
@@ -385,7 +385,7 @@ export async function registerAuditTools(context: Plugin.Context): Promise<() =>
         sessionID: parentID,
         available: Object.keys(session as object).sort(),
         hint:
-          "audit_sessions needs session.list({parentID}); ctx.session has no list() here, and ctx.event.subscribe() " +
+          "orch_uni_sessions needs session.list({parentID}); ctx.session has no list() here, and ctx.event.subscribe() " +
           "was unavailable too, so children cannot be discovered. The context-scan fallback (subagent tool parts in " +
           "ctx.session.context) was evaluated and rejected: it misses in-flight children and any history dropped by " +
           "compaction. See README «Tools».",

@@ -52,7 +52,7 @@ export const SUPPORTED_KEYWORDS: ReadonlySet<string> = new Set([
   "minItems",
 ])
 
-/** Typed failure codes returned by `checkReport` and the `audit_validate_report` tool. */
+/** Typed failure codes returned by `checkReport` and the `orch_uni_validate_report` tool. */
 export type ValidationCode =
   | "E_NO_JSON"
   | "E_PARSE"

@@ -302,6 +302,6 @@ describe("opencode-orchestrator-agents", () => {
   test("setup registers the audit tools", async () => {
     const { tools, warnings } = await runSetup()
     expect(warnings).toEqual([])
-    expect([...tools.keys()].sort()).toEqual(["audit_sessions", "audit_snapshot", "audit_validate_report"])
+    expect([...tools.keys()].sort()).toEqual(["orch_uni_sessions", "orch_uni_snapshot", "orch_uni_validate_report"])
   })
 })
