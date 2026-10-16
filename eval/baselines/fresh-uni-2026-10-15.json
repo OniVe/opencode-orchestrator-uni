@@ -1,0 +1,1326 @@
+{
+  "harness": "eval/run.ts",
+  "version": 1,
+  "tag": "fresh-uni-2026-10-15",
+  "timestamp": "20261015-134556",
+  "startedAt": "2026-10-15T05:45:56.054Z",
+  "options": {
+    "cases": [
+      "csv-split-line",
+      "normalize-tags",
+      "parse-duration"
+    ],
+    "roles": [
+      "uni.audit-empiric",
+      "uni.audit-invariant"
+    ],
+    "models": {
+      "uni.audit-empiric": "deepseek/deepseek-flash",
+      "uni.audit-invariant": "deepseek/deepseek-flash"
+    },
+    "limitUsd": 0.5,
+    "baseline": "eval/baselines/fresh-uni-2026-10-15.json"
+  },
+  "totals": {
+    "runs": 6,
+    "costUsd": 0.295849902,
+    "tokensInput": 572909,
+    "tokensOutput": 173894,
+    "validReports": 0,
+    "budgetLimitUsd": 0.5,
+    "budgetExceeded": false
+  },
+  "runs": [
+    {
+      "case": "csv-split-line",
+      "role": "uni.audit-empiric",
+      "model": "deepseek/deepseek-flash",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-134556\\csv-split-line\\uni.audit-empiric",
+      "sessionID": "ses_ec1e77cb7ffesUrjsKVOg1cOvB",
+      "startedAt": "2026-10-15T05:45:56.054Z",
+      "durationMs": 336161,
+      "timedOut": false,
+      "exitCode": 0,
+      "costUsd": 0.049308504,
+      "tokens": {
+        "input": 101100,
+        "output": 28796,
+        "cacheRead": 1309568
+      },
+      "reportValid": true,
+      "reportSchema": "audit-empiric/v1",
+      "validationCode": null,
+      "validationErrors": [],
+      "warnings": [],
+      "findings": 6,
+      "recall": 1,
+      "recallMajor": 1,
+      "matched": [
+        "K1",
+        "K2",
+        "K3",
+        "K4"
+      ],
+      "missed": [],
+      "missedMajor": [],
+      "detail": [
+        {
+          "id": "K1",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "a\\s*,\\s*b"
+              ],
+              "hits": [
+                "a\\s*,\\s*b"
+              ]
+            },
+            {
+              "patterns": [
+                "split\\s*\\(\\s*[\"'`]?,[\"'`]*\\s*\\)",
+                "line\\.split"
+              ],
+              "hits": [
+                "line\\.split"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "K2",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "throw",
+                "исключени",
+                "exception"
+              ],
+              "hits": [
+                "throw",
+                "исключени"
+              ]
+            },
+            {
+              "patterns": [
+                "ab[\"'\\\\]*cd",
+                "a[\"'\\\\]*x",
+                "незакрыт",
+                "unclosed",
+                "\"\"\"\""
+              ],
+              "hits": [
+                "ab[\"'\\\\]*cd",
+                "a[\"'\\\\]*x",
+                "незакрыт",
+                "\"\"\"\""
+              ]
+            }
+          ]
+        },
+        {
+          "id": "K3",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "o\\(k\\^?2\\)",
+                "o\\(n\\^?2\\)",
+                "квадратич",
+                "quadratic"
+              ],
+              "hits": [
+                "квадратич"
+              ]
+            },
+            {
+              "patterns": [
+                "while",
+                "replace",
+                "сняти\\w* кавыч",
+                "unescap"
+              ],
+              "hits": [
+                "while",
+                "unescap"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "K4",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "тест",
+                "сетк",
+                "grid"
+              ],
+              "hits": [
+                "тест",
+                "сетк"
+              ]
+            },
+            {
+              "patterns": [
+                "порог",
+                "threshold",
+                "запас",
+                "перф",
+                "30.?000",
+                "tothrow",
+                "не покрыва"
+              ],
+              "hits": [
+                "порог",
+                "запас",
+                "перф",
+                "30.?000",
+                "tothrow"
+              ]
+            }
+          ]
+        }
+      ],
+      "unmatched": [],
+      "stdoutPath": "csv-split-line.uni.audit-empiric.raw.jsonl",
+      "reportPath": "csv-split-line.uni.audit-empiric.md",
+      "error": null
+    },
+    {
+      "case": "csv-split-line",
+      "role": "uni.audit-invariant",
+      "model": "deepseek/deepseek-flash",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-134556\\csv-split-line\\uni.audit-invariant",
+      "sessionID": "ses_ec1e25b2affejQrRfX6s52Rzd8",
+      "startedAt": "2026-10-15T05:51:32.244Z",
+      "durationMs": 264425,
+      "timedOut": false,
+      "exitCode": 0,
+      "costUsd": 0.048238470000000006,
+      "tokens": {
+        "input": 95617,
+        "output": 26562,
+        "cacheRead": 1143040
+      },
+      "reportValid": true,
+      "reportSchema": "audit-invariant/v1",
+      "validationCode": null,
+      "validationErrors": [],
+      "warnings": [
+        "lines_checked: mandatory line \"СОГЛАСОВАННОСТЬ ПРОИЗВОДНЫХ ДАННЫХ\" is not covered",
+        "lines_checked: mandatory line \"МОНОТОННОСТЬ МЕТОК\" is not covered",
+        "lines_checked: mandatory line \"ПОЛНОТА КЛАССА\" is not covered",
+        "lines_checked: mandatory line \"ЖИЗНЕННЫЙ ЦИКЛ ПРОЦЕССА\" is not covered",
+        "lines_checked: mandatory line \"ТОЧНОСТЬ ДЕТЕКТОРОВ\" is not covered",
+        "lines_checked: mandatory line \"«ИЗВЕСТНЫЕ ФАКТЫ / УЖЕ УЧТЕНО»\" is not covered"
+      ],
+      "findings": 7,
+      "recall": 1,
+      "recallMajor": 1,
+      "matched": [
+        "K1",
+        "K2",
+        "K3",
+        "K4"
+      ],
+      "missed": [],
+      "missedMajor": [],
+      "detail": [
+        {
+          "id": "K1",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "a\\s*,\\s*b"
+              ],
+              "hits": [
+                "a\\s*,\\s*b"
+              ]
+            },
+            {
+              "patterns": [
+                "split\\s*\\(\\s*[\"'`]?,[\"'`]*\\s*\\)",
+                "line\\.split"
+              ],
+              "hits": [
+                "split\\s*\\(\\s*[\"'`]?,[\"'`]*\\s*\\)",
+                "line\\.split"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "K2",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "throw",
+                "исключени",
+                "exception"
+              ],
+              "hits": [
+                "throw"
+              ]
+            },
+            {
+              "patterns": [
+                "ab[\"'\\\\]*cd",
+                "a[\"'\\\\]*x",
+                "незакрыт",
+                "unclosed",
+                "\"\"\"\""
+              ],
+              "hits": [
+                "ab[\"'\\\\]*cd",
+                "a[\"'\\\\]*x",
+                "незакрыт",
+                "\"\"\"\""
+              ]
+            }
+          ]
+        },
+        {
+          "id": "K3",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "o\\(k\\^?2\\)",
+                "o\\(n\\^?2\\)",
+                "квадратич",
+                "quadratic"
+              ],
+              "hits": [
+                "o\\(n\\^?2\\)",
+                "квадратич",
+                "quadratic"
+              ]
+            },
+            {
+              "patterns": [
+                "while",
+                "replace",
+                "сняти\\w* кавыч",
+                "unescap"
+              ],
+              "hits": [
+                "while",
+                "replace"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "K4",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "тест",
+                "сетк",
+                "grid"
+              ],
+              "hits": [
+                "тест",
+                "сетк"
+              ]
+            },
+            {
+              "patterns": [
+                "порог",
+                "threshold",
+                "запас",
+                "перф",
+                "30.?000",
+                "tothrow",
+                "не покрыва"
+              ],
+              "hits": [
+                "порог",
+                "запас",
+                "перф",
+                "30.?000",
+                "tothrow",
+                "не покрыва"
+              ]
+            }
+          ]
+        }
+      ],
+      "unmatched": [
+        {
+          "id": "M4",
+          "severity": "MINOR",
+          "text": "M4 \u0001 MINOR \u0001 split-csv-line.ts:8-10 \u0001 T1: splitCsvLine('a\"\"b'). T2: цикл распаковки применяется к полю без обрамляющих кавычек. T3: ['a\"b'] — по spec.md:11 кавычка внутри поля допустима только как часть обрамления, значит вход невалиден и обязателен Error. \u0001 Невалидный вход не отвергается, а нормализуется: значение выглядит правдоподобно, порча неотличима от корректных данных (усиление класса M1 «"
+        },
+        {
+          "id": "I7",
+          "severity": "-",
+          "text": "I7 \u0001 Распаковка '\"\"'->'\"' применяется только внутри кавычек: вне обрамления любой символ '\"' => Error (spec.md:11) \u0001 violated \u0001 T1: splitCsvLine('a\"\"b'). T2: цикл стр.8-10 работает по всему полю без проверки обрамления. T3: ['a\"b'] — невалидный вход молча преобразован вместо Error."
+        }
+      ],
+      "stdoutPath": "csv-split-line.uni.audit-invariant.raw.jsonl",
+      "reportPath": "csv-split-line.uni.audit-invariant.md",
+      "error": null
+    },
+    {
+      "case": "normalize-tags",
+      "role": "uni.audit-empiric",
+      "model": "deepseek/deepseek-flash",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-134556\\normalize-tags\\uni.audit-empiric",
+      "sessionID": "ses_ec1de5257ffeTIQw6ls24p6SlJ",
+      "startedAt": "2026-10-15T05:55:56.691Z",
+      "durationMs": 240250,
+      "timedOut": false,
+      "exitCode": 0,
+      "costUsd": 0.040020749999999994,
+      "tokens": {
+        "input": 62433,
+        "output": 30888,
+        "cacheRead": 1014400
+      },
+      "reportValid": true,
+      "reportSchema": "audit-empiric/v1",
+      "validationCode": null,
+      "validationErrors": [],
+      "warnings": [],
+      "findings": 4,
+      "recall": 1,
+      "recallMajor": 1,
+      "matched": [
+        "S1",
+        "S2",
+        "S3",
+        "S4",
+        "S6"
+      ],
+      "missed": [],
+      "missedMajor": [],
+      "detail": [
+        {
+          "id": "S1",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "пуст",
+                "empty",
+                "пробельн",
+                "whitespace"
+              ],
+              "hits": [
+                "пуст",
+                "empty",
+                "whitespace"
+              ]
+            },
+            {
+              "patterns": [
+                "u\\+00a0",
+                "nbsp",
+                "u\\+3000",
+                "bom",
+                "ufeff",
+                "невидим",
+                "trim"
+              ],
+              "hits": [
+                "u\\+00a0",
+                "nbsp",
+                "u\\+3000",
+                "trim"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S2",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "тест",
+                "сетк",
+                "grid"
+              ],
+              "hits": [
+                "тест",
+                "сетк"
+              ]
+            },
+            {
+              "patterns": [
+                "не подтвержда",
+                "не покрыва",
+                "слеп",
+                "мутант",
+                "mutant",
+                "заявк",
+                "readme",
+                "tothrow"
+              ],
+              "hits": [
+                "не покрыва",
+                "мутант",
+                "заявк",
+                "readme",
+                "tothrow"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S3",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "30.?000",
+                "30000"
+              ],
+              "hits": [
+                "30.?000",
+                "30000"
+              ]
+            },
+            {
+              "patterns": [
+                "порог",
+                "threshold",
+                "запас",
+                "перф",
+                "мс",
+                "ms"
+              ],
+              "hits": [
+                "порог",
+                "запас",
+                "перф",
+                "мс",
+                "ms"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S4",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "includes"
+              ],
+              "hits": [
+                "includes"
+              ]
+            },
+            {
+              "patterns": [
+                "квадратич",
+                "o\\(n\\^?2\\)",
+                "дедуп",
+                "2796",
+                "64.?000",
+                "64 ?k",
+                "линейн"
+              ],
+              "hits": [
+                "квадратич",
+                "дедуп",
+                "линейн"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S6",
+          "severity": "NIT",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "тип",
+                "type"
+              ],
+              "hits": [
+                "тип",
+                "type"
+              ]
+            },
+            {
+              "patterns": [
+                "typeof",
+                "null",
+                "undefined",
+                "не\\w* строк",
+                "duck"
+              ],
+              "hits": [
+                "null"
+              ]
+            }
+          ]
+        }
+      ],
+      "unmatched": [],
+      "stdoutPath": "normalize-tags.uni.audit-empiric.raw.jsonl",
+      "reportPath": "normalize-tags.uni.audit-empiric.md",
+      "error": null
+    },
+    {
+      "case": "normalize-tags",
+      "role": "uni.audit-invariant",
+      "model": "deepseek/deepseek-flash",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-134556\\normalize-tags\\uni.audit-invariant",
+      "sessionID": "ses_ec1daa6afffeV9ex0W2XDo4hjs",
+      "startedAt": "2026-10-15T05:59:56.958Z",
+      "durationMs": 249336,
+      "timedOut": false,
+      "exitCode": 0,
+      "costUsd": 0.038323421999999996,
+      "tokens": {
+        "input": 75877,
+        "output": 18273,
+        "cacheRead": 794624
+      },
+      "reportValid": true,
+      "reportSchema": "audit-invariant/v1",
+      "validationCode": null,
+      "validationErrors": [],
+      "warnings": [
+        "lines_checked: mandatory line \"СОГЛАСОВАННОСТЬ ПРОИЗВОДНЫХ ДАННЫХ\" is not covered",
+        "lines_checked: mandatory line \"МОНОТОННОСТЬ МЕТОК\" is not covered",
+        "lines_checked: mandatory line \"ПОЛНОТА КЛАССА\" is not covered",
+        "lines_checked: mandatory line \"ЖИЗНЕННЫЙ ЦИКЛ ПРОЦЕССА\" is not covered",
+        "lines_checked: mandatory line \"ТОЧНОСТЬ ДЕТЕКТОРОВ\" is not covered",
+        "lines_checked: mandatory line \"«ИЗВЕСТНЫЕ ФАКТЫ / УЖЕ УЧТЕНО»\" is not covered"
+      ],
+      "findings": 5,
+      "recall": 1,
+      "recallMajor": 1,
+      "matched": [
+        "S1",
+        "S2",
+        "S3",
+        "S4",
+        "S6"
+      ],
+      "missed": [],
+      "missedMajor": [],
+      "detail": [
+        {
+          "id": "S1",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "пуст",
+                "empty",
+                "пробельн",
+                "whitespace"
+              ],
+              "hits": [
+                "пуст",
+                "empty",
+                "пробельн",
+                "whitespace"
+              ]
+            },
+            {
+              "patterns": [
+                "u\\+00a0",
+                "nbsp",
+                "u\\+3000",
+                "bom",
+                "ufeff",
+                "невидим",
+                "trim"
+              ],
+              "hits": [
+                "u\\+00a0",
+                "nbsp",
+                "bom",
+                "невидим",
+                "trim"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S2",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "тест",
+                "сетк",
+                "grid"
+              ],
+              "hits": [
+                "тест",
+                "сетк"
+              ]
+            },
+            {
+              "patterns": [
+                "не подтвержда",
+                "не покрыва",
+                "слеп",
+                "мутант",
+                "mutant",
+                "заявк",
+                "readme",
+                "tothrow"
+              ],
+              "hits": [
+                "слеп",
+                "мутант",
+                "заявк",
+                "readme",
+                "tothrow"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S3",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "30.?000",
+                "30000"
+              ],
+              "hits": [
+                "30.?000",
+                "30000"
+              ]
+            },
+            {
+              "patterns": [
+                "порог",
+                "threshold",
+                "запас",
+                "перф",
+                "мс",
+                "ms"
+              ],
+              "hits": [
+                "порог",
+                "запас",
+                "мс"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S4",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "includes"
+              ],
+              "hits": [
+                "includes"
+              ]
+            },
+            {
+              "patterns": [
+                "квадратич",
+                "o\\(n\\^?2\\)",
+                "дедуп",
+                "2796",
+                "64.?000",
+                "64 ?k",
+                "линейн"
+              ],
+              "hits": [
+                "квадратич",
+                "дедуп",
+                "линейн"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S6",
+          "severity": "NIT",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "тип",
+                "type"
+              ],
+              "hits": [
+                "тип",
+                "type"
+              ]
+            },
+            {
+              "patterns": [
+                "typeof",
+                "null",
+                "undefined",
+                "не\\w* строк",
+                "duck"
+              ],
+              "hits": [
+                "null",
+                "undefined"
+              ]
+            }
+          ]
+        }
+      ],
+      "unmatched": [],
+      "stdoutPath": "normalize-tags.uni.audit-invariant.raw.jsonl",
+      "reportPath": "normalize-tags.uni.audit-invariant.md",
+      "error": null
+    },
+    {
+      "case": "parse-duration",
+      "role": "uni.audit-empiric",
+      "model": "deepseek/deepseek-flash",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-134556\\parse-duration\\uni.audit-empiric",
+      "sessionID": "ses_ec1d6d8c7ffece72YO1J4hX2MT",
+      "startedAt": "2026-10-15T06:04:06.309Z",
+      "durationMs": 421002,
+      "timedOut": false,
+      "exitCode": 0,
+      "costUsd": 0.05893794000000001,
+      "tokens": {
+        "input": 110318,
+        "output": 36849,
+        "cacheRead": 1825280
+      },
+      "reportValid": true,
+      "reportSchema": "audit-empiric/v1",
+      "validationCode": null,
+      "validationErrors": [],
+      "warnings": [],
+      "findings": 7,
+      "recall": 0.83,
+      "recallMajor": 1,
+      "matched": [
+        "S1",
+        "S2",
+        "S3",
+        "S4",
+        "S6"
+      ],
+      "missed": [
+        "S5"
+      ],
+      "missedMajor": [],
+      "detail": [
+        {
+          "id": "S1",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "1h30"
+              ],
+              "hits": [
+                "1h30"
+              ]
+            },
+            {
+              "patterns": [
+                "покрыти",
+                "coverage",
+                "остаток",
+                "частичн",
+                "мусор",
+                "проглатыва"
+              ],
+              "hits": [
+                "остаток",
+                "частичн",
+                "мусор"
+              ]
+            },
+            {
+              "patterns": [
+                "3600000",
+                "3.?600.?000",
+                "1112400000",
+                "1.?112.?400.?000"
+              ],
+              "hits": [
+                "3600000",
+                "3.?600.?000",
+                "1112400000",
+                "1.?112.?400.?000"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S2",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "infinity"
+              ],
+              "hits": [
+                "infinity"
+              ]
+            },
+            {
+              "patterns": [
+                "переполн",
+                "overflow",
+                "repeat\\(400\\)",
+                "303",
+                "9\"?.{0,3}400"
+              ],
+              "hits": [
+                "переполн",
+                "overflow",
+                "repeat\\(400\\)",
+                "9\"?.{0,3}400"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S3",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "квадратич",
+                "quadratic",
+                "o\\(n\\^?2\\)",
+                "o\\(n²\\)",
+                "наклон"
+              ],
+              "hits": [
+                "квадратич",
+                "o\\(n²\\)"
+              ]
+            },
+            {
+              "patterns": [
+                "линейн",
+                "linear",
+                "log-log",
+                "шкалиров",
+                "slope"
+              ],
+              "hits": [
+                "линейн",
+                "шкалиров"
+              ]
+            },
+            {
+              "patterns": [
+                "цифр",
+                "80.?000",
+                "200.?000",
+                "40.?000",
+                "поток"
+              ],
+              "hits": [
+                "цифр",
+                "80.?000",
+                "200.?000",
+                "40.?000"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S4",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "\\\\s\\*",
+                "пробел",
+                "nbsp",
+                "u\\+00a0",
+                "пробельн"
+              ],
+              "hits": [
+                "\\\\s\\*",
+                "пробел",
+                "nbsp",
+                "пробельн"
+              ]
+            },
+            {
+              "patterns": [
+                "шире",
+                "контракт",
+                "язык",
+                "spec",
+                "спека",
+                "не долж",
+                "допус"
+              ],
+              "hits": [
+                "контракт",
+                "spec",
+                "спека",
+                "допус"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S5",
+          "severity": "NIT",
+          "matched": false,
+          "groups": [
+            {
+              "patterns": [
+                "2\\.3h",
+                "8279999",
+                "округл",
+                "round",
+                "плавающ",
+                "погрешн",
+                "float"
+              ],
+              "hits": []
+            }
+          ]
+        },
+        {
+          "id": "S6",
+          "severity": "NIT",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "тест",
+                "сетк",
+                "grid"
+              ],
+              "hits": [
+                "тест"
+              ]
+            },
+            {
+              "patterns": [
+                "порог",
+                "threshold",
+                "перф",
+                "не покрыва",
+                "не проверя",
+                "слабы",
+                "tothrow"
+              ],
+              "hits": [
+                "порог",
+                "не покрыва",
+                "не проверя",
+                "слабы",
+                "tothrow"
+              ]
+            }
+          ]
+        }
+      ],
+      "unmatched": [],
+      "stdoutPath": "parse-duration.uni.audit-empiric.raw.jsonl",
+      "reportPath": "parse-duration.uni.audit-empiric.md",
+      "error": null
+    },
+    {
+      "case": "parse-duration",
+      "role": "uni.audit-invariant",
+      "model": "deepseek/deepseek-flash",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-134556\\parse-duration\\uni.audit-invariant",
+      "sessionID": "ses_ec1d06be0ffe4mBfutfuckJw3j",
+      "startedAt": "2026-10-15T06:11:07.326Z",
+      "durationMs": 371767,
+      "timedOut": false,
+      "exitCode": 0,
+      "costUsd": 0.061020816,
+      "tokens": {
+        "input": 127564,
+        "output": 32526,
+        "cacheRead": 2105472
+      },
+      "reportValid": true,
+      "reportSchema": "audit-invariant/v1",
+      "validationCode": null,
+      "validationErrors": [],
+      "warnings": [
+        "lines_checked: mandatory line \"СОГЛАСОВАННОСТЬ ПРОИЗВОДНЫХ ДАННЫХ\" is not covered",
+        "lines_checked: mandatory line \"МОНОТОННОСТЬ МЕТОК\" is not covered",
+        "lines_checked: mandatory line \"ПОЛНОТА КЛАССА\" is not covered",
+        "lines_checked: mandatory line \"ЖИЗНЕННЫЙ ЦИКЛ ПРОЦЕССА\" is not covered",
+        "lines_checked: mandatory line \"ТОЧНОСТЬ ДЕТЕКТОРОВ\" is not covered",
+        "lines_checked: mandatory line \"«ИЗВЕСТНЫЕ ФАКТЫ / УЖЕ УЧТЕНО»\" is not covered"
+      ],
+      "findings": 6,
+      "recall": 1,
+      "recallMajor": 1,
+      "matched": [
+        "S1",
+        "S2",
+        "S3",
+        "S4",
+        "S5",
+        "S6"
+      ],
+      "missed": [],
+      "missedMajor": [],
+      "detail": [
+        {
+          "id": "S1",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "1h30"
+              ],
+              "hits": [
+                "1h30"
+              ]
+            },
+            {
+              "patterns": [
+                "покрыти",
+                "coverage",
+                "остаток",
+                "частичн",
+                "мусор",
+                "проглатыва"
+              ],
+              "hits": [
+                "покрыти",
+                "остаток",
+                "частичн",
+                "мусор"
+              ]
+            },
+            {
+              "patterns": [
+                "3600000",
+                "3.?600.?000",
+                "1112400000",
+                "1.?112.?400.?000"
+              ],
+              "hits": [
+                "3600000",
+                "3.?600.?000",
+                "1112400000",
+                "1.?112.?400.?000"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S2",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "infinity"
+              ],
+              "hits": [
+                "infinity"
+              ]
+            },
+            {
+              "patterns": [
+                "переполн",
+                "overflow",
+                "repeat\\(400\\)",
+                "303",
+                "9\"?.{0,3}400"
+              ],
+              "hits": [
+                "переполн",
+                "overflow",
+                "repeat\\(400\\)",
+                "9\"?.{0,3}400"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S3",
+          "severity": "MAJOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "квадратич",
+                "quadratic",
+                "o\\(n\\^?2\\)",
+                "o\\(n²\\)",
+                "наклон"
+              ],
+              "hits": [
+                "квадратич"
+              ]
+            },
+            {
+              "patterns": [
+                "линейн",
+                "linear",
+                "log-log",
+                "шкалиров",
+                "slope"
+              ],
+              "hits": [
+                "линейн"
+              ]
+            },
+            {
+              "patterns": [
+                "цифр",
+                "80.?000",
+                "200.?000",
+                "40.?000",
+                "поток"
+              ],
+              "hits": [
+                "цифр",
+                "80.?000",
+                "200.?000",
+                "40.?000",
+                "поток"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S4",
+          "severity": "MINOR",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "\\\\s\\*",
+                "пробел",
+                "nbsp",
+                "u\\+00a0",
+                "пробельн"
+              ],
+              "hits": [
+                "\\\\s\\*",
+                "пробел",
+                "nbsp"
+              ]
+            },
+            {
+              "patterns": [
+                "шире",
+                "контракт",
+                "язык",
+                "spec",
+                "спека",
+                "не долж",
+                "допус"
+              ],
+              "hits": [
+                "контракт",
+                "spec",
+                "спека",
+                "допус"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S5",
+          "severity": "NIT",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "2\\.3h",
+                "8279999",
+                "округл",
+                "round",
+                "плавающ",
+                "погрешн",
+                "float"
+              ],
+              "hits": [
+                "округл"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "S6",
+          "severity": "NIT",
+          "matched": true,
+          "groups": [
+            {
+              "patterns": [
+                "тест",
+                "сетк",
+                "grid"
+              ],
+              "hits": [
+                "тест",
+                "сетк"
+              ]
+            },
+            {
+              "patterns": [
+                "порог",
+                "threshold",
+                "перф",
+                "не покрыва",
+                "не проверя",
+                "слабы",
+                "tothrow"
+              ],
+              "hits": [
+                "порог",
+                "не проверя",
+                "слабы",
+                "tothrow"
+              ]
+            }
+          ]
+        }
+      ],
+      "unmatched": [],
+      "stdoutPath": "parse-duration.uni.audit-invariant.raw.jsonl",
+      "reportPath": "parse-duration.uni.audit-invariant.md",
+      "error": null
+    }
+  ],
+  "comparison": null
+}

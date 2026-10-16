@@ -1,0 +1,101 @@
+{
+  "id": "audit-empiric/v1",
+  "schema": {
+    "type": "object",
+    "required": [
+      "schema",
+      "verdict",
+      "claims_checked",
+      "modes_measured",
+      "self_check",
+      "findings",
+      "contract_gaps",
+      "not_verified"
+    ],
+    "properties": {
+      "schema": { "type": "string", "const": "audit-empiric/v1" },
+      "verdict": { "type": "string", "enum": ["ready", "not_ready"] },
+      "claims_checked": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["claim", "method", "result", "verdict"],
+          "properties": {
+            "claim": { "type": "string" },
+            "method": { "type": "string", "enum": ["run", "measure", "source", "compare_base"] },
+            "command": { "type": "string" },
+            "rc": { "type": ["string", "number"] },
+            "result": { "type": "string" },
+            "verdict": { "type": "string", "enum": ["confirmed", "refuted", "unverifiable"] }
+          }
+        }
+      },
+      "modes_measured": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["operation", "regimes", "best", "worst", "budget_claim", "measured"],
+          "properties": {
+            "operation": { "type": "string" },
+            "regimes": { "type": "array", "items": { "type": "string" } },
+            "best": { "type": "string" },
+            "worst": { "type": "string" },
+            "budget_claim": { "type": ["string", "null"] },
+            "measured": { "type": "string" }
+          }
+        }
+      },
+      "self_check": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["item", "title", "status", "note"],
+          "properties": {
+            "item": { "type": "number" },
+            "title": { "type": "string" },
+            "status": { "type": "string", "enum": ["applied", "not_applicable"] },
+            "note": { "type": "string" }
+          }
+        }
+      },
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "severity", "location", "mechanism", "evidence", "fix"],
+          "properties": {
+            "id": { "type": "string" },
+            "severity": { "type": "string", "enum": ["MAJOR", "MINOR", "NIT"] },
+            "location": { "type": "string" },
+            "mechanism": { "type": "string" },
+            "evidence": { "type": "string" },
+            "fix": { "type": "string" }
+          }
+        }
+      },
+      "contract_gaps": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["item", "where", "why"],
+          "properties": {
+            "item": { "type": "string" },
+            "where": { "type": "string" },
+            "why": { "type": "string" }
+          }
+        }
+      },
+      "not_verified": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["item", "why"],
+          "properties": {
+            "item": { "type": "string" },
+            "why": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

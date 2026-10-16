@@ -1,0 +1,44 @@
+{
+  "id": "audit-arbiter/v1",
+  "schema": {
+    "type": "object",
+    "required": ["schema", "verdict", "disputes", "not_verified"],
+    "properties": {
+      "schema": { "type": "string", "const": "audit-arbiter/v1" },
+      "verdict": { "type": "string", "enum": ["resolved", "partially"] },
+      "disputes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "item", "verdict", "prism", "method", "evidence"],
+          "properties": {
+            "id": { "type": "string" },
+            "item": { "type": "string" },
+            "verdict": { "type": "string", "enum": ["confirmed", "refuted", "undecidable"] },
+            "prism": {
+              "type": ["string", "array"],
+              "enum": ["reproducibility", "contract", "falsification", "not_applicable"],
+              "items": {
+                "type": "string",
+                "enum": ["reproducibility", "contract", "falsification", "not_applicable"]
+              }
+            },
+            "method": { "type": "string" },
+            "evidence": { "type": "string" }
+          }
+        }
+      },
+      "not_verified": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["item", "why"],
+          "properties": {
+            "item": { "type": "string" },
+            "why": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

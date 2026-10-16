@@ -1,0 +1,46 @@
+{
+  "id": "audit-meta/v1",
+  "schema": {
+    "type": "object",
+    "required": ["schema", "verdict", "gate", "closing_list", "coverage_gaps", "reports"],
+    "properties": {
+      "schema": { "type": "string", "const": "audit-meta/v1" },
+      "verdict": { "type": "string", "enum": ["pass", "fail"] },
+      "gate": { "type": "string", "enum": ["pass", "fail"] },
+      "closing_list": { "type": "array", "items": { "type": "string" } },
+      "coverage_gaps": { "type": "array", "items": { "type": "string" } },
+      "reports": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["report", "result", "violations"],
+          "properties": {
+            "report": { "type": "string" },
+            "result": { "type": "string", "enum": ["pass", "fail"] },
+            "violations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["kind", "detail"],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "missing_evidence",
+                      "incomplete_selfcheck",
+                      "green_tests_fallacy",
+                      "unverified_as_fact",
+                      "schema_invalid",
+                      "other"
+                    ]
+                  },
+                  "detail": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "id": "csv-split-line",
+  "title": "splitCsvLine — разбор одной CSV-строки",
+  "files": [
+    { "path": "spec.md", "role": "spec", "sha256": "9184c3bd6cb80971c9f3052e6b4926298e1f70db03a076a81174b71fc8c88fc0" },
+    { "path": "split-csv-line.ts", "role": "implementation", "sha256": "45cc4a4c1ca326d475619531c8b0e8065440c5ce61fc70b0c2b22d45b2d99537" },
+    { "path": "split-csv-line.test.ts", "role": "tests", "sha256": "a210b4d12375d9cf869cd69b00c0e8d62368f7d72c23537b0bf22171f323c695" },
+    { "path": "README.md", "role": "readme", "sha256": "0d1023528c6749d7b8700a3a61e45925f418faebde3aa967df4274ec501c152f" },
+    { "path": "case.md", "role": "brief", "sha256": "b1ca383286029596efef4871b99566f2045d87945158aef458c2e3bde9bd74f5" }
+  ],
+  "recovery": {
+    "method": "original",
+    "source": "model-bundle/case-src (эталон; хэши сверены с model-bundle/ref/case-hashes.txt)",
+    "reconstructed": false,
+    "note": "Файлы взяты из готового эталона кейса без изменений."
+  },
+  "expected_major": ["K1", "K2"],
+  "defects": [
+    {
+      "id": "K1",
+      "severity": "MAJOR",
+      "class": "semantic",
+      "title": "запятая внутри кавычек режется line.split(\",\")",
+      "signatures": [["a\\s*,\\s*b"], ["split\\s*\\(\\s*[\"'`]?,[\"'`]*\\s*\\)", "line\\.split"]]
+    },
+    {
+      "id": "K2",
+      "severity": "MAJOR",
+      "class": "contract",
+      "title": "нет валидации форм: невалидное молча возвращается, а не Error",
+      "signatures": [["throw", "исключени", "exception"], ["ab[\"'\\\\]*cd", "a[\"'\\\\]*x", "незакрыт", "unclosed", "\"\"\"\""]]
+    },
+    {
+      "id": "K3",
+      "severity": "MINOR",
+      "class": "resource",
+      "title": "O(n²) снятие удвоенных кавычек while/replace",
+      "signatures": [["o\\(k\\^?2\\)", "o\\(n\\^?2\\)", "квадратич", "quadratic"], ["while", "replace", "сняти\\w* кавыч", "unescap"]]
+    },
+    {
+      "id": "K4",
+      "severity": "MINOR",
+      "class": "test grid",
+      "title": "сетка не покрывает запятые в кавычках, невалидные формы и экранирования; перф-порог 30 000 мс слаб",
+      "signatures": [["тест", "сетк", "grid"], ["порог", "threshold", "запас", "перф", "30.?000", "tothrow", "не покрыва"]]
+    }
+  ]
+}

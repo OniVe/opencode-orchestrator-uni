@@ -1,0 +1,62 @@
+{
+  "id": "parse-duration",
+  "title": "parseDuration — разбор строки длительности (кейс 001)",
+  "files": [
+    { "path": "spec.md", "role": "spec", "sha256": "77a120bee6ada4ffeb95cffb4032c26ce120d47c4733068f9c990443c012d871" },
+    { "path": "parse-duration.ts", "role": "implementation", "sha256": "38f9c79ee4a133a7f1d95566f2ddf8c95a8a7e5b3496d75cd3ae5c71deeff30b" },
+    { "path": "parse-duration.test.ts", "role": "tests", "sha256": "759b3100e70d8fc81a77f5df394d4c3e6921ad04cb026a6b42e05b8be8411347" },
+    { "path": "README.md", "role": "readme", "sha256": "d723d4d3ab942c29e7e3ff586504f062a3d7cc2bbb5a827f7f81c93be698c5f5" },
+    { "path": "case.md", "role": "brief", "sha256": "34391c9670c76f507b6db80a08559ec812baa7d62e5e5c31eecfc9c7ddbf00a8" }
+  ],
+  "recovery": {
+    "method": "A",
+    "source": "история сессий opencode.db (session_message.data, tool-part read)",
+    "reconstructed": false,
+    "note": "spec.md/README.md/parse-duration.ts восстановлены из чтений аудиторских сессий круга 1; parse-duration.test.ts — из чтений re-audit-сессии круга 2 (в круге 1 тест-файла в поставке не было, он добавлен fix-runner). Хэши совпали с целевыми."
+  },
+  "expected_major": ["S1", "S2", "S3"],
+  "defects": [
+    {
+      "id": "S1",
+      "severity": "MAJOR",
+      "class": "semantic",
+      "title": "нет проверки полного покрытия входа: мусор и висячие числа проглатываются",
+      "signatures": [["1h30"], ["покрыти", "coverage", "остаток", "частичн", "мусор", "проглатыва"], ["3600000", "3.?600.?000", "1112400000", "1.?112.?400.?000"]]
+    },
+    {
+      "id": "S2",
+      "severity": "MAJOR",
+      "class": "contract",
+      "title": "нет проверки конечности: переполнение даёт Infinity вместо Error",
+      "signatures": [["infinity"], ["переполн", "overflow", "repeat\\(400\\)", "303", "9\"?.{0,3}400"]]
+    },
+    {
+      "id": "S3",
+      "severity": "MAJOR",
+      "class": "resource",
+      "title": "квадратичная деградация на потоке цифр без единицы; синхронный неотменяемый путь",
+      "signatures": [["квадратич", "quadratic", "o\\(n\\^?2\\)", "o\\(n²\\)", "наклон"], ["линейн", "linear", "log-log", "шкалиров", "slope"], ["цифр", "80.?000", "200.?000", "40.?000", "поток"]]
+    },
+    {
+      "id": "S4",
+      "severity": "MINOR",
+      "class": "contract",
+      "title": "\\s* принимает пробелы/NBSP — язык шире контракта",
+      "signatures": [["\\\\s\\*", "пробел", "nbsp", "u\\+00a0", "пробельн"], ["шире", "контракт", "язык", "spec", "спека", "не долж", "допус"]]
+    },
+    {
+      "id": "S5",
+      "severity": "NIT",
+      "class": "arithmetic",
+      "title": "плавающая погрешность не округляется: 2.3h → 8279999.999999999",
+      "signatures": [["2\\.3h", "8279999", "округл", "round", "плавающ", "погрешн", "float"]]
+    },
+    {
+      "id": "S6",
+      "severity": "NIT",
+      "class": "test grid",
+      "title": "сетка слаба: перф-порог <1000 мс, не покрыты суммарное переполнение, non-string, крафтовые входы",
+      "signatures": [["тест", "сетк", "grid"], ["порог", "threshold", "перф", "не покрыва", "не проверя", "слабы", "tothrow"]]
+    }
+  ]
+}

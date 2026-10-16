@@ -1,0 +1,44 @@
+{
+  "id": "fix-runner/v1",
+  "schema": {
+    "type": "object",
+    "required": ["schema", "round", "commit", "results", "out_of_scope"],
+    "properties": {
+      "schema": { "type": "string", "const": "fix-runner/v1" },
+      "round": { "type": "string" },
+      "commit": { "type": ["string", "null"] },
+      "results": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "status", "change", "before", "after", "proof", "stand", "tests"],
+          "properties": {
+            "id": { "type": "string" },
+            "status": {
+              "type": "string",
+              "enum": ["closed", "not_closed", "needs_decision", "budget_exceeded"]
+            },
+            "change": { "type": "string" },
+            "before": { "type": "string" },
+            "after": { "type": "string" },
+            "proof": { "type": "string" },
+            "stand": { "type": "string" },
+            "tests": { "type": "string" },
+            "note": { "type": "string" }
+          }
+        }
+      },
+      "out_of_scope": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["note", "why_suspicious"],
+          "properties": {
+            "note": { "type": "string" },
+            "why_suspicious": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

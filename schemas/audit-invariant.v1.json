@@ -1,0 +1,74 @@
+{
+  "id": "audit-invariant/v1",
+  "schema": {
+    "type": "object",
+    "required": ["schema", "verdict", "invariants", "lines_checked", "findings", "contract_gaps", "not_verified"],
+    "properties": {
+      "schema": { "type": "string", "const": "audit-invariant/v1" },
+      "verdict": { "type": "string", "enum": ["ready", "not_ready"] },
+      "invariants": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "statement", "verdict"],
+          "properties": {
+            "id": { "type": "string" },
+            "statement": { "type": "string" },
+            "verdict": { "type": "string", "enum": ["violated", "held"] },
+            "counterexample": { "type": ["string", "null"] }
+          }
+        }
+      },
+      "lines_checked": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["line", "status", "note"],
+          "properties": {
+            "line": { "type": "string" },
+            "status": { "type": "string", "enum": ["checked", "not_applicable"] },
+            "note": { "type": "string" }
+          }
+        }
+      },
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "severity", "location", "scenario", "consequence", "fix"],
+          "properties": {
+            "id": { "type": "string" },
+            "severity": { "type": "string", "enum": ["MAJOR", "MINOR", "NIT"] },
+            "location": { "type": "string" },
+            "scenario": { "type": "string" },
+            "consequence": { "type": "string" },
+            "fix": { "type": "string" }
+          }
+        }
+      },
+      "contract_gaps": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["item", "where", "why"],
+          "properties": {
+            "item": { "type": "string" },
+            "where": { "type": "string" },
+            "why": { "type": "string" }
+          }
+        }
+      },
+      "not_verified": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["item", "why"],
+          "properties": {
+            "item": { "type": "string" },
+            "why": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

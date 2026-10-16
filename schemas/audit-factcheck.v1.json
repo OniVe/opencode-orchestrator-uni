@@ -1,0 +1,37 @@
+{
+  "id": "audit-factcheck/v1",
+  "schema": {
+    "type": "object",
+    "required": ["schema", "verdict", "claims", "promises"],
+    "properties": {
+      "schema": { "type": "string", "const": "audit-factcheck/v1" },
+      "verdict": { "type": "string", "enum": ["ok", "stale", "already_done"] },
+      "claims": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["claim", "status", "evidence"],
+          "properties": {
+            "claim": { "type": "string" },
+            "status": { "type": "string", "enum": ["actual", "stale", "refuted", "already_done"] },
+            "evidence": { "type": "string" },
+            "source": { "type": "string", "enum": ["git", "github", "code", "docs"] }
+          }
+        }
+      },
+      "promises": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["promise", "status", "evidence"],
+          "properties": {
+            "promise": { "type": "string" },
+            "origin": { "type": "string", "enum": ["issue", "README", "CHANGELOG", "doc"] },
+            "status": { "type": "string", "enum": ["implemented", "partial", "missing"] },
+            "evidence": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

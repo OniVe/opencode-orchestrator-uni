@@ -1,0 +1,55 @@
+{
+  "id": "normalize-tags",
+  "title": "normalizeTags — нормализация списка тегов (кейс 002)",
+  "files": [
+    { "path": "spec.md", "role": "spec", "sha256": "a5f9bcc5449df26dba0db74ad860636635d11070c31ffc1ca18fe1e56e8d275d" },
+    { "path": "normalize-tags.ts", "role": "implementation", "sha256": "7dd0b29e03feac38f0955214cdc28d143642dc0cd4dbf912445a4c599dd45147" },
+    { "path": "normalize-tags.test.ts", "role": "tests", "sha256": "b8ba50b147b8aaa3f366d1e92dce977836b491d64ba69f14d601d292aab24425" },
+    { "path": "README.md", "role": "readme", "sha256": "1482ec3d94e6305a456b11706d36222898c82c3e600393281f58c6951183c408" },
+    { "path": "case.md", "role": "brief", "sha256": "31e85f3758dab19ed77a27dfbc1b9a524e322b4cd7025b4b38c313f28fe83851" }
+  ],
+  "recovery": {
+    "method": "A",
+    "source": "история сессий opencode.db (session_message.data, tool-part read)",
+    "reconstructed": false,
+    "note": "Все четыре артефакта восстановлены из чтений аудиторских сессий круга 1. Хэши совпали с целевыми."
+  },
+  "expected_major": ["S1", "S2"],
+  "defects": [
+    {
+      "id": "S1",
+      "severity": "MAJOR",
+      "class": "semantic",
+      "title": "пустой/пробельный элемент (вкл. NBSP/U+3000/BOM) не отвергается, попадает как \"\"",
+      "signatures": [["пуст", "empty", "пробельн", "whitespace"], ["u\\+00a0", "nbsp", "u\\+3000", "bom", "ufeff", "невидим", "trim"]]
+    },
+    {
+      "id": "S2",
+      "severity": "MAJOR",
+      "class": "test grid",
+      "title": "сетка слепа к контракту: Error-примеры спеки не покрыты, заявка README не подтверждена (мутант выжил)",
+      "signatures": [["тест", "сетк", "grid"], ["не подтвержда", "не покрыва", "слеп", "мутант", "mutant", "заявк", "readme", "tothrow"]]
+    },
+    {
+      "id": "S3",
+      "severity": "MINOR",
+      "class": "test grid",
+      "title": "перф-порог 30 000 мс при факте ~5 мс (запас ×~5000) — не детектор",
+      "signatures": [["30.?000", "30000"], ["порог", "threshold", "запас", "перф", "мс", "ms"]]
+    },
+    {
+      "id": "S4",
+      "severity": "MINOR",
+      "class": "resource",
+      "title": "дедуп out.includes — O(n²): 64k → 2796 мс",
+      "signatures": [["includes"], ["квадратич", "o\\(n\\^?2\\)", "дедуп", "2796", "64.?000", "64 ?k", "линейн"]]
+    },
+    {
+      "id": "S6",
+      "severity": "NIT",
+      "class": "types",
+      "title": "нет ранней валидации типов (строка / duck-object / null)",
+      "signatures": [["тип", "type"], ["typeof", "null", "undefined", "не\\w* строк", "duck"]]
+    }
+  ]
+}
