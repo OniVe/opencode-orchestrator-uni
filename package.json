@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "opencode-orchestrator-agents",
+  "name": "opencode-orchestrator-uni",
   "version": "0.1.0",
   "description": "Native OpenCode V2 plugin that registers the orchestrator agent kit (root orchestrator, audit subagents, fix-runner) and exposes the kit's process documents as the audit-kit reference.",
   "type": "module",
@@ -8,11 +8,11 @@
   "author": "OniVe",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OniVe/opencode-orchestrator-agents.git"
+    "url": "git+https://github.com/OniVe/opencode-orchestrator-uni.git"
   },
-  "homepage": "https://github.com/OniVe/opencode-orchestrator-agents#readme",
+  "homepage": "https://github.com/OniVe/opencode-orchestrator-uni#readme",
   "bugs": {
-    "url": "https://github.com/OniVe/opencode-orchestrator-agents/issues"
+    "url": "https://github.com/OniVe/opencode-orchestrator-uni/issues"
   },
   "publishConfig": {
     "access": "public"

@@ -168,7 +168,7 @@ const SYSTEM_MARKERS: Record<string, string> = {
   "redteam": "Ты — приёмочный ред-тим",
 }
 
-describe("opencode-orchestrator-agents", () => {
+describe("opencode-orchestrator-uni", () => {
   test("exports a V2 plugin definition", () => {
     expect(plugin.id).toBe(PLUGIN_ID)
     expect(typeof plugin.setup).toBe("function")

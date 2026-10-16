@@ -1,4 +1,4 @@
-# opencode-orchestrator-agents
+# opencode-orchestrator-uni
 
 A native [OpenCode V2](https://opencode.ai/v2/docs/build/plugins) package plugin that
 ships the **orchestrator agent kit**:
@@ -169,7 +169,7 @@ Agent definitions carry no `model`; models are configured on the plugin entry in
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode-orchestrator-agents",
+      "package": "opencode-orchestrator-uni",
       "options": {
         // Default for every kit agent.
         "model": "deepseek/deepseek-flash",
@@ -187,7 +187,7 @@ Agent definitions carry no `model`; models are configured on the plugin entry in
 - `model` — default model for every kit agent; `agents.<id>` — per-agent override.
   Both accept `"provider/model[#variant]"` or `{ providerID, model, variant }`.
 - Without options, kit agents keep no model, so subagents inherit the session's model.
-- Invalid values are ignored with a warning (`[orchestrator-agents] …`).
+- Invalid values are ignored with a warning (`[orchestrator.uni] …`).
 - Subagents run on their configured model; the primary `orchestrator` runs on the
   session's model, so a model set for `orchestrator` is informational for clients
   (as of OpenCode 2.0.28).
@@ -204,7 +204,7 @@ Agent definitions carry no `model`; models are configured on the plugin entry in
 ### With the OpenCode CLI
 
 ```sh
-opencode plugin add opencode-orchestrator-agents
+opencode plugin add opencode-orchestrator-uni
 ```
 
 ### Manually
@@ -215,7 +215,7 @@ Add the package to the `plugins` array in your global
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-orchestrator-agents"]
+  "plugins": ["opencode-orchestrator-uni"]
 }
 ```
 
@@ -224,7 +224,7 @@ Pin a version if you prefer:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-orchestrator-agents@0.1.0"]
+  "plugins": ["opencode-orchestrator-uni@0.1.0"]
 }
 ```
 
@@ -235,7 +235,7 @@ To set kit models at the same time, use the object form — see [Models](#models
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode-orchestrator-agents",
+      "package": "opencode-orchestrator-uni",
       "options": { "model": "deepseek/deepseek-flash" }
     }
   ]
@@ -283,7 +283,7 @@ Test against a live server by pointing a project config at the checkout:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["file:///C:/path/to/opencode-orchestrator-agents"]
+  "plugins": ["file:///C:/path/to/opencode-orchestrator-uni"]
 }
 ```
 
@@ -294,7 +294,7 @@ OpenCode watches them and reloads on change.
 
 - One runtime dependency: [`gray-matter`](https://www.npmjs.com/package/gray-matter)
   for frontmatter parsing. OpenCode installs package plugin dependencies automatically.
-- Plugin id: `orchestrator-agents`.
+- Plugin id: `orchestrator.uni`.
 - Ships only the files listed in `package.json#files`: `index.ts`, `lib/`, `schemas/`,
   `agents/`, `docs/`, `README.md`, `LICENSE`.
 

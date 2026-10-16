@@ -1,5 +1,5 @@
 /**
- * opencode-orchestrator-agents — native OpenCode V2 package plugin.
+ * opencode-orchestrator-uni — native OpenCode V2 package plugin.
  *
  * Registers the orchestrator agent kit — the `orchestrator` root agent with the
  * built-in audit loop, the read-only audit subagents (`factcheck`,
@@ -45,7 +45,7 @@ import type { Agent, Model, Plugin, Reference } from "@opencode/plugin"
 import { registerAuditTools } from "./lib/tools"
 
 /** Stable plugin id: diagnostics, enable/disable selectors, storage scope. */
-export const PLUGIN_ID = "orchestrator-agents"
+export const PLUGIN_ID = "orchestrator.uni"
 
 /** Name of the reference that exposes the kit's process documents. */
 export const REFERENCE_NAME = "audit-kit"
