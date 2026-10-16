@@ -270,6 +270,8 @@ There is no build. `index.ts` is the shipped entry point.
 npm install          # installs gray-matter + dev tooling
 npm run typecheck    # tsc --noEmit
 npm test             # bun test ./test/ (hermetic: registration, tools, validator, snapshot, prompt↔schema + identifier guards)
+npm run lint         # biome check . (lint + format + import order; read-only)
+npm run lint:fix     # biome check --write . (applies safe fixes)
 ```
 
 `npm test` scans only `./test/` — the shipped suite (77 tests in 6 files, up from
@@ -277,6 +279,14 @@ npm test             # bun test ./test/ (hermetic: registration, tools, validato
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`
 and the scratch drafts under `lab/`. Use `npm test` [F5].
+
+[Biome](https://biomejs.org) ([`biome.json`](./biome.json)) covers the code surface —
+`index.ts`, `lib/`, `test/`, `eval/*.ts` — and skips `lab/` and `eval/results/` through the
+git ignore file, plus two frozen data kinds: `eval/cases/**` (fixtures with intentional
+defects) and `eval/baselines/**` (records generated in `JSON.stringify(…, null, 2)` style;
+reformatting them would churn on the next `eval:recompute`). `lint/style/noNonNullAssertion`
+is the one rule turned off — the dev contour and tests use `!` deliberately after in-code
+checks.
 
 Test against a live server by pointing a project config at the checkout:
 

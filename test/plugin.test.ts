@@ -91,7 +91,10 @@ function createHarness(options?: unknown) {
           namespace: () => {},
           add: (tool: { name: string; options?: { namespace?: string } }) => {
             const namespace = tool.options?.namespace
-            tools.set(namespace === undefined ? tool.name : `${namespace}.${tool.name}`.replace(/[^A-Za-z0-9_]/g, "_"), tool)
+            tools.set(
+              namespace === undefined ? tool.name : `${namespace}.${tool.name}`.replace(/[^A-Za-z0-9_]/g, "_"),
+              tool,
+            )
           },
           list: () => [...tools.values()],
           get: (id: string) => tools.get(id),
@@ -160,12 +163,12 @@ function seedExistingAgent(id: string): AgentDraft {
 const SYSTEM_MARKERS: Record<string, string> = {
   orchestrator: "Ты — root-оркестратор",
   "fix-runner": "Ты — fix-runner",
-  "factcheck": "Ты — факт-чекер",
-  "empiric": "Ты — эмпирический read-only аудитор",
-  "invariant": "Ты — read-only аудитор защитных инвариантов",
-  "arbiter": "Ты — арбитр",
-  "meta": "Ты — мета-аудитор",
-  "redteam": "Ты — приёмочный ред-тим",
+  factcheck: "Ты — факт-чекер",
+  empiric: "Ты — эмпирический read-only аудитор",
+  invariant: "Ты — read-only аудитор защитных инвариантов",
+  arbiter: "Ты — арбитр",
+  meta: "Ты — мета-аудитор",
+  redteam: "Ты — приёмочный ред-тим",
 }
 
 describe("opencode-orchestrator-uni", () => {
@@ -233,7 +236,7 @@ describe("opencode-orchestrator-uni", () => {
     const { agents, warnings } = await runSetup({
       model: "deepseek/deepseek-flash",
       agents: {
-        "meta": "deepseek/deepseek-reasoner",
+        meta: "deepseek/deepseek-reasoner",
         "fix-runner": { providerID: "anthropic", model: "claude-sonnet-4-5", variant: "high" },
       },
     })
@@ -250,7 +253,7 @@ describe("opencode-orchestrator-uni", () => {
   test("invalid options warn and are ignored", async () => {
     const { agents, warnings } = await runSetup({
       model: "not-a-model",
-      agents: { "meta": 42, "no-such-agent": "deepseek/deepseek-flash" },
+      agents: { meta: 42, "no-such-agent": "deepseek/deepseek-flash" },
     })
     expect(warnings.some((line) => line.includes("options.model"))).toBe(true)
     expect(warnings.some((line) => line.includes(`options.agents["meta"]`))).toBe(true)
@@ -287,7 +290,12 @@ describe("opencode-orchestrator-uni", () => {
     expect(reference.path).toBe(DOCS_DIRECTORY)
     expect(reference.description).toContain("call-mechanics.md")
     const docs = await readdir(DOCS_DIRECTORY)
-    for (const name of ["call-mechanics.md", "process-ready-loop.md", "root-runbook.md", "instruction-other-session.md"]) {
+    for (const name of [
+      "call-mechanics.md",
+      "process-ready-loop.md",
+      "root-runbook.md",
+      "instruction-other-session.md",
+    ]) {
       expect(docs, name).toContain(name)
     }
   })

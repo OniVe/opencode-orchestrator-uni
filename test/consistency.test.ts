@@ -16,9 +16,9 @@ import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
-import { AGENTS_DIRECTORY, DOCS_DIRECTORY, PLUGIN_ID } from "../index"
-import { SCHEMAS_DIRECTORY, TOOL_IDS, loadSchemas } from "../lib/tools"
 import { schemaForRole } from "../eval/derive"
+import { AGENTS_DIRECTORY, DOCS_DIRECTORY, PLUGIN_ID } from "../index"
+import { loadSchemas, SCHEMAS_DIRECTORY, TOOL_IDS } from "../lib/tools"
 
 const KIT_ROOT = path.resolve(AGENTS_DIRECTORY, "..")
 const BASELINES_DIRECTORY = path.join(KIT_ROOT, "eval", "baselines")

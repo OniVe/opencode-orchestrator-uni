@@ -120,9 +120,7 @@ function deepEqual(left: unknown, right: unknown): boolean {
   if (isPlainObject(left) && isPlainObject(right)) {
     const leftKeys = Object.keys(left)
     if (leftKeys.length !== Object.keys(right).length) return false
-    return leftKeys.every(
-      (key) => Object.prototype.hasOwnProperty.call(right, key) && deepEqual(left[key], right[key]),
-    )
+    return leftKeys.every((key) => Object.hasOwn(right, key) && deepEqual(left[key], right[key]))
   }
   return false
 }
@@ -149,7 +147,10 @@ export function validateValue(value: unknown, node: JsonSchemaNode, path: string
     return [{ path, message: `expected const ${brief(node.const)}, got ${brief(value)}` }]
   }
   if (node.enum !== undefined && !Array.isArray(value) && !node.enum.some((candidate) => deepEqual(value, candidate))) {
-    errors.push({ path, message: `expected one of ${node.enum.map((item) => brief(item)).join(", ")}, got ${brief(value)}` })
+    errors.push({
+      path,
+      message: `expected one of ${node.enum.map((item) => brief(item)).join(", ")}, got ${brief(value)}`,
+    })
   }
   if (Array.isArray(value)) {
     if (typeof node.minItems === "number" && value.length < node.minItems) {
@@ -165,18 +166,18 @@ export function validateValue(value: unknown, node: JsonSchemaNode, path: string
   if (isPlainObject(value)) {
     const properties = node.properties ?? {}
     for (const key of node.required ?? []) {
-      if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      if (!Object.hasOwn(value, key)) {
         errors.push({ path: `${path}.${key}`, message: "required field is missing" })
       }
     }
     for (const [key, child] of Object.entries(properties)) {
-      if (Object.prototype.hasOwnProperty.call(value, key)) {
+      if (Object.hasOwn(value, key)) {
         errors.push(...validateValue(value[key], child, `${path}.${key}`))
       }
     }
     if (node.additionalProperties === false) {
       for (const key of Object.keys(value)) {
-        if (!Object.prototype.hasOwnProperty.call(properties, key)) {
+        if (!Object.hasOwn(properties, key)) {
           errors.push({ path: `${path}.${key}`, message: "additional property is not allowed" })
         }
       }
@@ -225,7 +226,9 @@ export function extractJsonBlocks(text: string): string[] {
  */
 export function selectReportJson(
   text: string,
-): { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly code: "E_NO_JSON" | "E_PARSE"; readonly message: string } {
+):
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly code: "E_NO_JSON" | "E_PARSE"; readonly message: string } {
   const blocks = extractJsonBlocks(text)
   if (blocks.length === 0) {
     return { ok: false, code: "E_NO_JSON", message: "no fenced ```json block found in the report" }
@@ -285,8 +288,10 @@ const EMPIRIC_SELF_CHECK_ITEMS = 19
 export function reportWarnings(schemaId: string, value: unknown): string[] {
   const warnings: string[] = []
   if (!isPlainObject(value)) return warnings
-  const list = (key: string): readonly unknown[] => (Array.isArray(value[key]) ? (value[key] as readonly unknown[]) : [])
-  const strings = (key: string): readonly string[] => list(key).filter((item): item is string => typeof item === "string")
+  const list = (key: string): readonly unknown[] =>
+    Array.isArray(value[key]) ? (value[key] as readonly unknown[]) : []
+  const strings = (key: string): readonly string[] =>
+    list(key).filter((item): item is string => typeof item === "string")
 
   if (schemaId === "empiric/v1") {
     list("claims_checked").forEach((item, index) => {

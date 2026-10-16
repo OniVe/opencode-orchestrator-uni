@@ -40,8 +40,8 @@
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import matter from "gray-matter"
 import type { Agent, Model, Plugin, Reference } from "@opencode/plugin"
+import matter from "gray-matter"
 import { registerAuditTools } from "./lib/tools"
 
 /** Stable plugin id: diagnostics, enable/disable selectors, storage scope. */
@@ -247,7 +247,7 @@ async function loadKitAgents(): Promise<KitAgent[]> {
   return agents
 }
 
-async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | void> {
+async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   const models = readModelOptions(ctx.options)
   const agents = await loadKitAgents()
   const defined = new Set(agents.map((agent) => agent.id))

@@ -7,15 +7,14 @@ import { describe, expect, test } from "bun:test"
 import {
   checkReport,
   extractJsonBlocks,
+  type JsonSchemaNode,
   reportWarnings,
   selectReportJson,
   validateValue,
-  type JsonSchemaNode,
 } from "../lib/report-schema"
 import { loadSchemas } from "../lib/tools"
 
 const schemas = await loadSchemas()
-const meta = schemas.get("meta/v1") as JsonSchemaNode
 
 function fence(body: string): string {
   return ["# Отчёт", "", "```json", body, "```", ""].join("\n")
@@ -37,7 +36,7 @@ describe("fenced block extraction", () => {
   })
 
   test("handles CRLF and an unterminated block", () => {
-    const text = "```json\r\n{ }\r\n```\r\n```json\r\n{ \"a\": 1 }"
+    const text = '```json\r\n{ }\r\n```\r\n```json\r\n{ "a": 1 }'
     expect(extractJsonBlocks(text)).toEqual(["{ }"])
   })
 
@@ -114,10 +113,7 @@ describe("schema selection", () => {
     const value = { ...META_OK, verdict: "maybe", reports: [{ report: "x", result: "pass" }] }
     const report = checkReport(fence(JSON.stringify(value)), { schemas })
     expect(report.code).toBe("E_INVALID")
-    expect(report.errors.map((error) => error.path).sort()).toEqual([
-      "$.reports[0].violations",
-      "$.verdict",
-    ])
+    expect(report.errors.map((error) => error.path).sort()).toEqual(["$.reports[0].violations", "$.verdict"])
     expect(report.warnings).toEqual([])
   })
 })
@@ -134,7 +130,11 @@ describe("validator subset", () => {
     expect(validateValue("a", { const: "a" })).toEqual([])
     expect(validateValue("b", { const: "a" })).toEqual([{ path: "$", message: 'expected const "a", got "b"' }])
     expect(validateValue("x", { enum: ["a", "b"] })[0]?.message).toContain("expected one of")
-    const prism: JsonSchemaNode = { type: ["string", "array"], enum: ["a", "b"], items: { type: "string", enum: ["a", "b"] } }
+    const prism: JsonSchemaNode = {
+      type: ["string", "array"],
+      enum: ["a", "b"],
+      items: { type: "string", enum: ["a", "b"] },
+    }
     expect(validateValue("a", prism)).toEqual([])
     expect(validateValue(["a", "b"], prism)).toEqual([])
     expect(validateValue(["a", "c"], prism)).toEqual([{ path: "$[1]", message: 'expected one of "a", "b", got "c"' }])
@@ -147,7 +147,11 @@ describe("validator subset", () => {
       required: ["a"],
       properties: {
         a: { type: "string" },
-        b: { type: "array", minItems: 2, items: { type: "object", required: ["c"], properties: { c: { type: "number" } } } },
+        b: {
+          type: "array",
+          minItems: 2,
+          items: { type: "object", required: ["c"], properties: { c: { type: "number" } } },
+        },
       },
     }
     expect(validateValue({ a: "x" }, schema)).toEqual([])
@@ -160,7 +164,9 @@ describe("validator subset", () => {
     const open: JsonSchemaNode = { type: "object", properties: { a: { type: "string" } } }
     expect(validateValue({ a: "x", z: 1 }, open)).toEqual([])
     const closed: JsonSchemaNode = { ...open, additionalProperties: false }
-    expect(validateValue({ a: "x", z: 1 }, closed)).toEqual([{ path: "$.z", message: "additional property is not allowed" }])
+    expect(validateValue({ a: "x", z: 1 }, closed)).toEqual([
+      { path: "$.z", message: "additional property is not allowed" },
+    ])
   })
 
   test("a wrong node type stops descending", () => {
@@ -204,7 +210,9 @@ describe("prompt-level warnings", () => {
   })
 
   test("invariant: uncovered mandatory lines", () => {
-    const warnings = reportWarnings("invariant/v1", { lines_checked: [{ line: "ОТМЕНА/ТАЙМАУТЫ", status: "checked", note: "n" }] })
+    const warnings = reportWarnings("invariant/v1", {
+      lines_checked: [{ line: "ОТМЕНА/ТАЙМАУТЫ", status: "checked", note: "n" }],
+    })
     expect(warnings).toHaveLength(8)
     expect(warnings.every((line) => line.startsWith("lines_checked:"))).toBe(true)
     const covered = reportWarnings("invariant/v1", {

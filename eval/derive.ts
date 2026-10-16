@@ -7,8 +7,8 @@
  * текстам отчётов без живых LLM-вызовов, и обе стороны не расходятся.
  */
 
-import { checkReport, selectReportJson, type JsonSchemaNode } from "../lib/report-schema"
-import { matchDefects, normalizeReport, unmatchedFindings, type CaseManifest, type DefectMatch } from "./matcher"
+import { checkReport, type JsonSchemaNode, selectReportJson } from "../lib/report-schema"
+import { type CaseManifest, type DefectMatch, matchDefects, normalizeReport, unmatchedFindings } from "./matcher"
 
 export interface DerivedMetrics {
   reportValid: boolean

@@ -36,7 +36,14 @@ export interface ReportTotals {
 
 export interface ReportComparison {
   readonly baseline: string
-  readonly rows: readonly { readonly case: string; readonly role: string; readonly valid: string; readonly recall: string; readonly recallMajor: string; readonly cost: string }[]
+  readonly rows: readonly {
+    readonly case: string
+    readonly role: string
+    readonly valid: string
+    readonly recall: string
+    readonly recallMajor: string
+    readonly cost: string
+  }[]
 }
 
 export interface ReportSummary {
@@ -111,7 +118,10 @@ export function renderRunReport(summary: ReportSummary): string {
     "",
     "## Ключевые тексты",
     "",
-    ...runs.map((run) => `- \`${run.reportPath ?? "—"}\` — ${run.case} / ${run.role}${run.sessionID ? ` (session \`${run.sessionID}\`)` : ""}`),
+    ...runs.map(
+      (run) =>
+        `- \`${run.reportPath ?? "—"}\` — ${run.case} / ${run.role}${run.sessionID ? ` (session \`${run.sessionID}\`)` : ""}`,
+    ),
     "",
   ]
   if (summary.comparison) {

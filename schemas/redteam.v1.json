@@ -2,15 +2,7 @@
   "id": "redteam/v1",
   "schema": {
     "type": "object",
-    "required": [
-      "schema",
-      "verdict",
-      "closing_list",
-      "coverage_gaps",
-      "claims_attacked",
-      "findings",
-      "not_verified"
-    ],
+    "required": ["schema", "verdict", "closing_list", "coverage_gaps", "claims_attacked", "findings", "not_verified"],
     "properties": {
       "schema": { "type": "string", "const": "redteam/v1" },
       "verdict": { "type": "string", "enum": ["ready", "not_ready"] },

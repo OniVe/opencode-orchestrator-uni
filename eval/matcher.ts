@@ -85,7 +85,7 @@ export function matchDefects(normalizedText: string, defects: readonly DefectKey
       const hits: string[] = []
       for (const pattern of alternatives) {
         const re = safeRegExp(pattern)
-        if (re && re.test(normalizedText)) hits.push(pattern)
+        if (re?.test(normalizedText)) hits.push(pattern)
       }
       return { patterns: [...alternatives], hits }
     })

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * eval/recompute.ts — offline-пере-матчинг сохранённого прогона.
  *
@@ -20,13 +21,13 @@
  *   bun eval/recompute.ts eval/results/20261015-122730
  */
 
-import { readdir, readFile, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
+import { readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadSchemas } from "../lib/tools"
 import { deriveMetrics, schemaForRole } from "./derive"
-import { renderRunReport, runTableRows, mdTable, type ReportSummary } from "./report"
 import type { CaseManifest } from "./matcher"
+import { mdTable, type ReportSummary, renderRunReport, runTableRows } from "./report"
 
 const EVAL_DIR = import.meta.dir
 const CASES_DIR = path.join(EVAL_DIR, "cases")
@@ -169,7 +170,13 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log("\n" + mdTable(["кейс", "роль", "валиден", "cost", "время", "recall", "MAJOR", "непокрыто"], runTableRows(summary.runs).map((r) => [r[0]!, r[1]!, r[2]!, r[3]!, r[4]!, r[5]!, r[6]!, r[7]!])))
+  console.log(
+    "\n" +
+      mdTable(
+        ["кейс", "роль", "валиден", "cost", "время", "recall", "MAJOR", "непокрыто"],
+        runTableRows(summary.runs).map((r) => [r[0]!, r[1]!, r[2]!, r[3]!, r[4]!, r[5]!, r[6]!, r[7]!]),
+      ),
+  )
 }
 
 await main()

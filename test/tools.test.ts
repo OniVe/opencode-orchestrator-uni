@@ -4,8 +4,7 @@
  * editors as observed in OpenCode 2.0.x).
  */
 import { describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { TOOL_IDS, TOOL_NAMESPACE } from "../lib/tools"
 import { createHarness, runTool } from "./support/harness"
@@ -28,7 +27,7 @@ describe("audit tool registration", () => {
     const harness = await createHarness()
     const inputs = Object.fromEntries([...harness.tools].map(([id, tool]) => [id, tool.input]))
     expect(Object.keys(inputs).sort()).toEqual([...TOOL_IDS].sort())
-    expect(inputs["orch_uni_validate_report"]).toEqual({
+    expect(inputs.orch_uni_validate_report).toEqual({
       type: "object",
       properties: {
         text: { type: "string", description: expect.any(String) },
@@ -36,8 +35,8 @@ describe("audit tool registration", () => {
         schema: { type: "string", description: expect.any(String) },
       },
     })
-    expect((inputs["orch_uni_snapshot"] as { required: string[] }).required).toEqual(["path"])
-    expect((inputs["orch_uni_sessions"] as { properties: Record<string, unknown> }).properties).toEqual({
+    expect((inputs.orch_uni_snapshot as { required: string[] }).required).toEqual(["path"])
+    expect((inputs.orch_uni_sessions as { properties: Record<string, unknown> }).properties).toEqual({
       sessionID: { type: "string", description: expect.any(String) },
       recursive: { type: "boolean", description: expect.any(String) },
     })
@@ -100,7 +99,7 @@ describe("orch_uni_validate_report", () => {
       schema: "empiric/v1",
     })
     expect(result).toMatchObject({ valid: true, schema: "empiric/v1" })
-    expect(result.warnings.join(" ")).toContain("self_check: items 2")
+    expect((result.warnings as string[]).join(" ")).toContain("self_check: items 2")
     harness.dispose()
   })
 
@@ -111,7 +110,10 @@ describe("orch_uni_validate_report", () => {
       ok: false,
       code: "E_INPUT",
     })
-    expect(await runTool(harness, "orch_uni_validate_report", { text: 42 })).toMatchObject({ ok: false, code: "E_INPUT" })
+    expect(await runTool(harness, "orch_uni_validate_report", { text: 42 })).toMatchObject({
+      ok: false,
+      code: "E_INPUT",
+    })
     expect(await runTool(harness, "orch_uni_validate_report", { path: "nope/missing.md" })).toMatchObject({
       ok: false,
       code: "E_INPUT",
@@ -125,11 +127,15 @@ describe("orch_uni_validate_report", () => {
 
   test("delegates schema failures to their own codes", async () => {
     const harness = await createHarness()
-    expect(await runTool(harness, "orch_uni_validate_report", { text: "нет json" })).toMatchObject({ code: "E_NO_JSON" })
+    expect(await runTool(harness, "orch_uni_validate_report", { text: "нет json" })).toMatchObject({
+      code: "E_NO_JSON",
+    })
     expect(await runTool(harness, "orch_uni_validate_report", { text: "```json\n{nope\n```" })).toMatchObject({
       code: "E_PARSE",
     })
-    expect(await runTool(harness, "orch_uni_validate_report", { text: '```json\n{"schema":"x/v1"}\n```' })).toMatchObject({
+    expect(
+      await runTool(harness, "orch_uni_validate_report", { text: '```json\n{"schema":"x/v1"}\n```' }),
+    ).toMatchObject({
       code: "E_UNKNOWN_SCHEMA",
     })
     harness.dispose()
@@ -146,12 +152,12 @@ describe("orch_uni_snapshot", () => {
     await writeFile(path.join(root, "b.txt"), "b", "utf8")
     const result = await runTool(harness, "orch_uni_snapshot", { path: "state", exclude: ["b.txt"] })
     expect(result.root).toBe(root)
-    expect(result.files.map((file: { path: string }) => file.path)).toEqual(["a.txt"])
+    expect((result.files as { path: string }[]).map((file) => file.path)).toEqual(["a.txt"])
     expect(result.aggregate).toMatch(/^[0-9a-f]{64}$/)
     const repeat = await runTool(harness, "orch_uni_snapshot", { path: "state", exclude: ["b.txt"] })
     expect(repeat.aggregate).toBe(result.aggregate)
     const withoutExtras = await runTool(harness, "orch_uni_snapshot", { path: root })
-    expect(withoutExtras.files.map((file: { path: string }) => file.path)).toEqual(["a.txt", "b.txt"])
+    expect((withoutExtras.files as { path: string }[]).map((file) => file.path)).toEqual(["a.txt", "b.txt"])
     expect(withoutExtras.aggregate).not.toBe(result.aggregate)
     harness.dispose()
   })
@@ -179,10 +185,7 @@ describe("orch_uni_sessions", () => {
         list: async ({ parentID }: { parentID?: string }) => ({
           data:
             parentID === "ses_parent"
-              ? [
-                  child("ses_child_a", "ses_parent", "empiric"),
-                  { ...child("ses_child_b", "ses_parent", "invariant") },
-                ]
+              ? [child("ses_child_a", "ses_parent", "empiric"), { ...child("ses_child_b", "ses_parent", "invariant") }]
               : [{ ...child("ses_grand", "ses_child_a", "explore") }],
           cursor: {},
         }),
@@ -190,7 +193,7 @@ describe("orch_uni_sessions", () => {
     })
     const direct = await runTool(harness, "orch_uni_sessions", { sessionID: "ses_parent" })
     expect(direct).toMatchObject({ source: "session.list", authoritative: true, count: 2 })
-    expect(direct.sessions[0]).toEqual({
+    expect((direct.sessions as unknown[])[0]).toEqual({
       sessionID: "ses_child_a",
       parentID: "ses_parent",
       agent: "empiric",
@@ -204,7 +207,7 @@ describe("orch_uni_sessions", () => {
     })
     const deep = await runTool(harness, "orch_uni_sessions", { sessionID: "ses_parent", recursive: true })
     expect(deep.count).toBe(3)
-    expect(deep.sessions.map((session: { sessionID: string }) => session.sessionID)).toEqual([
+    expect((deep.sessions as { sessionID: string }[]).map((session) => session.sessionID)).toEqual([
       "ses_child_a",
       "ses_child_b",
       "ses_grand",
@@ -220,7 +223,10 @@ describe("orch_uni_sessions", () => {
     const result = await runTool(harness, "orch_uni_sessions", { sessionID: "ses_parent", recursive: true })
     expect(result).toMatchObject({ source: "session.index", authoritative: false, count: 2 })
     expect(result.limitations).toHaveLength(3)
-    expect(result.sessions.map((session: { sessionID: string }) => session.sessionID)).toEqual(["ses_child_a", "ses_grand"])
+    expect((result.sessions as { sessionID: string }[]).map((session) => session.sessionID)).toEqual([
+      "ses_child_a",
+      "ses_grand",
+    ])
     harness.dispose()
   })
 
@@ -250,7 +256,10 @@ describe("orch_uni_sessions", () => {
       },
     })
     expect(await runTool(harness, "orch_uni_sessions", { sessionID: "" })).toMatchObject({ ok: false, code: "E_INPUT" })
-    expect(await runTool(harness, "orch_uni_sessions", { recursive: "yes" })).toMatchObject({ ok: false, code: "E_INPUT" })
+    expect(await runTool(harness, "orch_uni_sessions", { recursive: "yes" })).toMatchObject({
+      ok: false,
+      code: "E_INPUT",
+    })
     expect(await runTool(harness, "orch_uni_sessions", { sessionID: "ses_missing" })).toMatchObject({
       ok: false,
       code: "E_NOT_FOUND",
@@ -277,7 +286,7 @@ describe("session index", () => {
     // A second plugin instance in the same process loads the persisted index.
     const reloaded = await createHarness({ storage: harness.storage })
     const result = await runTool(reloaded, "orch_uni_sessions", { sessionID: "ses_parent" })
-    expect(result.sessions.map((session: { sessionID: string }) => session.sessionID)).toEqual(["ses_child2"])
+    expect((result.sessions as { sessionID: string }[]).map((session) => session.sessionID)).toEqual(["ses_child2"])
     reloaded.dispose()
     harness.dispose()
   })
@@ -290,7 +299,7 @@ describe("shipped files", () => {
     expect(JSON.parse(source).id).toBe("meta/v1")
     const result = await runTool(harness, "orch_uni_validate_report", { text: '```json\n{"schema":"meta/v1"}\n```' })
     expect(result.code).toBe("E_INVALID")
-    expect(result.errors.map((error: { path: string }) => error.path)).toContain("$.verdict")
+    expect((result.errors as { path: string }[]).map((error) => error.path)).toContain("$.verdict")
     harness.dispose()
   })
 })

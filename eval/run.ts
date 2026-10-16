@@ -17,15 +17,15 @@
  */
 
 import { Database } from "bun:sqlite"
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { existsSync, readFileSync } from "node:fs"
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
-import { checkReport, selectReportJson, type JsonSchemaNode } from "../lib/report-schema"
+import type { JsonSchemaNode } from "../lib/report-schema"
 import { loadSchemas } from "../lib/tools"
-import { type CaseManifest, type MatchResult } from "./matcher"
 import { deriveMetrics } from "./derive"
-import { mdTable, renderRunReport, runTableRows, type ReportComparison, type ReportSummary } from "./report"
+import type { CaseManifest, MatchResult } from "./matcher"
+import { mdTable, type ReportComparison, type ReportSummary, renderRunReport, runTableRows } from "./report"
 
 const EVAL_DIR = import.meta.dir
 const CASES_DIR = path.join(EVAL_DIR, "cases")
@@ -47,8 +47,7 @@ function resolveOpencodeBin(): string {
   const override = process.env.EVAL_OPENCODE_BIN
   if (override) return override
 
-  const isExe = (candidate: string): boolean =>
-    candidate.toLowerCase().endsWith(".exe") && existsSync(candidate)
+  const isExe = (candidate: string): boolean => candidate.toLowerCase().endsWith(".exe") && existsSync(candidate)
 
   const fromShim = (shim: string): string | undefined => {
     const dir = path.dirname(shim)
@@ -135,10 +134,16 @@ function parseArgs(argv: string[]): Options {
     }
     switch (arg) {
       case "--cases":
-        options.cases = next().split(",").map((s) => s.trim()).filter(Boolean)
+        options.cases = next()
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
         break
       case "--roles":
-        options.roles = next().split(",").map((s) => s.trim()).filter(Boolean)
+        options.roles = next()
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
         break
       case "--model": {
         const value = next()
@@ -381,7 +386,12 @@ async function main(): Promise<void> {
   }
 
   const ts = timestamp()
-  const runRoot = path.join(process.env.TEMP ?? process.env.TMP ?? path.join(homedir(), "AppData", "Local", "Temp"), "opencode", "eval-runs", ts)
+  const runRoot = path.join(
+    process.env.TEMP ?? process.env.TMP ?? path.join(homedir(), "AppData", "Local", "Temp"),
+    "opencode",
+    "eval-runs",
+    ts,
+  )
   const tag = options.tag || `run-${ts}`
 
   console.log(`eval/run.ts — стенд аудиторского контура`)
@@ -394,7 +404,6 @@ async function main(): Promise<void> {
   console.log(`  песочницы:  ${runRoot}`)
   console.log(`  результатов: ${path.join(RESULTS_DIR, ts)}`)
   for (const id of caseIds) {
-    const manifest = manifests.get(id)!
     for (const role of options.roles) {
       const sandbox = path.join(runRoot, id, role)
       console.log(`  план: ${id} × ${role} → ${sandbox}`)
@@ -413,7 +422,9 @@ async function main(): Promise<void> {
   try {
     db = new Database(DB_PATH, { readonly: true })
   } catch (error) {
-    console.error(`предупреждение: не удалось открыть ${DB_PATH} readonly (${(error as Error).message}); стоимость не будет собрана`)
+    console.error(
+      `предупреждение: не удалось открыть ${DB_PATH} readonly (${(error as Error).message}); стоимость не будет собрана`,
+    )
   }
 
   const records: RunRecord[] = []
@@ -455,7 +466,9 @@ async function main(): Promise<void> {
     for (const role of options.roles) {
       if (totals.costUsd >= options.limitUsd) {
         totals.budgetExceeded = true
-        console.warn(`бюджет $${options.limitUsd} исчерпан (потрачено $${totals.costUsd.toFixed(4)}); прогоны остановлены`)
+        console.warn(
+          `бюджет $${options.limitUsd} исчерпан (потрачено $${totals.costUsd.toFixed(4)}); прогоны остановлены`,
+        )
         break
       }
       const model = modelFor(options, role)
@@ -502,7 +515,8 @@ async function main(): Promise<void> {
         const stdoutPath = path.join(resultsDir, `${id}.${role}.raw.jsonl`)
         await writeFile(stdoutPath, run.stdout, "utf8")
         record.stdoutPath = path.basename(stdoutPath)
-        if (run.stderr.trim()) console.warn(`  stderr (${run.stderr.length} символов): ${run.stderr.trim().slice(0, 400)}`)
+        if (run.stderr.trim())
+          console.warn(`  stderr (${run.stderr.length} символов): ${run.stderr.trim().slice(0, 400)}`)
 
         const parsed = parseEventStream(run.stdout)
         record.sessionID = parsed.sessionID
@@ -532,7 +546,7 @@ async function main(): Promise<void> {
           `  session=${record.sessionID ?? "?"} exit=${record.exitCode} ${record.timedOut ? "TIMEOUT " : ""}` +
             `valid=${record.reportValid}${record.validationCode ? ` (${record.validationCode})` : ""} ` +
             `recall=${record.recall} major=${record.recallMajor} ` +
-            `cost=${record.costUsd === null ? "?" : "$" + record.costUsd.toFixed(4)} ${Math.round(record.durationMs / 1000)}s`,
+            `cost=${record.costUsd === null ? "?" : `$${record.costUsd.toFixed(4)}`} ${Math.round(record.durationMs / 1000)}s`,
         )
         if (record.missed.length > 0) console.log(`  не покрыто: ${record.missed.join(", ")}`)
       } catch (error) {
@@ -551,7 +565,9 @@ async function main(): Promise<void> {
   // Сравнение с базой
   let comparison: ReportComparison | null = null
   if (options.baseline) {
-    const baselinePath = path.isAbsolute(options.baseline) ? options.baseline : path.join(EVAL_DIR, "..", options.baseline)
+    const baselinePath = path.isAbsolute(options.baseline)
+      ? options.baseline
+      : path.join(EVAL_DIR, "..", options.baseline)
     if (existsSync(baselinePath)) {
       const previous = JSON.parse(await readFile(baselinePath, "utf8")) as ReportSummary
       const index = new Map(previous.runs.map((run) => [`${run.case}::${run.role}`, run]))
@@ -559,7 +575,8 @@ async function main(): Promise<void> {
         baseline: options.baseline,
         rows: records.map((run) => {
           const old = index.get(`${run.case}::${run.role}`)
-          const flip = (a: boolean, b: boolean): string => (a === b ? (b ? "valid" : "invalid") : `${b ? "valid" : "invalid"} → ${a ? "valid" : "invalid"}`)
+          const flip = (a: boolean, b: boolean): string =>
+            a === b ? (b ? "valid" : "invalid") : `${b ? "valid" : "invalid"} → ${a ? "valid" : "invalid"}`
           const delta = (a: number, b: number): string => (a === b ? `${a}` : `${b} → ${a}`)
           return {
             case: run.case,
@@ -567,7 +584,9 @@ async function main(): Promise<void> {
             valid: old ? flip(run.reportValid, old.reportValid) : "new",
             recall: old ? delta(run.recall, old.recall) : `${run.recall}`,
             recallMajor: old ? delta(run.recallMajor, old.recallMajor) : `${run.recallMajor}`,
-            cost: old ? delta(Number(run.costUsd?.toFixed(4) ?? 0), Number(old.costUsd?.toFixed(4) ?? 0)) : `$${run.costUsd?.toFixed(4) ?? "?"}`,
+            cost: old
+              ? delta(Number(run.costUsd?.toFixed(4) ?? 0), Number(old.costUsd?.toFixed(4) ?? 0))
+              : `$${run.costUsd?.toFixed(4) ?? "?"}`,
           }
         }),
       }
@@ -591,8 +610,15 @@ async function main(): Promise<void> {
 
   const rows = runTableRows(records)
   console.log("\n--- итог ---")
-  console.log(mdTable(["кейс", "роль", "валиден", "cost", "время", "recall", "MAJOR", "непокрыто"], rows.map((r) => [r[0]!, r[1]!, r[2]!, r[3]!, r[4]!, r[5]!, r[6]!, r[7]!])))
-  console.log(`\nсуммарно: $${totals.costUsd.toFixed(4)} / лимит $${options.limitUsd}; токены in=${totals.tokensInput} out=${totals.tokensOutput}`)
+  console.log(
+    mdTable(
+      ["кейс", "роль", "валиден", "cost", "время", "recall", "MAJOR", "непокрыто"],
+      rows.map((r) => [r[0]!, r[1]!, r[2]!, r[3]!, r[4]!, r[5]!, r[6]!, r[7]!]),
+    ),
+  )
+  console.log(
+    `\nсуммарно: $${totals.costUsd.toFixed(4)} / лимит $${options.limitUsd}; токены in=${totals.tokensInput} out=${totals.tokensOutput}`,
+  )
   console.log(`результаты: ${resultsDir}`)
 
   db?.close()

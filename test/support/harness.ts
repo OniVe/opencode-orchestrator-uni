@@ -10,7 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
-import { SESSION_INDEX_KEY, registerAuditTools } from "../../lib/tools"
+import { registerAuditTools, SESSION_INDEX_KEY } from "../../lib/tools"
 
 export interface ToolRecord {
   readonly name: string
@@ -185,9 +185,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 }
 
 /** Call a tool executor and parse its JSON body. */
-export async function runTool(harness: Harness, name: string, input: unknown): Promise<Record<string, any>> {
+export async function runTool(harness: Harness, name: string, input: unknown): Promise<Record<string, unknown>> {
   const tool = harness.tools.get(name)
   if (tool === undefined) throw new Error(`tool ${name} is not registered`)
   const result = await tool.execute(input, { signal: new AbortController().signal, sessionID: harness.sessionID })
-  return JSON.parse(result.content) as Record<string, any>
+  return JSON.parse(result.content) as Record<string, unknown>
 }

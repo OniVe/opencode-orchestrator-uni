@@ -12,9 +12,9 @@
 
 import { readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { checkReport, selectReportJson, type JsonSchemaNode } from "../lib/report-schema"
+import { checkReport, type JsonSchemaNode, selectReportJson } from "../lib/report-schema"
 import { loadSchemas } from "../lib/tools"
-import { matchDefects, normalizeReport, unmatchedFindings, type CaseManifest } from "./matcher"
+import { type CaseManifest, matchDefects, normalizeReport, unmatchedFindings } from "./matcher"
 
 const EVAL_DIR = import.meta.dir
 const MANIFEST = path.join(EVAL_DIR, "cases", "csv-split-line", "manifest.json")
@@ -27,7 +27,11 @@ const REPORTS: { role: string; file: string }[] = [
 ]
 
 function mdTable(headers: string[], rows: string[][]): string {
-  return [`| ${headers.join(" | ")} |`, `| ${headers.map(() => "---").join(" | ")} |`, ...rows.map((r) => `| ${r.join(" | ")} |`)].join("\n")
+  return [
+    `| ${headers.join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((r) => `| ${r.join(" | ")} |`),
+  ].join("\n")
 }
 
 async function main(): Promise<void> {
@@ -61,20 +65,32 @@ async function main(): Promise<void> {
       `${match.recall} (MAJOR ${match.recallMajor})`,
       String(unmatched.length),
     ])
-    lines.push(`## ${item.role}`, "", "```", JSON.stringify(
-      {
-        valid: validation.valid,
-        code: validation.code ?? null,
-        warnings: validation.warnings,
-        matched: match.matched,
-        missed: match.missed,
-        recall: match.recall,
-        recallMajor: match.recallMajor,
-        detail: match.details.map((d) => ({ id: d.id, severity: d.severity, matched: d.matched, hits: d.groups.map((g) => g.hits) })),
-      },
-      null,
-      2,
-    ), "```", "")
+    lines.push(
+      `## ${item.role}`,
+      "",
+      "```",
+      JSON.stringify(
+        {
+          valid: validation.valid,
+          code: validation.code ?? null,
+          warnings: validation.warnings,
+          matched: match.matched,
+          missed: match.missed,
+          recall: match.recall,
+          recallMajor: match.recallMajor,
+          detail: match.details.map((d) => ({
+            id: d.id,
+            severity: d.severity,
+            matched: d.matched,
+            hits: d.groups.map((g) => g.hits),
+          })),
+        },
+        null,
+        2,
+      ),
+      "```",
+      "",
+    )
   }
 
   lines.splice(10, 0, mdTable(["роль", "отчёт валиден", "найдено", "не найдено", "recall", "кандидатов"], table), "")

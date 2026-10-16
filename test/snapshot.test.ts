@@ -10,13 +10,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
-  DEFAULT_EXCLUDE,
   aggregateLines,
   aggregateOf,
+  DEFAULT_EXCLUDE,
   isExcluded,
   isSnapshotFailure,
-  snapshotTree,
   type SnapshotFile,
+  snapshotTree,
 } from "../lib/snapshot"
 
 async function makeTree(files: Record<string, string>): Promise<string> {

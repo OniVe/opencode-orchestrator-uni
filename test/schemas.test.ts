@@ -11,14 +11,9 @@
 import { describe, expect, test } from "bun:test"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
-import {
-  SUPPORTED_KEYWORDS,
-  collectSchemaKeywords,
-  validateValue,
-  type JsonSchemaNode,
-} from "../lib/report-schema"
-import { SCHEMAS_DIRECTORY, loadSchemas } from "../lib/tools"
 import { AGENTS_DIRECTORY } from "../index"
+import { collectSchemaKeywords, type JsonSchemaNode, SUPPORTED_KEYWORDS, validateValue } from "../lib/report-schema"
+import { loadSchemas, SCHEMAS_DIRECTORY } from "../lib/tools"
 
 /** `name.vN.json` → `name/vN` (the ids shipped with the kit). */
 const EXPECTED_SCHEMAS = [
@@ -106,13 +101,6 @@ function promptTemplates(markdown: string): Record<string, unknown>[] {
   return found
 }
 
-/** The SGR template of an agent prompt: the last JSON object naming a schema. */
-function reportTemplate(markdown: string): Record<string, unknown> {
-  const template = promptTemplates(markdown).at(-1)
-  if (template === undefined) throw new Error("no JSON SGR template found in the agent prompt")
-  return template
-}
-
 /** Replace every enum placeholder with its first alternative. */
 function concretize(template: Record<string, unknown>): Record<string, unknown> {
   let value: unknown = template
@@ -161,8 +149,7 @@ describe("shipped report schemas", () => {
 })
 
 describe("agent prompts and schemas agree", () => {
-  const agents = () =>
-    readdir(AGENTS_DIRECTORY).then((names) => names.filter((name) => name.endsWith(".md")).sort())
+  const agents = () => readdir(AGENTS_DIRECTORY).then((names) => names.filter((name) => name.endsWith(".md")).sort())
 
   /** Agent id → SGR template found in its prompt (only report-producing agents have one). */
   async function templatesByAgent(): Promise<Map<string, Record<string, unknown>>> {
