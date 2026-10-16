@@ -16,7 +16,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
-import { AGENTS_DIRECTORY, DOCS_DIRECTORY } from "../index"
+import { AGENTS_DIRECTORY, DOCS_DIRECTORY, PLUGIN_ID } from "../index"
 import { SCHEMAS_DIRECTORY, TOOL_IDS, loadSchemas } from "../lib/tools"
 import { schemaForRole } from "../eval/derive"
 
@@ -45,6 +45,27 @@ const FORBIDDEN_PROSE: readonly { readonly what: string; readonly pattern: RegEx
   { what: "old tool id", pattern: /\baudit[-_](?:validate[-_]report|snapshot|sessions)\b/g },
   { what: "prefixed agent reference", pattern: /(agent|--agent)[^A-Za-z]{0,6}audit-/g },
 ]
+
+/**
+ * Package identity (the `P1` rename): the published name (`package.json` →
+ * `package-lock.json` → tarball name → install command) and the plugin id
+ * (`index.ts` → `[orchestrator.uni]` diagnostics prefix → storage/selector scope).
+ * The two are independent literals — neither is derivable from the other, and the
+ * consumer meets them before any code — so a half-rename of one carrier used to stay
+ * green (`test/plugin.test.ts` only compares `plugin.id` with that same source
+ * constant). Each carrier is pinned to the literal below.
+ */
+const PACKAGE_NAME = "opencode-orchestrator-uni"
+const PLUGIN_ID_LITERAL = "orchestrator.uni"
+
+/**
+ * Pre-`P1` identity tokens. One pattern covers both reported forms: the bare
+ * `orchestrator-agents` (the former plugin id) and the packaged
+ * `opencode-orchestrator-agents`, which contains the bare form as a `-`-delimited
+ * token. Word boundaries keep lookalikes such as `orchestrator-agents-kit` inside
+ * the class as well (conservative).
+ */
+const OLD_IDENTITY_TOKENS = /\b(?:opencode-)?orchestrator-agents\b/g
 
 /** Effective tool id in prose: `orch_uni_<name>`, plus the documented wildcard `orch_uni_*`. */
 const TOOL_TOKEN = /\borch_uni_[A-Za-z0-9_*]+/g
@@ -204,5 +225,46 @@ describe("eval baselines agree with the agent roles", () => {
         expect(run.reportSchema, `${file}: "${role}" pins ${base}/v1`).toBe(schemaForRole(role))
       }
     }
+  })
+})
+
+/**
+ * Scan surface = the shipping surface declared at the top of this file
+ * (`SHIPPED_DIRECTORIES` + `SHIPPED_FILES`); the dev contour (`eval/`, `test/`, `lab/`)
+ * stays out, and `package-lock.json` is out of the token scan because it is not
+ * shipped — its `name` is pinned explicitly instead.
+ */
+describe("package identity", () => {
+  test("package.json and package-lock.json pin the published name", async () => {
+    const manifest = JSON.parse(await readFile(path.join(KIT_ROOT, "package.json"), "utf8")) as { name?: unknown }
+    expect(manifest.name, "package.json name").toBe(PACKAGE_NAME)
+    const lock = JSON.parse(await readFile(path.join(KIT_ROOT, "package-lock.json"), "utf8")) as {
+      name?: unknown
+      packages?: Record<string, { name?: unknown } | undefined>
+    }
+    expect(lock.name, "package-lock.json name").toBe(PACKAGE_NAME)
+    expect(lock.packages?.[""]?.name, 'package-lock.json packages[""].name').toBe(PACKAGE_NAME)
+  })
+
+  test("PLUGIN_ID and README carry both identities", async () => {
+    expect(PLUGIN_ID, "index.ts PLUGIN_ID").toBe(PLUGIN_ID_LITERAL)
+    const readme = await readFile(path.join(KIT_ROOT, "README.md"), "utf8")
+    expect(readme.includes(PACKAGE_NAME), `README.md names the package ${PACKAGE_NAME}`).toBe(true)
+    expect(readme.includes(PLUGIN_ID_LITERAL), `README.md names the plugin id ${PLUGIN_ID_LITERAL}`).toBe(true)
+  })
+
+  test("the shipping surface carries no pre-rename identity token", async () => {
+    const files = [...(await Promise.all(SHIPPED_DIRECTORIES.map(surfaceFiles))).flat(), ...SHIPPED_FILES]
+    expect(files.length).toBeGreaterThan(5)
+    const violations: string[] = []
+    for (const file of files) {
+      const relative = path.relative(KIT_ROOT, file)
+      const content = await readFile(file, "utf8")
+      for (const match of content.matchAll(OLD_IDENTITY_TOKENS)) {
+        const line = content.slice(0, match.index).split("\n").length
+        violations.push(`${relative}:${line}: pre-rename identity token "${match[0]}"`)
+      }
+    }
+    expect(violations).toEqual([])
   })
 })
