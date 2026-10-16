@@ -1,11 +1,16 @@
 /**
  * Guards identifier consistency across the kit: agent ids ↔ SGR schemas ↔ schema
- * file names ↔ tool ids ↔ prose in `agents/`, `docs/` and `README.md`.
+ * file names ↔ tool ids ↔ prose on the shipping surface (`README.md`, `docs/**`,
+ * `agents/**`, `lib/**`, `schemas/**`, `index.ts`, `package.json`).
  *
  * The drift this closes: after the `audit-`/`audit_` rename nothing tied the
  * shipping ids together, so stale agent references in the process documents, a
  * renamed schema file, or a namespaced tool name lost in prose all passed the
  * suite untouched (`test/schemas.test.ts` only checks the schema set itself).
+ *
+ * Surface rule: `eval/`, `test/` and `lab/` are the dev contour and stay out of
+ * the scan — they may legitimately mention historical labels (`audit-*` roles in
+ * the legacy results/baselines of `eval/`, temp prefixes in `test/`).
  */
 import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
@@ -17,7 +22,19 @@ import { schemaForRole } from "../eval/derive"
 
 const KIT_ROOT = path.resolve(AGENTS_DIRECTORY, "..")
 const BASELINES_DIRECTORY = path.join(KIT_ROOT, "eval", "baselines")
-const README_PATH = path.join(KIT_ROOT, "README.md")
+
+/** Shipping surface: scanned recursively plus the standalone entry/metadata files. */
+const SHIPPED_DIRECTORIES = [
+  DOCS_DIRECTORY,
+  AGENTS_DIRECTORY,
+  path.join(KIT_ROOT, "lib"),
+  path.join(KIT_ROOT, "schemas"),
+]
+const SHIPPED_FILES = [
+  path.join(KIT_ROOT, "README.md"),
+  path.join(KIT_ROOT, "index.ts"),
+  path.join(KIT_ROOT, "package.json"),
+]
 
 /** Agents that audit nothing themselves: they ship no SGR template (and no schema). */
 const SCHEMA_LESS_AGENTS = new Set(["orchestrator"])
@@ -25,12 +42,12 @@ const SCHEMA_LESS_AGENTS = new Set(["orchestrator"])
 /** Stale identifiers that must not survive a rename: agent ids, tool ids, references. */
 const FORBIDDEN_PROSE: readonly { readonly what: string; readonly pattern: RegExp }[] = [
   { what: "old agent id", pattern: /\baudit-(?:factcheck|empiric|invariant|arbiter|meta|redteam)\b/g },
-  { what: "old tool id", pattern: /\baudit_(?:validate_report|snapshot|sessions)\b/g },
+  { what: "old tool id", pattern: /\baudit[-_](?:validate_report|snapshot|sessions)\b/g },
   { what: "prefixed agent reference", pattern: /(agent|--agent)[^A-Za-z]{0,6}audit-/g },
 ]
 
 /** Effective tool id in prose: `orch_uni_<name>`, plus the documented wildcard `orch_uni_*`. */
-const TOOL_TOKEN = /\borch_uni_[a-z_*]+/g
+const TOOL_TOKEN = /\borch_uni_[A-Za-z0-9_*]+/g
 const TOOL_TOKEN_ALLOWED = new Set([...TOOL_IDS, "orch_uni_*"])
 
 /** Every JSON object in markdown that carries a string `schema` field. */
@@ -85,14 +102,14 @@ async function templatesByAgent(): Promise<Map<string, Record<string, unknown>>>
   return templates
 }
 
-/** Markdown under `docs/` (recursively) plus `agents/*.md` and the root `README.md`. */
-async function proseFiles(directory: string): Promise<string[]> {
+/** Every file under the shipping directories (recursively). */
+async function surfaceFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true })
   const files: string[] = []
   for (const entry of entries) {
     const full = path.join(directory, entry.name)
-    if (entry.isDirectory()) files.push(...(await proseFiles(full)))
-    else if (entry.isFile() && entry.name.endsWith(".md")) files.push(full)
+    if (entry.isDirectory()) files.push(...(await surfaceFiles(full)))
+    else if (entry.isFile()) files.push(full)
   }
   return files
 }
@@ -125,8 +142,8 @@ describe("agent ids and their report schemas", () => {
 })
 
 describe("prose references only existing agent and tool ids", () => {
-  test("no stale ids or renamed tool references in agents/, docs/ and README.md", async () => {
-    const files = [...(await proseFiles(DOCS_DIRECTORY)), ...(await proseFiles(AGENTS_DIRECTORY)), README_PATH]
+  test("no stale ids or renamed tool references on the shipping surface", async () => {
+    const files = [...(await Promise.all(SHIPPED_DIRECTORIES.map(surfaceFiles))).flat(), ...SHIPPED_FILES]
     expect(files.length).toBeGreaterThan(5)
     const violations: string[] = []
     for (const file of files) {
@@ -163,8 +180,20 @@ describe("eval baselines agree with the agent roles", () => {
     expect(files.length).toBeGreaterThan(0)
     for (const file of files) {
       const baseline = JSON.parse(await readFile(path.join(BASELINES_DIRECTORY, file), "utf8")) as {
+        provenance?: unknown
         runs?: { role?: unknown; reportSchema?: unknown }[]
       }
+      const provenance = baseline.provenance
+      // Content contract of a baseline: the top-level `provenance` marker (origin of a
+      // relabeled/historical run) is mandatory and its `relabeled` flag is a boolean.
+      // `reportPath`/`stdoutPath` are historical artifact names — their local existence
+      // is deliberately not required (see `eval/README.md`).
+      expect(typeof provenance, `${file} carries a provenance object`).toBe("object")
+      expect(provenance !== null && !Array.isArray(provenance), `${file}: provenance is a plain object`).toBe(true)
+      expect(
+        typeof (provenance as { relabeled?: unknown } | null)?.relabeled,
+        `${file}: provenance.relabeled is a boolean`,
+      ).toBe("boolean")
       const runs = baseline.runs ?? []
       expect(runs.length, `${file} records runs`).toBeGreaterThan(0)
       for (const run of runs) {

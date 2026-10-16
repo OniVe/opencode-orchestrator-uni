@@ -354,6 +354,21 @@ function parseEventStream(stdout: string): {
   return { sessionID, text: texts.join("\n").trim(), errors, events }
 }
 
+/**
+ * Итог прогона с полем `provenance` сразу после `startedAt` — позиция и форма
+ * совпадают с тремя историческими базлайнами (контракт см. `eval/README.md`).
+ * `relabeled: false` — свежий прогон, метки ролей не перелейблены.
+ */
+function withProvenance(summary: ReportSummary, provenance: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(summary as unknown as Record<string, unknown>)) {
+    out[key] = value
+    if (key === "startedAt") out.provenance = provenance
+  }
+  if (!("provenance" in out)) out.provenance = provenance
+  return out
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(Bun.argv.slice(2))
   const manifests = await loadManifests()
@@ -558,7 +573,12 @@ async function main(): Promise<void> {
       }
     } else {
       await mkdir(path.dirname(baselinePath), { recursive: true })
-      await writeFile(baselinePath, JSON.stringify(summary, null, 2), "utf8")
+      const provenance = {
+        relabeled: false,
+        origin: `fresh run ${ts} (tag ${tag})`,
+        source: `eval/results/${ts}/`,
+      }
+      await writeFile(baselinePath, JSON.stringify(withProvenance(summary, provenance), null, 2), "utf8")
       console.log(`baseline сохранён: ${baselinePath}`)
     }
   }

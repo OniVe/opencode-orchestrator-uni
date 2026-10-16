@@ -272,8 +272,8 @@ npm run typecheck    # tsc --noEmit
 npm test             # bun test ./test/ (hermetic: registration, tools, validator, snapshot, prompt↔schema + identifier guards)
 ```
 
-`npm test` scans only `./test/` — the shipped suite (72 tests before the
-identifier guards, 5 files). A bare `bun test` from the repository root is red by
+`npm test` scans only `./test/` — the shipped suite (77 tests in 6 files, up from
+72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`
 and the scratch drafts under `lab/`. Use `npm test` [F5].
