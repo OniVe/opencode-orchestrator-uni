@@ -11,12 +11,12 @@
       "parse-duration"
     ],
     "roles": [
-      "audit-empiric",
-      "audit-invariant"
+      "empiric",
+      "invariant"
     ],
     "models": {
-      "audit-empiric": "deepseek/deepseek-flash",
-      "audit-invariant": "deepseek/deepseek-flash"
+      "empiric": "deepseek/deepseek-flash",
+      "invariant": "deepseek/deepseek-flash"
     },
     "limitUsd": 0.26,
     "baseline": "eval/baselines/deepseek-2026-10-15.json"
@@ -33,9 +33,9 @@
   "runs": [
     {
       "case": "csv-split-line",
-      "role": "audit-empiric",
+      "role": "empiric",
       "model": "deepseek/deepseek-flash",
-      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\csv-split-line\\audit-empiric",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\csv-split-line\\empiric",
       "sessionID": "ses_ec22f4917ffeimxXwMdXeD7Xkn",
       "startedAt": "2026-10-15T04:27:30.758Z",
       "durationMs": 219880,
@@ -48,7 +48,7 @@
         "cacheRead": 412928
       },
       "reportValid": true,
-      "reportSchema": "audit-empiric/v1",
+      "reportSchema": "empiric/v1",
       "validationCode": null,
       "validationErrors": [],
       "warnings": [],
@@ -198,15 +198,15 @@
           "text": "M6 \u0001 NIT \u0001 README.md:5 \u0001 Заявка 'поведение полностью соответствует спецификации' ложна при ведущем валидном подмножестве примеров спецификации. \u0001 bun run spec-examples.ts → rc=0: 'SPEC EXAMPLES: 6 pass / 4 fail (of 10)'. \u0001 Переписать заявку, указав реальный охват (неквотированные и просто закавыченные поля, без валидации), либо привести реализацию к spec.md."
         }
       ],
-      "stdoutPath": "csv-split-line.audit-empiric.raw.jsonl",
-      "reportPath": "csv-split-line.audit-empiric.md",
+      "stdoutPath": "csv-split-line.empiric.raw.jsonl",
+      "reportPath": "csv-split-line.empiric.md",
       "error": null
     },
     {
       "case": "csv-split-line",
-      "role": "audit-invariant",
+      "role": "invariant",
       "model": "deepseek/deepseek-flash",
-      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\csv-split-line\\audit-invariant",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\csv-split-line\\invariant",
       "sessionID": "ses_ec22bee01ffe59u6EFHbgk7Buf",
       "startedAt": "2026-10-15T04:31:10.659Z",
       "durationMs": 236196,
@@ -219,7 +219,7 @@
         "cacheRead": 433152
       },
       "reportValid": true,
-      "reportSchema": "audit-invariant/v1",
+      "reportSchema": "invariant/v1",
       "validationCode": null,
       "validationErrors": [],
       "warnings": [],
@@ -361,15 +361,15 @@
         }
       ],
       "unmatched": [],
-      "stdoutPath": "csv-split-line.audit-invariant.raw.jsonl",
-      "reportPath": "csv-split-line.audit-invariant.md",
+      "stdoutPath": "csv-split-line.invariant.raw.jsonl",
+      "reportPath": "csv-split-line.invariant.md",
       "error": null
     },
     {
       "case": "normalize-tags",
-      "role": "audit-empiric",
+      "role": "empiric",
       "model": "deepseek/deepseek-flash",
-      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\normalize-tags\\audit-empiric",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\normalize-tags\\empiric",
       "sessionID": "ses_ec2285364ffeILoolJZ9QWP3eY",
       "startedAt": "2026-10-15T04:35:06.869Z",
       "durationMs": 474569,
@@ -382,7 +382,7 @@
         "cacheRead": 316544
       },
       "reportValid": true,
-      "reportSchema": "audit-empiric/v1",
+      "reportSchema": "empiric/v1",
       "validationCode": null,
       "validationErrors": [],
       "warnings": [],
@@ -568,15 +568,15 @@
         }
       ],
       "unmatched": [],
-      "stdoutPath": "normalize-tags.audit-empiric.raw.jsonl",
-      "reportPath": "normalize-tags.audit-empiric.md",
+      "stdoutPath": "normalize-tags.empiric.raw.jsonl",
+      "reportPath": "normalize-tags.empiric.md",
       "error": null
     },
     {
       "case": "normalize-tags",
-      "role": "audit-invariant",
+      "role": "invariant",
       "model": "deepseek/deepseek-flash",
-      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\normalize-tags\\audit-invariant",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\normalize-tags\\invariant",
       "sessionID": "ses_ec221156affeFZ5RkqEraslk6D",
       "startedAt": "2026-10-15T04:43:01.461Z",
       "durationMs": 156063,
@@ -589,7 +589,7 @@
         "cacheRead": 237056
       },
       "reportValid": true,
-      "reportSchema": "audit-invariant/v1",
+      "reportSchema": "invariant/v1",
       "validationCode": null,
       "validationErrors": [],
       "warnings": [],
@@ -773,15 +773,15 @@
         }
       ],
       "unmatched": [],
-      "stdoutPath": "normalize-tags.audit-invariant.raw.jsonl",
-      "reportPath": "normalize-tags.audit-invariant.md",
+      "stdoutPath": "normalize-tags.invariant.raw.jsonl",
+      "reportPath": "normalize-tags.invariant.md",
       "error": null
     },
     {
       "case": "parse-duration",
-      "role": "audit-empiric",
+      "role": "empiric",
       "model": "deepseek/deepseek-flash",
-      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\parse-duration\\audit-empiric",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\parse-duration\\empiric",
       "sessionID": "ses_ec21eb3ccffe00oU5P5h37U2cZ",
       "startedAt": "2026-10-15T04:45:37.535Z",
       "durationMs": 444384,
@@ -794,7 +794,7 @@
         "cacheRead": 488320
       },
       "reportValid": true,
-      "reportSchema": "audit-empiric/v1",
+      "reportSchema": "empiric/v1",
       "validationCode": null,
       "validationErrors": [],
       "warnings": [],
@@ -1033,15 +1033,15 @@
         }
       ],
       "unmatched": [],
-      "stdoutPath": "parse-duration.audit-empiric.raw.jsonl",
-      "reportPath": "parse-duration.audit-empiric.md",
+      "stdoutPath": "parse-duration.empiric.raw.jsonl",
+      "reportPath": "parse-duration.empiric.md",
       "error": null
     },
     {
       "case": "parse-duration",
-      "role": "audit-invariant",
+      "role": "invariant",
       "model": "deepseek/deepseek-flash",
-      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\parse-duration\\audit-invariant",
+      "sandbox": "<TEMP>\\opencode\\eval-runs\\20261015-122730\\parse-duration\\invariant",
       "sessionID": "ses_ec217ebbfffe6bunccueKznWUQ",
       "startedAt": "2026-10-15T04:53:01.942Z",
       "durationMs": 346877,
@@ -1054,7 +1054,7 @@
         "cacheRead": 267648
       },
       "reportValid": true,
-      "reportSchema": "audit-invariant/v1",
+      "reportSchema": "invariant/v1",
       "validationCode": null,
       "validationErrors": [],
       "warnings": [],
@@ -1294,8 +1294,8 @@
         }
       ],
       "unmatched": [],
-      "stdoutPath": "parse-duration.audit-invariant.raw.jsonl",
-      "reportPath": "parse-duration.audit-invariant.md",
+      "stdoutPath": "parse-duration.invariant.raw.jsonl",
+      "reportPath": "parse-duration.invariant.md",
       "error": null
     }
   ]

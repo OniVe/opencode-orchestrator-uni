@@ -1,10 +1,10 @@
 {
-  "id": "audit-factcheck/v1",
+  "id": "factcheck/v1",
   "schema": {
     "type": "object",
     "required": ["schema", "verdict", "claims", "promises"],
     "properties": {
-      "schema": { "type": "string", "const": "audit-factcheck/v1" },
+      "schema": { "type": "string", "const": "factcheck/v1" },
       "verdict": { "type": "string", "enum": ["ok", "stale", "already_done"] },
       "claims": {
         "type": "array",

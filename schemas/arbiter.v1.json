@@ -1,10 +1,10 @@
 {
-  "id": "audit-arbiter/v1",
+  "id": "arbiter/v1",
   "schema": {
     "type": "object",
     "required": ["schema", "verdict", "disputes", "not_verified"],
     "properties": {
-      "schema": { "type": "string", "const": "audit-arbiter/v1" },
+      "schema": { "type": "string", "const": "arbiter/v1" },
       "verdict": { "type": "string", "enum": ["resolved", "partially"] },
       "disputes": {
         "type": "array",

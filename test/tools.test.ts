@@ -59,7 +59,7 @@ describe("audit_validate_report", () => {
       "Резюме.",
       "```json",
       JSON.stringify({
-        schema: "audit-meta/v1",
+        schema: "meta/v1",
         verdict: "pass",
         gate: "pass",
         closing_list: [],
@@ -69,7 +69,7 @@ describe("audit_validate_report", () => {
       "```",
     ].join("\n")
     const result = await runTool(harness, "audit_validate_report", { text })
-    expect(result).toEqual({ valid: true, schema: "audit-meta/v1", errors: [], warnings: [] })
+    expect(result).toEqual({ valid: true, schema: "meta/v1", errors: [], warnings: [] })
     harness.dispose()
   })
 
@@ -82,7 +82,7 @@ describe("audit_validate_report", () => {
       [
         "```json",
         JSON.stringify({
-          schema: "audit-empiric/v1",
+          schema: "empiric/v1",
           verdict: "ready",
           claims_checked: [{ claim: "c", method: "run", rc: "0", result: "r", verdict: "confirmed" }],
           modes_measured: [],
@@ -97,9 +97,9 @@ describe("audit_validate_report", () => {
     )
     const result = await runTool(harness, "audit_validate_report", {
       path: "reports/empiric.md",
-      schema: "audit-empiric/v1",
+      schema: "empiric/v1",
     })
-    expect(result).toMatchObject({ valid: true, schema: "audit-empiric/v1" })
+    expect(result).toMatchObject({ valid: true, schema: "empiric/v1" })
     expect(result.warnings.join(" ")).toContain("self_check: items 2")
     harness.dispose()
   })
@@ -180,8 +180,8 @@ describe("audit_sessions", () => {
           data:
             parentID === "ses_parent"
               ? [
-                  child("ses_child_a", "ses_parent", "audit-empiric"),
-                  { ...child("ses_child_b", "ses_parent", "audit-invariant") },
+                  child("ses_child_a", "ses_parent", "empiric"),
+                  { ...child("ses_child_b", "ses_parent", "invariant") },
                 ]
               : [{ ...child("ses_grand", "ses_child_a", "explore") }],
           cursor: {},
@@ -193,7 +193,7 @@ describe("audit_sessions", () => {
     expect(direct.sessions[0]).toEqual({
       sessionID: "ses_child_a",
       parentID: "ses_parent",
-      agent: "audit-empiric",
+      agent: "empiric",
       model: "deepseek/deepseek-flash",
       variant: "default",
       title: "child",
@@ -214,7 +214,7 @@ describe("audit_sessions", () => {
 
   test("falls back to the persisted session index and flags it as non-authoritative", async () => {
     const harness = await createHarness({
-      sessions: { get: async ({ sessionID }: { sessionID: string }) => child(sessionID, "ses_parent", "audit-meta") },
+      sessions: { get: async ({ sessionID }: { sessionID: string }) => child(sessionID, "ses_parent", "meta") },
       index: { ses_child_a: "ses_parent", ses_grand: "ses_child_a" },
     })
     const result = await runTool(harness, "audit_sessions", { sessionID: "ses_parent", recursive: true })
@@ -244,7 +244,7 @@ describe("audit_sessions", () => {
       sessions: {
         get: async ({ sessionID }: { sessionID: string }) => {
           if (sessionID === "ses_missing") throw new Error("session not found")
-          return child(sessionID, "ses_parent", "audit-meta")
+          return child(sessionID, "ses_parent", "meta")
         },
         list: async () => ({ data: [], cursor: {} }),
       },
@@ -286,9 +286,9 @@ describe("session index", () => {
 describe("shipped files", () => {
   test("the schemas directory is what the tools validate against", async () => {
     const harness = await createHarness()
-    const source = await readFile(new URL("../schemas/audit-meta.v1.json", import.meta.url), "utf8")
-    expect(JSON.parse(source).id).toBe("audit-meta/v1")
-    const result = await runTool(harness, "audit_validate_report", { text: '```json\n{"schema":"audit-meta/v1"}\n```' })
+    const source = await readFile(new URL("../schemas/meta.v1.json", import.meta.url), "utf8")
+    expect(JSON.parse(source).id).toBe("meta/v1")
+    const result = await runTool(harness, "audit_validate_report", { text: '```json\n{"schema":"meta/v1"}\n```' })
     expect(result.code).toBe("E_INVALID")
     expect(result.errors.map((error: { path: string }) => error.path)).toContain("$.verdict")
     harness.dispose()

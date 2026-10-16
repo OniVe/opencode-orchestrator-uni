@@ -89,7 +89,7 @@ const VALIDATE_REPORT_INPUT = {
   properties: {
     text: { type: "string", description: "Report text to validate (use either text or path)." },
     path: { type: "string", description: "Path to a report file, absolute or relative to the location directory." },
-    schema: { type: "string", description: 'Expected schema id, e.g. "audit-empiric/v1".' },
+    schema: { type: "string", description: 'Expected schema id, e.g. "empiric/v1".' },
   },
 } as const
 

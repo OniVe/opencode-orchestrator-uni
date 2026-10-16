@@ -32,7 +32,7 @@ permissions:
 
 ФОРМАТ (SGR): резюме + json:
 {
-  "schema": "audit-redteam/v1",
+  "schema": "redteam/v1",
   "verdict": "ready | not_ready",
   "closing_list": ["<id находки, обязательной к закрытию для pass>"],
   "coverage_gaps": ["<что не удалось проверить/атаковать>"],

@@ -2,3 +2,4 @@ node_modules/
 lab/
 eval/results/
 *.tgz
+desktop.ini

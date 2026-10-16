@@ -22,8 +22,8 @@ const FIXTURES = path.join(EVAL_DIR, "dev-notes", "fixtures")
 const OUT = path.join(EVAL_DIR, "dev-notes", "matcher-selfcheck.md")
 
 const REPORTS: { role: string; file: string }[] = [
-  { role: "audit-empiric", file: "csv-baseline-empiric.md" },
-  { role: "audit-invariant", file: "csv-baseline-invariant.md" },
+  { role: "empiric", file: "csv-baseline-empiric.md" },
+  { role: "invariant", file: "csv-baseline-invariant.md" },
 ]
 
 function mdTable(headers: string[], rows: string[][]): string {

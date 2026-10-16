@@ -5,8 +5,8 @@ ships the **orchestrator agent kit**:
 
 - `orchestrator` — the root orchestrator (primary agent) with the audit loop as a
   built-in mode;
-- read-only audit subagents — `audit-factcheck`, `audit-empiric`, `audit-invariant`,
-  `audit-arbiter`, `audit-meta`, `audit-redteam`;
+- read-only audit subagents — `factcheck`, `empiric`, `invariant`,
+  `arbiter`, `meta`, `redteam`;
 - `fix-runner` — the only writing subagent (applies the "to close" list);
 - the kit's process documents, exposed as the **`audit-kit` reference**
   (`call-mechanics.md`, `process-ready-loop.md`, `root-runbook.md`,
@@ -26,12 +26,12 @@ On setup (`ctx.agent.transform` / `ctx.reference.transform`):
 | Agent             | Mode       | Role                                                     |
 | ----------------- | ---------- | -------------------------------------------------------- |
 | `orchestrator`    | `primary`  | Root orchestrator; audit loop as a built-in mode         |
-| `audit-factcheck` | `subagent` | Read-only: staleness pre-pass (already done / outdated)  |
-| `audit-empiric`   | `subagent` | Read-only: reproductions, measurements, first sources    |
-| `audit-invariant` | `subagent` | Read-only: states, cancels, races, hostile input         |
-| `audit-arbiter`   | `subagent` | Read-only: resolves disputed findings only               |
-| `audit-meta`      | `subagent` | Read-only: meta-audit of reports (pass/fail gate)        |
-| `audit-redteam`   | `subagent` | Read-only: acceptance red team (release gates)           |
+| `factcheck` | `subagent` | Read-only: staleness pre-pass (already done / outdated)  |
+| `empiric`   | `subagent` | Read-only: reproductions, measurements, first sources    |
+| `invariant` | `subagent` | Read-only: states, cancels, races, hostile input         |
+| `arbiter`   | `subagent` | Read-only: resolves disputed findings only               |
+| `meta`      | `subagent` | Read-only: meta-audit of reports (pass/fail gate)        |
+| `redteam`   | `subagent` | Read-only: acceptance red team (release gates)           |
 | `fix-runner`      | `subagent` | Writer: applies the fix list and proves closure          |
 
 All agents ship **without a model**: models are deployment configuration (see
@@ -64,7 +64,7 @@ or the configuration.
 ```jsonc
 { "text": "<report text>" }              // or
 { "path": "reports/empiric-r1.md",        // absolute, or relative to the location directory
-  "schema": "audit-empiric/v1" }          // optional: expected schema id
+  "schema": "empiric/v1" }          // optional: expected schema id
 ```
 
 Provide exactly one of `text` / `path`. The tool takes the **last** fenced ```` ```json ````
@@ -72,8 +72,8 @@ block that parses and carries a `schema` field, resolves the schema by that fiel
 validates the document.
 
 ```jsonc
-{ "valid": true, "schema": "audit-empiric/v1", "errors": [], "warnings": [ … ] }
-{ "valid": false, "code": "E_INVALID", "schema": "audit-empiric/v1",
+{ "valid": true, "schema": "empiric/v1", "errors": [], "warnings": [ … ] }
+{ "valid": false, "code": "E_INVALID", "schema": "empiric/v1",
   "errors": [ { "path": "$.findings[0].severity", "message": "expected one of …" } ],
   "warnings": [] }
 ```
@@ -89,11 +89,11 @@ validates the document.
 | `E_ABORTED`         | The session was stopped while reading the report                 |
 
 `warnings` carry the prompt rules a *structurally valid* report can still miss — things
-JSON Schema cannot express: a missing `rc` on an `audit-empiric` claim whose `method` is
-`run|measure|compare_base`, `self_check` items other than 1–19, an `audit-invariant`
+JSON Schema cannot express: a missing `rc` on an `empiric` claim whose `method` is
+`run|measure|compare_base`, `self_check` items other than 1–19, an `invariant`
 invariant that is `violated` without a counterexample, an uncovered mandatory
-`lines_checked` line, `audit-meta`'s `verdict` diverging from its `gate`, and
-`audit-redteam`'s `closing_list`/`verdict` invariants.
+`lines_checked` line, `meta`'s `verdict` diverging from its `gate`, and
+`redteam`'s `closing_list`/`verdict` invariants.
 
 The seven schemas ship as `schemas/*.json` and are derived **strictly** from the SGR
 sections of `agents/*.md`, which stay the source of truth: the test suite parses every
@@ -175,7 +175,7 @@ Agent definitions carry no `model`; models are configured on the plugin entry in
         "model": "deepseek/deepseek-flash",
         // Per-agent overrides (id -> string or expanded form).
         "agents": {
-          "audit-meta": "deepseek/deepseek-reasoner",
+          "meta": "deepseek/deepseek-reasoner",
           "fix-runner": { "providerID": "anthropic", "model": "claude-sonnet-4-5", "variant": "high" }
         }
       }

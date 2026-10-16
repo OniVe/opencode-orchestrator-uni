@@ -1,10 +1,10 @@
-# SGR: audit-empiric — model-bundle baseline
+# SGR: empiric — model-bundle baseline
 
 Сессия: `ses_ec55a05dcffe9s461meihsEj4u`. Ревизия: sha256 4/4 совпали с ref/case-hashes.txt.
 
 ```json
 {
-  "schema": "audit-empiric/v1",
+  "schema": "empiric/v1",
   "verdict": "not_ready",
   "claims_checked": [
     {"claim": "Файлы/хэши кейса", "method": "compare_base", "rc": "0", "result": "HASHES_MATCH_4/4", "verdict": "confirmed"},

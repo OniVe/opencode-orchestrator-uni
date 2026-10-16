@@ -1,5 +1,5 @@
 {
-  "id": "audit-empiric/v1",
+  "id": "empiric/v1",
   "schema": {
     "type": "object",
     "required": [
@@ -13,7 +13,7 @@
       "not_verified"
     ],
     "properties": {
-      "schema": { "type": "string", "const": "audit-empiric/v1" },
+      "schema": { "type": "string", "const": "empiric/v1" },
       "verdict": { "type": "string", "enum": ["ready", "not_ready"] },
       "claims_checked": {
         "type": "array",

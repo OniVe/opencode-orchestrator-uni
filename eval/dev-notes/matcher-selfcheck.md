@@ -7,11 +7,11 @@
 Ожидание: матчер должен вытащить оба MAJOR (K1, K2) у обеих ролей — это калибровка сигнатур
 (исторические отчёты — эталон стиля живых ролей).
 
-## audit-empiric
+## empiric
 | роль | отчёт валиден | найдено | не найдено | recall | кандидатов |
 | --- | --- | --- | --- | --- | --- |
-| audit-empiric | нет (E_PARSE) | K1, K2, K4 | K3 | 0.75 (MAJOR 1) | 0 |
-| audit-invariant | нет (E_INVALID) | K1, K2, K3, K4 | — | 1 (MAJOR 1) | 0 |
+| empiric | нет (E_PARSE) | K1, K2, K4 | K3 | 0.75 (MAJOR 1) | 0 |
+| invariant | нет (E_INVALID) | K1, K2, K3, K4 | — | 1 (MAJOR 1) | 0 |
 
 
 ```
@@ -91,7 +91,7 @@
 }
 ```
 
-## audit-invariant
+## invariant
 
 ```
 {

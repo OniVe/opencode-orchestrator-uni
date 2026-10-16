@@ -1,10 +1,10 @@
-# SGR: audit-invariant — model-bundle baseline
+# SGR: invariant — model-bundle baseline
 
 Сессия: `ses_ec55a05dbffeJ2Jx0ewr04IMBr`. Ревизия: sha256 4/4 совпали с ref/case-hashes.txt.
 
 ```json
 {
-  "schema": "audit-invariant/v1",
+  "schema": "invariant/v1",
   "verdict": "not_ready",
   "invariants": [
     {"id": "I1", "statement": "невалидный ввод → Error", "verdict": "violated", "counterexample": "'\"a', '\"a\"x', 'ab\"cd' → значения без исключения; grep throw = 0"},

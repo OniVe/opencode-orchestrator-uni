@@ -19,14 +19,14 @@ permissions:
 4. Непроверенное не подано как факт.
 5. JSON-блок структурно валиден.
 6. В своде (`reports/summary-<id>.md`) для каждой MAJOR-находки есть статус верификации (`verdict` + `verifier_role`), и refuted-список присутствует (даже пустой). Нет свода или нет статусов верификации MAJOR — **fail**.
-7. Downstream-проверки исполнителей: у `audit-empiric` поле `rc` присутствует для каждого элемента `claims_checked` с `method=run|measure|compare_base`; у `fix-runner` в `results` предъявлен `proof` (FAIL на откате / PASS после) либо обоснованное `not_applicable`.
+7. Downstream-проверки исполнителей: у `empiric` поле `rc` присутствует для каждого элемента `claims_checked` с `method=run|measure|compare_base`; у `fix-runner` в `results` предъявлен `proof` (FAIL на откате / PASS после) либо обоснованное `not_applicable`.
 8. Призма арбитра: в каждом элементе `disputes` присутствует `prism` (строка из enum `reproducibility|contract|falsification|not_applicable` либо массив таких строк); отсутствие или значение вне enum — несоответствие (`schema_invalid`).
 9. Стенд у `fix-runner`: в отчёте есть поле `stand` с выводами baseline и after (итог/rc) — либо обоснованное `unavailable` (стенд неприменим вне кита без явного включения в границы вызова); отсутствие поля или пустое значение без обоснования — несоответствие.
 Выборочно перепроверь 1–2 самых важных утверждения отчёта (если возможно без мутаций).
 
 ФОРМАТ (SGR): резюме + json:
 {
-  "schema": "audit-meta/v1",
+  "schema": "meta/v1",
   "verdict": "pass | fail",
   "gate": "pass | fail",
   "closing_list": ["<id находки ред-тима, обязательной к закрытию; пусто = закрыто>"],

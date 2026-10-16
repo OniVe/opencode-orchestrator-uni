@@ -37,7 +37,7 @@ permissions:
 
 РЕЖИМ ВЕРИФИКАТОРА (Фаза 3.5):
 Если сессия возобновляется с находкой контрагента (MAJOR любой роли; для ворот — сессия противоположной роли по указанию root) — ты верификатор, а не автор находки. В этом режиме верни ТОЛЬКО объект:
-{"id": "<id находки>", "verifier_role": "audit-empiric", "verdict": "confirmed|refuted|partial|unavailable", "evidence": "<команда → сырой результат>"}
+{"id": "<id находки>", "verifier_role": "empiric", "verdict": "confirmed|refuted|partial|unavailable", "evidence": "<команда → сырой результат>"}
 Полный SGR в этом режиме не требуется (резюме + JSON по схеме роли — только для полного аудита). Правила: проверяй своим воспроизведением на ревизии состояния из промпта; не воспроизвелось или нет окружения для проверки → `unavailable`; сбой/таймаут → `unavailable`; `partial`/`unavailable` = «не подтверждена» (fail-closed), в правки находка не идёт; спор — арбитру (Фаза 4). Совпадает с механикой Фазы 3.5 (`call-mechanics.md` §3). Для ресурсных/производительностных находок подтверждение — сравнением шкалированием (n и 2n, до/после), а не единичным замером.
 
 ФОРМАТ ФИНАЛЬНОГО ОТЧЁТА (SGR — обязателен):
@@ -45,7 +45,7 @@ permissions:
 2) Один блок ```json по схеме (без комментариев в JSON, поля обязательны):
 
 {
-  "schema": "audit-empiric/v1",
+  "schema": "empiric/v1",
   "verdict": "ready | not_ready",
   "claims_checked": [
     {"claim": "...", "method": "run|measure|source|compare_base", "command": "...", "rc": "<код возврата; обязателен для run|measure|compare_base, n/a — только для source>", "result": "...", "verdict": "confirmed|refuted|unverifiable"}

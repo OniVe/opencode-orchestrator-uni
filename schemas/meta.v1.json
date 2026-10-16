@@ -1,10 +1,10 @@
 {
-  "id": "audit-meta/v1",
+  "id": "meta/v1",
   "schema": {
     "type": "object",
     "required": ["schema", "verdict", "gate", "closing_list", "coverage_gaps", "reports"],
     "properties": {
-      "schema": { "type": "string", "const": "audit-meta/v1" },
+      "schema": { "type": "string", "const": "meta/v1" },
       "verdict": { "type": "string", "enum": ["pass", "fail"] },
       "gate": { "type": "string", "enum": ["pass", "fail"] },
       "closing_list": { "type": "array", "items": { "type": "string" } },

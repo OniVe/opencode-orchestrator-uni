@@ -2,9 +2,9 @@
  * opencode-orchestrator-agents — native OpenCode V2 package plugin.
  *
  * Registers the orchestrator agent kit — the `orchestrator` root agent with the
- * built-in audit loop, the read-only audit subagents (`audit-factcheck`,
- * `audit-empiric`, `audit-invariant`, `audit-arbiter`, `audit-meta`,
- * `audit-redteam`), and the `fix-runner` writer subagent — plus the `audit-kit`
+ * built-in audit loop, the read-only audit subagents (`factcheck`,
+ * `empiric`, `invariant`, `arbiter`, `meta`,
+ * `redteam`), and the `fix-runner` writer subagent — plus the `audit-kit`
  * document reference and the kit's deterministic `audit_*` tools, straight from
  * this TypeScript entry point.
  *

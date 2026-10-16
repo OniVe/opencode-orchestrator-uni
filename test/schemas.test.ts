@@ -22,12 +22,12 @@ import { AGENTS_DIRECTORY } from "../index"
 
 /** `name.vN.json` → `name/vN` (the ids shipped with the kit). */
 const EXPECTED_SCHEMAS = [
-  "audit-factcheck/v1",
-  "audit-empiric/v1",
-  "audit-invariant/v1",
-  "audit-arbiter/v1",
-  "audit-meta/v1",
-  "audit-redteam/v1",
+  "factcheck/v1",
+  "empiric/v1",
+  "invariant/v1",
+  "arbiter/v1",
+  "meta/v1",
+  "redteam/v1",
   "fix-runner/v1",
 ]
 

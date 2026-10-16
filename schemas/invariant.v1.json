@@ -1,10 +1,10 @@
 {
-  "id": "audit-invariant/v1",
+  "id": "invariant/v1",
   "schema": {
     "type": "object",
     "required": ["schema", "verdict", "invariants", "lines_checked", "findings", "contract_gaps", "not_verified"],
     "properties": {
-      "schema": { "type": "string", "const": "audit-invariant/v1" },
+      "schema": { "type": "string", "const": "invariant/v1" },
       "verdict": { "type": "string", "enum": ["ready", "not_ready"] },
       "invariants": {
         "type": "array",

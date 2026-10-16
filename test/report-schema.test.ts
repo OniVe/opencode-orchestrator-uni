@@ -15,14 +15,14 @@ import {
 import { loadSchemas } from "../lib/tools"
 
 const schemas = await loadSchemas()
-const meta = schemas.get("audit-meta/v1") as JsonSchemaNode
+const meta = schemas.get("meta/v1") as JsonSchemaNode
 
 function fence(body: string): string {
   return ["# Отчёт", "", "```json", body, "```", ""].join("\n")
 }
 
 const META_OK = {
-  schema: "audit-meta/v1",
+  schema: "meta/v1",
   verdict: "pass",
   gate: "pass",
   closing_list: [],
@@ -42,10 +42,10 @@ describe("fenced block extraction", () => {
   })
 
   test("prefers the last block carrying a schema field", () => {
-    const text = [fence('{"other":true}'), fence('{"schema":"audit-meta/v1"}')].join("\n")
+    const text = [fence('{"other":true}'), fence('{"schema":"meta/v1"}')].join("\n")
     const selected = selectReportJson(text)
     expect(selected.ok).toBe(true)
-    if (selected.ok) expect(selected.value).toEqual({ schema: "audit-meta/v1" })
+    if (selected.ok) expect(selected.value).toEqual({ schema: "meta/v1" })
   })
 
   test("falls back to the last parsable block without a schema field", () => {
@@ -73,7 +73,7 @@ describe("fenced block extraction", () => {
 describe("schema selection", () => {
   test("valid report passes", () => {
     const report = checkReport(fence(JSON.stringify(META_OK)), { schemas })
-    expect(report).toEqual({ valid: true, schema: "audit-meta/v1", errors: [], warnings: [] })
+    expect(report).toEqual({ valid: true, schema: "meta/v1", errors: [], warnings: [] })
   })
 
   test("extra fields are allowed", () => {
@@ -99,13 +99,13 @@ describe("schema selection", () => {
   })
 
   test("E_SCHEMA_MISMATCH when the report names another schema than expected", () => {
-    const report = checkReport(fence(JSON.stringify(META_OK)), { schemas, expectedSchema: "audit-empiric/v1" })
+    const report = checkReport(fence(JSON.stringify(META_OK)), { schemas, expectedSchema: "empiric/v1" })
     expect(report.code).toBe("E_SCHEMA_MISMATCH")
-    expect(report.schema).toBe("audit-meta/v1")
+    expect(report.schema).toBe("meta/v1")
   })
 
   test("expected schema is used when the report omits the field", () => {
-    const report = checkReport(fence(JSON.stringify({ verdict: "pass" })), { schemas, expectedSchema: "audit-meta/v1" })
+    const report = checkReport(fence(JSON.stringify({ verdict: "pass" })), { schemas, expectedSchema: "meta/v1" })
     expect(report.code).toBe("E_INVALID")
     expect(report.errors.some((error) => error.path === "$.schema")).toBe(true)
   })
@@ -172,14 +172,14 @@ describe("validator subset", () => {
 describe("prompt-level warnings", () => {
   test("empiric: rc for run|measure|compare_base and self_check items 1..19", () => {
     const value = {
-      schema: "audit-empiric/v1",
+      schema: "empiric/v1",
       claims_checked: [
         { claim: "a", method: "run", result: "x", verdict: "confirmed" },
         { claim: "b", method: "source", result: "y", verdict: "unverifiable" },
       ],
       self_check: [{ item: 1, title: "t", status: "applied", note: "n" }],
     }
-    const warnings = reportWarnings("audit-empiric/v1", value)
+    const warnings = reportWarnings("empiric/v1", value)
     expect(warnings).toContain("claims_checked[0]: rc is mandatory for method=run (SGR rules)")
     expect(warnings.some((line) => line.startsWith("self_check: items 2, 3"))).toBe(true)
     expect(warnings.some((line) => line.includes("rc is mandatory for method=source"))).toBe(false)
@@ -187,11 +187,11 @@ describe("prompt-level warnings", () => {
 
   test("empiric: duplicates in self_check", () => {
     const value = { self_check: [{ item: 1 }, { item: 1 }] }
-    expect(reportWarnings("audit-empiric/v1", value).some((line) => line.includes("duplicate items 1"))).toBe(true)
+    expect(reportWarnings("empiric/v1", value).some((line) => line.includes("duplicate items 1"))).toBe(true)
   })
 
   test("invariant: violated invariants without a counterexample", () => {
-    const warnings = reportWarnings("audit-invariant/v1", {
+    const warnings = reportWarnings("invariant/v1", {
       invariants: [
         { id: "I1", statement: "s", verdict: "violated" },
         { id: "I2", statement: "s", verdict: "violated", counterexample: "T1→T2" },
@@ -204,10 +204,10 @@ describe("prompt-level warnings", () => {
   })
 
   test("invariant: uncovered mandatory lines", () => {
-    const warnings = reportWarnings("audit-invariant/v1", { lines_checked: [{ line: "ОТМЕНА/ТАЙМАУТЫ", status: "checked", note: "n" }] })
+    const warnings = reportWarnings("invariant/v1", { lines_checked: [{ line: "ОТМЕНА/ТАЙМАУТЫ", status: "checked", note: "n" }] })
     expect(warnings).toHaveLength(8)
     expect(warnings.every((line) => line.startsWith("lines_checked:"))).toBe(true)
-    const covered = reportWarnings("audit-invariant/v1", {
+    const covered = reportWarnings("invariant/v1", {
       lines_checked: [
         { line: "ОТМЕНА/ТАЙМАУТЫ" },
         { line: "СОГЛАСОВАННОСТЬ ПРОИЗВОДНЫХ ДАННЫХ" },
@@ -224,16 +224,16 @@ describe("prompt-level warnings", () => {
   })
 
   test("meta: verdict is a synonym of gate", () => {
-    expect(reportWarnings("audit-meta/v1", { gate: "pass", verdict: "fail" })[0]).toContain("differs from gate")
-    expect(reportWarnings("audit-meta/v1", { gate: "fail", verdict: "fail" })).toEqual([])
+    expect(reportWarnings("meta/v1", { gate: "pass", verdict: "fail" })[0]).toContain("differs from gate")
+    expect(reportWarnings("meta/v1", { gate: "fail", verdict: "fail" })).toEqual([])
   })
 
   test("redteam: closing_list/verdict invariants", () => {
-    expect(reportWarnings("audit-redteam/v1", { verdict: "ready", closing_list: ["R1"] })[0]).toContain("invariant violated")
-    expect(reportWarnings("audit-redteam/v1", { verdict: "not_ready", closing_list: [], coverage_gaps: [] })[0]).toContain(
+    expect(reportWarnings("redteam/v1", { verdict: "ready", closing_list: ["R1"] })[0]).toContain("invariant violated")
+    expect(reportWarnings("redteam/v1", { verdict: "not_ready", closing_list: [], coverage_gaps: [] })[0]).toContain(
       "demote",
     )
-    expect(reportWarnings("audit-redteam/v1", { verdict: "not_ready", closing_list: ["R1"], coverage_gaps: [] })).toEqual([])
+    expect(reportWarnings("redteam/v1", { verdict: "not_ready", closing_list: ["R1"], coverage_gaps: [] })).toEqual([])
   })
 
   test("warnings are only computed for structurally valid reports", () => {

@@ -11,7 +11,7 @@
  * Примеры:
  *   bun eval/run.ts --dry
  *   bun eval/run.ts --cases all --tag deepseek-baseline-2026-10-15 --baseline eval/baselines/deepseek-2026-10-15.json
- *   bun eval/run.ts --cases parse-duration --roles audit-empiric --model audit-empiric=deepseek/deepseek-flash
+ *   bun eval/run.ts --cases parse-duration --roles empiric --model empiric=deepseek/deepseek-flash
  *
  * База `opencode.db` открывается ТОЛЬКО на чтение (стоимость/токены сессии).
  */
@@ -101,7 +101,7 @@ function usage(): never {
     [
       "bun eval/run.ts [options]",
       "  --cases <ids|all>              кейсы через запятую (по умолчанию all)",
-      "  --roles <r1,r2>                роли через запятую (по умолчанию audit-empiric,audit-invariant)",
+      "  --roles <r1,r2>                роли через запятую (по умолчанию empiric,invariant)",
       "  --model <role>=<provider/model> переопределить модель роли (можно несколько раз)",
       "  --limit-usd <n>                стоп-предохранитель по суммарной стоимости (по умолчанию 0.30)",
       "  --tag <name>                   метка прогона",
@@ -116,7 +116,7 @@ function parseArgs(argv: string[]): Options {
   const models = new Map<string, string>()
   const options: Options = {
     cases: ["all"],
-    roles: ["audit-empiric", "audit-invariant"],
+    roles: ["empiric", "invariant"],
     models,
     limitUsd: DEFAULT_LIMIT_USD,
     tag: "",

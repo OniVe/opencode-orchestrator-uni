@@ -20,7 +20,7 @@ permissions:
 
 ФОРМАТ (SGR): резюме + json:
 {
-  "schema": "audit-arbiter/v1",
+  "schema": "arbiter/v1",
   "verdict": "resolved | partially",
   "disputes": [
     {"id": "...", "item": "...", "verdict": "confirmed|refuted|undecidable", "prism": "строка из enum reproducibility|contract|falsification|not_applicable либо массив таких строк", "method": "...", "evidence": "..."}

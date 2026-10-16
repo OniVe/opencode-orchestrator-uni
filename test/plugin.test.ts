@@ -160,12 +160,12 @@ function seedExistingAgent(id: string): AgentDraft {
 const SYSTEM_MARKERS: Record<string, string> = {
   orchestrator: "Ты — root-оркестратор",
   "fix-runner": "Ты — fix-runner",
-  "audit-factcheck": "Ты — факт-чекер",
-  "audit-empiric": "Ты — эмпирический read-only аудитор",
-  "audit-invariant": "Ты — read-only аудитор защитных инвариантов",
-  "audit-arbiter": "Ты — арбитр",
-  "audit-meta": "Ты — мета-аудитор",
-  "audit-redteam": "Ты — приёмочный ред-тим",
+  "factcheck": "Ты — факт-чекер",
+  "empiric": "Ты — эмпирический read-only аудитор",
+  "invariant": "Ты — read-only аудитор защитных инвариантов",
+  "arbiter": "Ты — арбитр",
+  "meta": "Ты — мета-аудитор",
+  "redteam": "Ты — приёмочный ред-тим",
 }
 
 describe("opencode-orchestrator-agents", () => {
@@ -205,7 +205,7 @@ describe("opencode-orchestrator-agents", () => {
 
   test("audit subagents are read-only, fix-runner may write", async () => {
     const { agents } = await runSetup()
-    const auditors = ["audit-factcheck", "audit-empiric", "audit-invariant", "audit-arbiter", "audit-meta", "audit-redteam"]
+    const auditors = ["factcheck", "empiric", "invariant", "arbiter", "meta", "redteam"]
     for (const id of auditors) {
       const agent = agents.get(id)!
       expect(agent.mode, id).toBe("subagent")
@@ -233,12 +233,12 @@ describe("opencode-orchestrator-agents", () => {
     const { agents, warnings } = await runSetup({
       model: "deepseek/deepseek-flash",
       agents: {
-        "audit-meta": "deepseek/deepseek-reasoner",
+        "meta": "deepseek/deepseek-reasoner",
         "fix-runner": { providerID: "anthropic", model: "claude-sonnet-4-5", variant: "high" },
       },
     })
     expect(warnings).toEqual([])
-    expect(agents.get("audit-meta")!.model).toEqual({ providerID: "deepseek", id: "deepseek-reasoner" })
+    expect(agents.get("meta")!.model).toEqual({ providerID: "deepseek", id: "deepseek-reasoner" })
     expect(agents.get("fix-runner")!.model).toEqual({
       providerID: "anthropic",
       id: "claude-sonnet-4-5",
@@ -250,10 +250,10 @@ describe("opencode-orchestrator-agents", () => {
   test("invalid options warn and are ignored", async () => {
     const { agents, warnings } = await runSetup({
       model: "not-a-model",
-      agents: { "audit-meta": 42, "no-such-agent": "deepseek/deepseek-flash" },
+      agents: { "meta": 42, "no-such-agent": "deepseek/deepseek-flash" },
     })
     expect(warnings.some((line) => line.includes("options.model"))).toBe(true)
-    expect(warnings.some((line) => line.includes(`options.agents["audit-meta"]`))).toBe(true)
+    expect(warnings.some((line) => line.includes(`options.agents["meta"]`))).toBe(true)
     expect(warnings.some((line) => line.includes(`options.agents["no-such-agent"]`))).toBe(true)
     for (const agent of agents.values()) expect(agent.model).toBeUndefined()
   })

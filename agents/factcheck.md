@@ -21,7 +21,7 @@ permissions:
 
 ФОРМАТ (SGR): резюме (до 10 строк) + json:
 {
-  "schema": "audit-factcheck/v1",
+  "schema": "factcheck/v1",
   "verdict": "ok | stale | already_done",
   "claims": [
     {"claim": "...", "status": "actual|stale|refuted|already_done", "evidence": "...", "source": "git|github|code|docs"}

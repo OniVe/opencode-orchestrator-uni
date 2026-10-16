@@ -1,5 +1,5 @@
 {
-  "id": "audit-redteam/v1",
+  "id": "redteam/v1",
   "schema": {
     "type": "object",
     "required": [
@@ -12,7 +12,7 @@
       "not_verified"
     ],
     "properties": {
-      "schema": { "type": "string", "const": "audit-redteam/v1" },
+      "schema": { "type": "string", "const": "redteam/v1" },
       "verdict": { "type": "string", "enum": ["ready", "not_ready"] },
       "closing_list": { "type": "array", "items": { "type": "string" } },
       "coverage_gaps": { "type": "array", "items": { "type": "string" } },

@@ -2,8 +2,8 @@
  * report-schema — extraction and validation of the kit's SGR reports.
  *
  * An SGR report is a Markdown answer that ends with a fenced ```json block whose
- * `schema` field names one of the kit's report schemas (`audit-factcheck/v1`,
- * `audit-empiric/v1`, …). This module turns such a text into a deterministic
+ * `schema` field names one of the kit's report schemas (`factcheck/v1`,
+ * `empiric/v1`, …). This module turns such a text into a deterministic
  * verdict: which schema it claims, whether it validates, and which prompt rules
  * a structurally valid report still misses.
  *
@@ -259,7 +259,7 @@ export function selectReportJson(
   }
 }
 
-/** Mandatory lines of the `audit-invariant` report (prompt wording → match keywords). */
+/** Mandatory lines of the `invariant` report (prompt wording → match keywords). */
 const INVARIANT_LINES: readonly { readonly label: string; readonly keywords: readonly string[] }[] = [
   { label: "ОТМЕНА/ТАЙМАУТЫ", keywords: ["отмен", "таймаут", "timeout", "cancel"] },
   { label: "СОГЛАСОВАННОСТЬ ПРОИЗВОДНЫХ ДАННЫХ", keywords: ["производн", "согласован", "snapshot", "кэш", "cache"] },
@@ -288,7 +288,7 @@ export function reportWarnings(schemaId: string, value: unknown): string[] {
   const list = (key: string): readonly unknown[] => (Array.isArray(value[key]) ? (value[key] as readonly unknown[]) : [])
   const strings = (key: string): readonly string[] => list(key).filter((item): item is string => typeof item === "string")
 
-  if (schemaId === "audit-empiric/v1") {
+  if (schemaId === "empiric/v1") {
     list("claims_checked").forEach((item, index) => {
       if (!isPlainObject(item)) return
       const method = item.method
@@ -313,7 +313,7 @@ export function reportWarnings(schemaId: string, value: unknown): string[] {
     if (duplicates.length > 0) warnings.push(`self_check: duplicate items ${duplicates.join(", ")}`)
   }
 
-  if (schemaId === "audit-invariant/v1") {
+  if (schemaId === "invariant/v1") {
     list("invariants").forEach((item, index) => {
       if (!isPlainObject(item) || item.verdict !== "violated") return
       const counterexample = item.counterexample
@@ -330,13 +330,13 @@ export function reportWarnings(schemaId: string, value: unknown): string[] {
     }
   }
 
-  if (schemaId === "audit-meta/v1") {
+  if (schemaId === "meta/v1") {
     if (typeof value.gate === "string" && typeof value.verdict === "string" && value.gate !== value.verdict) {
       warnings.push(`verdict (${value.verdict}) differs from gate (${value.gate}); verdict is a synonym of gate`)
     }
   }
 
-  if (schemaId === "audit-redteam/v1") {
+  if (schemaId === "redteam/v1") {
     const closing = strings("closing_list")
     const gaps = strings("coverage_gaps")
     if (value.verdict === "ready" && closing.length > 0) {

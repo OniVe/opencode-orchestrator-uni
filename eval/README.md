@@ -1,6 +1,6 @@
 # `eval/` — регрессионный стенд аудиторского контура
 
-Стенд гоняет **живые роли плагина** (`audit-empiric`, `audit-invariant`, …) на
+Стенд гоняет **живые роли плагина** (`empiric`, `invariant`, …) на
 исторических учебных кейсах и измеряет, что контур реально находит и сколько это стоит.
 Он отвечает на вопросы «не просела ли связка после правок промптов/схем/моделей» и
 «какой у прогона cost/tokens/recall» — повторяемо и без ручной разметки.
@@ -48,7 +48,7 @@ eval/
 bun eval/run.ts --dry
 
 # один кейс, одна роль
-bun eval/run.ts --cases csv-split-line --roles audit-empiric --tag probe
+bun eval/run.ts --cases csv-split-line --roles empiric --tag probe
 
 # полный базовый замер (3 кейса × 2 роли) со стоп-предохранителем и сохранением baseline
 bun eval/run.ts --cases all --tag deepseek-baseline-2026-10-15 \
@@ -58,7 +58,7 @@ bun eval/run.ts --cases all --tag deepseek-baseline-2026-10-15 \
 bun eval/run.ts --cases all --baseline eval/baselines/deepseek-2026-10-15.json
 
 # другая модель для роли (например, резервный провайдер)
-bun eval/run.ts --cases all --model audit-invariant=deepseek/deepseek-flash
+bun eval/run.ts --cases all --model invariant=deepseek/deepseek-flash
 
 # то же через scripts в package.json
 bun run eval -- --cases csv-split-line --dry
@@ -118,12 +118,12 @@ Windows-детали запуска (обе воспроизведены на с
 
 | кейс | роль | SGR | cost | время | recall | recall MAJOR | непокрыто | кандидаты |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| csv-split-line | audit-empiric | валиден | $0.0313 | 220s | 1.00 | 1.00 | — | 1 |
-| csv-split-line | audit-invariant | валиден | $0.0343 | 236s | 1.00 | 1.00 | — | 0 |
-| normalize-tags | audit-empiric | валиден | $0.0213 | 475s | 1.00 | 1.00 | — | 0 |
-| normalize-tags | audit-invariant | валиден | $0.0181 | 156s | 1.00 | 1.00 | — | 0 |
-| parse-duration | audit-empiric | валиден | $0.0405 | 444s | 0.83 | 1.00 | S5 | 0 |
-| parse-duration | audit-invariant | валиден | $0.0251 | 347s | 1.00 | 1.00 | — | 0 |
+| csv-split-line | empiric | валиден | $0.0313 | 220s | 1.00 | 1.00 | — | 1 |
+| csv-split-line | invariant | валиден | $0.0343 | 236s | 1.00 | 1.00 | — | 0 |
+| normalize-tags | empiric | валиден | $0.0213 | 475s | 1.00 | 1.00 | — | 0 |
+| normalize-tags | invariant | валиден | $0.0181 | 156s | 1.00 | 1.00 | — | 0 |
+| parse-duration | empiric | валиден | $0.0405 | 444s | 0.83 | 1.00 | S5 | 0 |
+| parse-duration | invariant | валиден | $0.0251 | 347s | 1.00 | 1.00 | — | 0 |
 
 Итог: 6/6 валидных отчётов, `recall MAJOR = 1` во всех ячейках, суммарно **$0.1706**
 (токены: in 102 669, out 177 199, reasoning 70 663, cache_read 2 155 648).
