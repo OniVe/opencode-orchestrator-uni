@@ -35,6 +35,11 @@ Releases are automated once the repository lives on GitHub:
    version, publishes to npm via **trusted publishing (OIDC)** with provenance,
    creates the git tag, and opens a GitHub Release with generated notes.
 
+The workflow needs a `RELEASE_TOKEN` secret — a PAT with `Contents: read and write`
+(plus `Issues` / `Pull requests: read and write` if release comments matter).
+`semantic-release` also pushes release metadata to `refs/notes/*`, and the Actions
+`GITHUB_TOKEN` is not allowed to write that namespace.
+
 Do not edit `package.json`'s `version` or tags by hand — `semantic-release`
 owns them. Release notes are the source of truth and live on GitHub Releases.
 
