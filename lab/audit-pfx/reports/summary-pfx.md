@@ -225,3 +225,9 @@
 - **Мета r5** (`reports/meta-r5.md`, valid): **gate=pass**, `closing_list = []`; gap 6 (fixer-scoped) и gap 7 (10 сессий) подтверждены по `opencode.db`; единственный оставшийся coverage gap — «другие версии OpenCode» (V2; 2.0.26), на принятие владельцем.
 - Локально: HEAD `c8b66b2` (lab-only), код `ae6b9e4`; `origin/main` = `dfa4ee7`; публикация запрещена до принятия и подтверждения.
 - **Владелец принял остаток и подтвердил публикацию 0.3.0 (2026-10-23)** — ship открыт.
+
+### Релиз v0.3.0 (2026-10-23)
+
+- Push `dfa4ee7..038eaca`; **CI — success**; **Release — success**: tag `v0.3.0` = `038eaca`, GitHub Release опубликован, notes-ref `semantic-release-v0.3.0` на origin. Release notes: 1 feature + 5 fixes.
+- `@semantic-release/npm`: «Published opencode-orchestrator-uni@0.3.0 to dist-tag @latest»; реестр отдаёт версию с лагом (проверка повторяется).
+- **Commitlint:** historical failure на `7b980c9` (`body-max-line-length`: строка тела >100). История после релиза не переписывается; forward-fix — новый коммит с чистым сообщением (workflow линтует только диапазон пуша).
