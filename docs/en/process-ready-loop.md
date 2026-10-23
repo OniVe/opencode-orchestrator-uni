@@ -22,6 +22,8 @@ Numbering: "[N]" — the steps of this document (`process-ready-loop.md`); "Phas
      │         for a commit/PR: SHIP if there were no fixes after the verdict (the red team and meta are not mandatory)
      └─ NO ─► [2] FIXES (close the MAJORs; MINOR/NIT — close or explicitly accept with a rationale, a record in risks-<id>.md)
                 ▼
+           [2a] CONSOLIDATION (if there were several fixers: merge the branches by commit SHA → checks on the consolidated state)
+                ▼
            [3] NEW STATE X1 (the fixes are committed/recorded)
                 ▼
            repeat [1] on X1 (both auditors, the same brief)
@@ -39,7 +41,7 @@ At the release gates the loop is the same, plus after the first full ready — t
 1. All roles (the empiric, the invariant; at the gates — the red team as well) — `verdict=ready`.
 2. No open MAJORs. MINOR/NIT: closed or **explicitly accepted** with a reason (a record in `risks-<id>.md`; in the summary/PR: "accepted as debt: …").
 3. All discrepancies are resolved by the arbiter; the unprovable → the owner's decision: the root frames the question, records the risk and escalates.
-4. The repeat run is based **on the state after the fixes**, not on the old diff. No "re-votings" on the same snapshot.
+4. The repeat run is based **on the state after the fixes**, not on the old diff. No "re-votings" on the same snapshot. With several fixers, X1 is reached by consolidating their branches by commit SHA and by checks on the consolidated state; `closed` is recorded after consolidation.
 5. At the release gates — `meta` = pass (`gate`=pass), `closing_list` is empty/closed, `coverage_gaps` accepted by the owner (a record in `risks-<id>.md`). **SHIP ⟺ `meta.gate`=pass ∧ `closing_list` is empty/closed ∧ `coverage_gaps` accepted by the owner (a record in `risks-<id>.md`); otherwise ship is forbidden.**
 6. MAJOR findings go into fixes only after independent verification; the verifier's default is "not confirmed" (fail-closed).
 7. The verdict and the verification are recorded together with the state revision (directory hash/commit); any fix after the verdict is recorded → a repeat run (re-audit) or an explicit downgrade of the verdict.

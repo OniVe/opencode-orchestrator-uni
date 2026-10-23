@@ -110,15 +110,19 @@ Outcome: confirmed → a fix; refuted → dismiss it + a record in the audit noi
 ### Phase 5. Fixes and repeat
 - Fixes start only after the summary's verdict is recorded (and verification/arbitration has been done). Do not fix before the verdict.
 - Fixes by threshold: micro-fixes (1–3 lines, texts/docs) — the root itself; medium/large ones (multi-file, logic, tests) — the `fix-runner` subagent; a disputed matter is decided by the root before delegation (after the arbiter).
-- Several `fix-runner` instances in parallel — only in separate workspaces: each with its own git worktree and branch (`worktree_create`, otherwise `git worktree add`), with non-overlapping "to close" lists; when they finish, the root consolidates the branches/diffs into the main branch (resolving intersections and conflicts) and runs the checks on the consolidated state. Two fixers in one workspace or on the same files — forbidden.
+- Several `fix-runner` instances in parallel — only in separate workspaces, and only when their **file sets** cannot overlap. The rule is unconditional: "one writer per workspace; do not run two writers whose **file sets** may overlap" (even in different workspaces). Non-overlap is counted by files (paths + the search rule for similar places of the class), not by list ids; an overlap of the sets ⇒ serialization of the fixers or splitting the paths.
+- The fixer's workspace is a git worktree **outside the project tree** with its own branch: the main path is `git worktree add -b fix/<round>-<n> <path> <base>`; `worktree_create` — only with an immediate `git switch -c fix/<round>-<n>` (a detached HEAD is unusable for consolidation). Placing the session: `session_move({sessionID, directory})` if the tool is available, otherwise `cd <absolute path>` and absolute paths; if neither is available — a parallel launch is forbidden.
+- Consolidation is **by the commit SHA** from the report: the root checks `git cat-file -t <sha>` = `commit`, then merges/cherry-picks by SHA; branch names from reports are not substituted into a shell command without `git check-ref-format --branch` (and only after validation). Do not merge a branch/commits without a `closed` report; `closed` and the acceptance proof (after/stand) are recorded on the consolidated commit SHA; do not remove the worktree before the commit's transfer is confirmed, afterwards — `git worktree remove --force` and a deliberate decision on the branch. No report arrived (`no_report`: the fixer crashed/timed out) — the root records the work (worktree, branch, base SHA) and `no_report` in the summary; the priority is a resume in the same worktree, otherwise remove the worktree and decide the branch's fate; a partial commit without a report is not merged into the main branch.
 - Calling the fix-runner:
 ```
 subagent({agent:"fix-runner", prompt:"To close:\n1) <id | location | mechanism |
  class/area (paths + a search rule for similar places) | repro command (before) |
- acceptance criterion (after) | severity>\nBoundaries: <paths/branch>; budget/limit: <time, number of
- fixes>; commit: <yes/no, message fix-<round>>. Return fix-runner/v1."})
+ acceptance criterion (after) | severity>\nBoundaries: file set: <paths>; workspace:
+ <absolute path of a worktree outside the project tree>; branch: fix/<round>-<n>; base: <sha>;
+ budget/limit: <time, number of fixes>; commit: <yes/no, message fix-<round>>.
+ Return fix-runner/v1."})
 ```
-- The root checks the delta (`git show --stat` + a key run) before the re-audit and updates the registry.
+- The root checks the delta (`git diff <round-base>..HEAD --stat` + a key run) before the re-audit and updates the registry.
 - The round's test stand (if the kit ships a verification stand — the tools `tools/kit-verify` (the verifier) and `tools/kit-sync` (sync of copies + a snapshot) in the kit directory; in rounds on other projects — only if the stand is explicitly included in the call boundaries): baseline → fixes → sync of copies and a repeat run of the stand; the baseline→after delta is attached to the report (the `stand` field).
 - **re-audit = resuming the same sessions**:
 ```
@@ -166,7 +170,7 @@ subagent({agent:"redteam", background:true,
 | the pair → root | full SGR reports | JSON blocks |
 | root → the arbiter | only disputed items + evidence from both sides | list |
 | root → the verifier | a MAJOR finding (id, text, the author's evidence, the state revision) | text |
-| root → fix-runner | the "to close" list (id, location, class/area, repro command (before), acceptance criterion (after), severity) + boundaries/budget | text |
+| root → fix-runner | the "to close" list (id, location, class/area, repro command (before), acceptance criterion (after), severity) + boundaries (file set, workspace, branch, base) and budget | text |
 | root → re-audit | the fixes delta + the actual list of changed files + the list of what was closed | text |
 | root → redteam | the submission + the summary of all rounds | text |
 | redteam → root | SGR | JSON |
@@ -217,7 +221,8 @@ Persistence (all kit documents): the SGR reports of all roles, including **the S
 
 ## 7. Process invariants
 
-- The root does not audit and does not substitute for the verdicts; at any moment there is a single writer **per workspace**: the root (micro-fixes) or `fix-runner` (medium/large ones); several `fix-runner` instances — in parallel only in separate worktrees with non-overlapping lists, with the root consolidating afterwards.
+- The root does not audit and does not substitute for the verdicts; there is a single writer **per workspace**: the root (micro-fixes) or `fix-runner` (medium/large ones); several `fix-runner` instances — in parallel only in separate worktrees, with the root consolidating afterwards.
+- Do not run two writers whose **file sets** may overlap — unconditionally, regardless of the workspace: non-overlapping "to close" lists do not replace the check of overlapping file sets (paths + the class's search rule).
 - The auditors are read-only; project specifics — only in the brief.
 - Fixes start only after the summary's verdict is recorded (and MAJOR verification/arbitration has been done). Do not fix before the verdict.
 - MAJOR findings go into fixes only after independent verification (Phase 3.5); the verifier's default is "not confirmed" (fail-closed).

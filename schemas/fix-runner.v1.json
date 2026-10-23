@@ -7,6 +7,15 @@
       "schema": { "type": "string", "const": "fix-runner/v1" },
       "round": { "type": "string" },
       "commit": { "type": ["string", "null"] },
+      "workspace": {
+        "type": "object",
+        "required": ["branch", "worktree", "base_commit"],
+        "properties": {
+          "branch": { "type": "string" },
+          "worktree": { "type": "string" },
+          "base_commit": { "type": "string" }
+        }
+      },
       "results": {
         "type": "array",
         "items": {
@@ -14,10 +23,7 @@
           "required": ["id", "status", "change", "before", "after", "proof", "stand", "tests"],
           "properties": {
             "id": { "type": "string" },
-            "status": {
-              "type": "string",
-              "enum": ["closed", "not_closed", "needs_decision", "budget_exceeded"]
-            },
+            "status": { "type": "string", "enum": ["closed", "not_closed", "needs_decision", "budget_exceeded"] },
             "change": { "type": "string" },
             "before": { "type": "string" },
             "after": { "type": "string" },
@@ -33,10 +39,7 @@
         "items": {
           "type": "object",
           "required": ["note", "why_suspicious"],
-          "properties": {
-            "note": { "type": "string" },
-            "why_suspicious": { "type": "string" }
-          }
+          "properties": { "note": { "type": "string" }, "why_suspicious": { "type": "string" } }
         }
       }
     }
