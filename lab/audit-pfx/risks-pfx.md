@@ -35,21 +35,22 @@
 | R29 | **T1 (NIT, redteam r3):** `kit-verify --proj <файл>` сообщает «no pairs» вместо «not a directory». | accepted-risk (владелец) | Fail-closed rc=2; бэклог — stat-проверка каталога. |
 | R30 | **T2 (NIT, redteam r3):** два `schemas/*.json` с одинаковым `id` молча перезаписывают друг друга (побеждает последний по алфавиту). | accepted-risk (владелец) | Единственная порча реестра без `E_SCHEMA_IO`; бэклог — `has(id)` → ошибка с именами файлов. |
 | R31 | **T3 (MINOR, redteam r3):** схема `fix-runner/v1` допускает `commit: null`/короткий/uppercase для `closed`; привязка SHA к ветке — прозой. | accepted-risk (владелец) | Сведение по hex-гейту и семантике — дисциплина root'а (доки); условную обязательность сабсет не выражает; бэклог — pattern/условный warning. |
+| R32 | **P1 (NIT, empiric r7):** в standalone root-сессии прямой `session_move` недоступен (`No tool named session_move`), работает только Code Mode `tools.opencode.session_move`; в 4 носителях — общая оговорка «если инструмент доступен». | accepted-risk (владелец) | Механизм исполним (подтверждено независимой сессией); бэклог — добавить форму Code Mode в 4 носителя. |
 
-## coverage_gaps (meta-r3) — на принятие владельцем
+## coverage_gaps (meta-r3) — статус после закрытия остатка
 
-Статус: `pending-owner` (2026-10-23: владелец не принял остаток — ship не открыт). Кандидат `ae6b9e4`, aggregate `53dd7b96ec4c2bba1eeaa6e2f630706633f7d8e2290c80af4b69b917d708a8ed`.
+Обновлено 2026-10-23 (кандидат `ae6b9e4`, aggregate `53dd7b96ec4c2bba1eeaa6e2f630706633f7d8e2290c80af4b69b917d708a8ed`).
 
-Закрыты в ходе gap-раундов:
-1. ~~Окно посадки `session_move`~~ — **closed**: живой эксперимент, 4/4 дочерние сессии, preflight подтвердил cwd.
-2. ~~Свежесть схем / живой валидатор~~ — **closed**: перечитывание при каждом вызове + живая проба (`workspace` без `base_commit` → `E_INVALID`).
-3. ~~Стенд отсутствует~~ — **closed**: `tools/kit-verify.ts` (4/4; `--proj` 12/12), `kit-sync` убран.
-4. ~~Реальная LLM-сессия fix-runner~~ — **closed**: 4 реальные сессии соблюли preflight/границы/hex/`workspace`; session-транскрипты проверены метой.
-5. ~~`worktree_create` не вызывался~~ — **closed**: `verify-D` вызвал инструмент и воспроизвёл detached HEAD (строка в `redteam-r3.md` устарела; сверено здесь).
+Закрыты:
+1. ~~`session_move`~~ — live-experiment 4/4 + независимая CLI-root сессия (фиксер пересажен, preflight, коммит `8e07610`).
+2. ~~Свежесть схем~~ — живая проба: `workspace` без `base_commit` → `E_INVALID`.
+3. ~~Стенд~~ — `tools/kit-verify.ts` (4/4; `--proj` 12/12), `kit-sync` убран.
+4. ~~Реальная LLM-сессия fix-runner~~ — 4 сессии + независимая CLI-сессия.
+5. ~~`worktree_create` не вызывался~~ — `verify-D` вызвал инструмент, воспроизвёл detached HEAD.
+6. ~~npm-потребитель~~ — реальный `npm pack` + `npm i`: `verify:kit`/`check:locales` → `Module not found` (rc=1); оговорки `stand: unavailable` в поставке.
+7. ~~Gap 6 (N4-stash)~~ — fixer-scoped: 0 `stash push/pop/apply` у fix-runner; единственное — `git stash list` (r1, read-only); упоминания в аудит-сессиях — temp-воспроизведения N4/M7.
+8. ~~Gap 7 (частота F)~~ — измерено: 10 fixer-сессий pfx (5 раундов + 4 live + 1 probe), 0 прерываний; внешняя частота не заявляется.
+9. ~~Gap 5 (git)~~ — WSL git 2.43.0: `worktree add -b`, `cat-file`, ancestor/delta, merge по SHA, `check-ref-format` пропускает `;`.
 
-Остаётся (требуется принятие владельцем):
-6. **Gap 5**: другие версии git/OpenCode (N=4 проверено; остальное — нет).
-7. **Gap 6**: фактическое срабатывание N4-stash (механизм подтверждён; R16).
-8. **Gap 7**: частота прерываний F не измерена.
-9. **npm-потребитель**: установленный пакет без `tools/`; `verify:kit`/`check:locales` → Module not found; `stand: unavailable` (R19); npm install не исполнялся.
-10. **Session-часть live-experiment**: независимая воспроизводимость отсутствует (depth limit) — принято как residual.
+Остаётся для принятия владельцем (2026-10-23, `pending-owner`):
+- **другие версии OpenCode** (плагин V2; в среде 2.0.26) — не тестировались.

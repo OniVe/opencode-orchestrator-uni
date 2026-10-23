@@ -201,6 +201,21 @@
 - coverage_gaps ред-тима: session-часть live-experiment (depth limit); npm install не исполнялся; other versions; `worktree_create` не вызывался; частота/N4 — пересекаются с gaps 5–7 + npm-потребитель.
 - Следующий шаг: мета r3.
 
+### Закрытие остатка gaps (2026-10-23, root evidence)
+
+- **npm-потребитель — closed**: реальный `npm pack` + `npm i` в чистый проект (11 пакетов): в установленном пакете нет `tools/`; `npm run verify:kit` и `check:locales` → `Module not found` (rc=1); оговорки `stand: unavailable` в 6 носителях и README присутствуют в поставке.
+- **Другая версия git (gap 5) — closed**: WSL git **2.43.0**: `worktree add -b`, `cat-file -t <sha>`, `merge-base --is-ancestor`, `diff --quiet`, merge по SHA (rc=0), `check-ref-format --branch 'fix/x;id'` → rc=0 (пропускает `;`) — совпало с 2.56.0.
+- **Session-часть — closed (независимая воспроизводимость)**: отдельная root-сессия через `opencode run --standalone` (не субагент) создала полигон, подняла fix-runner (`ses_e985edd5…`), пересадила `session_move` в `wt1`; фиксер прошёл preflight (toplevel/branch) и закоммитил `8e07610` (`probe.txt`, parent `9b269be`). Основной репозиторий не тронут.
+- **Gap 6 — closed (fixer-scoped)**: в `session_message` у fix-runner-сессий pfx **0** фактических `stash push/pop/apply`; единственное обращение — `git stash list` (read-only, fix-runner r1). Упоминания в аудит-сессиях (empiric/invariant/arbiter) — воспроизведения N4/M7 в temp-каталогах. Ранняя формулировка «0 упоминаний в pfx-сессиях» (по `part`) была вакуумной — исправлено по `session_message`.
+- **Gap 7 — измерено**: 10 fixer-сессий pfx (5 раундов правок + 4 live + 1 indep probe), 0 прерываний (у всех отчёты; `no_report` нет). Внешняя частота не заявляется.
+- **Остаток**: другие версии OpenCode (плагин V2; в среде 2.0.26) — не тестировались; ограничение для принятия владельцем.
+
+### Re-audit r7 (закрытие остатка): все confirmed
+
+- **empiric**: `ready`. (1) npm-потребитель: tarball 39 записей без `tools/`, `npm i` 11 пакетов, скрипты `Module not found` rc=1, оговорки в пакете; (2) WSL git 2.43.0 совпал с 2.56.0 на 5 проверках (`check-ref-format` пропускает `;`); (3) pfx-indep: root-сессия `parent_id=null` (не субагент), дочерняя fixer-сессия `directory=…/wt1`, коммит `8e07610`; (4) у fix-runner — **0** `stash push/pop/apply`, единственное обращение — `git stash list` (r1, read-only); упоминания в аудит-сессиях — temp-воспроизведения N4/M7; (5) 10 pfx fixer-сессий — все `succeeded`, `no_report` 0.
+- Новое **P1 (NIT)**: в standalone root-сессии прямой `session_move` недоступен (`No tool named session_move`), работает форма Code Mode `tools.opencode.session_move`; в 4 носителях — только «если инструмент доступен» → принято **R32** (бэклог).
+- Остаток: другие версии OpenCode (V2; 2.0.26) — не тестировались.
+
 ### Мета r3: **gate=pass**
 
 - `reports/meta-r3.md` (valid): `gate = pass`, `closing_list = []`; 13 новых SGR — valid; открытых MAJOR нет; R18–R31 сведены (closed: R18/R20/R21/R27; accepted-risk: R19, R22–R26, R28–R31). Guard'ы (93/93, 12/12, biome 0, tsc 0, kit-verify 4/4, `--proj` 12/12) перепроверены метой лично.
