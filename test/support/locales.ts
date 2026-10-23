@@ -1,6 +1,6 @@
 /**
  * Locale-aware helpers shared by the translation guard (`test/translation.test.ts`)
- * and the dev checker (`lab/locale-check.ts`).
+ * and the dev checkers (`tools/locale-check.ts`, `tools/kit-verify.ts`).
  *
  * The kit ships the same agent definitions and process documents in several
  * languages. These helpers describe what must stay invariant between a source

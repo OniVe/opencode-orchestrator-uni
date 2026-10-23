@@ -300,11 +300,13 @@ There is no build. `index.ts` is the shipped entry point.
 npm install          # installs gray-matter + dev tooling
 npm run typecheck    # tsc --noEmit
 npm test             # bun test ./test/ (hermetic: registration, tools, validator, snapshot, prompt↔schema + identifier guards)
+npm run check:locales # bun tools/locale-check.ts (ru↔en parity of agents + docs)
+npm run verify:kit   # bun tools/kit-verify.ts (locales, tests, lint, types — the kit's stand)
 npm run lint         # biome check . (lint + format + import order; read-only)
 npm run lint:fix     # biome check --write . (applies safe fixes)
 ```
 
-`npm test` scans only `./test/` — the shipped suite (90 tests in 8 files, up from
+`npm test` scans only `./test/` — the shipped suite (93 tests in 8 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`

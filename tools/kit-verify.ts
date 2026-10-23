@@ -7,11 +7,13 @@
  *   bun tools/kit-verify.ts --proj <dir>   # a project copy: agents/docs ru↔en parity
  *
  * Default mode runs the kit's standard check set (locale parity, `bun test`,
- * `biome check`, `tsc --noEmit`), prints one `PASS/FAIL <step> (rc=N, Xs)` line
- * per step and `kit-verify: N/M ok`; the exit code is 1 when any step fails.
+ * `biome check`, `tsc --noEmit`), prints one `PASS/FAIL <step> (rc=N)` line per
+ * step and `kit-verify: N/M ok`; the exit code is 1 when any step fails. The
+ * output carries no timings, so two runs on the same state are byte-identical.
  * Project mode compares every `agents|docs/{ru,en}/*.md` pair under `<dir>` with
- * the same contract as `tools/locale-check.ts` (the `pairIssues` helper), does
- * not run the kit's tests, and exits 2 when `<dir>` has no pairs.
+ * the same contract as `tools/locale-check.ts` (the `pairIssues` helper), flags
+ * a translated file with no reference sibling as `orphan translation`, does not
+ * run the kit's tests, and exits 2 when `<dir>` has neither pairs nor orphans.
  *
  * Local binaries only (`node_modules/.bin`), no network.
  */
@@ -30,7 +32,6 @@ const USAGE = [
 interface StepOutcome {
   readonly name: string
   readonly rc: number
-  readonly seconds: number
   readonly output: string
 }
 
@@ -41,28 +42,31 @@ function localBinary(name: string): string {
   return path.join("node_modules", ".bin", WINDOWS ? `${name}.cmd` : name)
 }
 
-/** `.cmd` shims need a shell on Windows; everything else is spawned directly. */
-function needsShell(command: readonly string[]): boolean {
-  return WINDOWS && (command[0]?.endsWith(".cmd") ?? false)
+/**
+ * On Windows a `.cmd` shim has to go through the command interpreter
+ * (`ComSpec /c`); every other program is spawned directly.
+ */
+function spawnCommand(command: readonly string[]): readonly string[] {
+  const [program] = command
+  if (!WINDOWS || program === undefined || !program.endsWith(".cmd")) return command
+  return [process.env.ComSpec ?? "cmd.exe", "/c", ...command]
 }
 
 async function runStep(name: string, command: readonly string[]): Promise<StepOutcome> {
-  const started = performance.now()
-  const child = Bun.spawn([...command], {
+  const child = Bun.spawn([...spawnCommand(command)], {
     cwd: KIT_ROOT,
     env: process.env,
     stdout: "pipe",
     stderr: "pipe",
-    shell: needsShell(command),
   })
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
   const rc = await child.exited
-  return { name, rc, seconds: (performance.now() - started) / 1000, output: `${stdout}${stderr}` }
+  return { name, rc, output: `${stdout}${stderr}` }
 }
 
 function printStep(outcome: StepOutcome): void {
   const status = outcome.rc === 0 ? "PASS" : "FAIL"
-  console.log(`${status} ${outcome.name} (rc=${outcome.rc}, ${outcome.seconds.toFixed(1)}s)`)
+  console.log(`${status} ${outcome.name} (rc=${outcome.rc})`)
   const output = outcome.output.trimEnd()
   if (outcome.rc !== 0 && output !== "") {
     for (const line of output.split(/\r?\n/)) console.log(`  ${line}`)
@@ -126,6 +130,24 @@ async function projectPairs(directory: string): Promise<ProjectPair[]> {
   return pairs
 }
 
+/**
+ * Translated files with no reference sibling (`<root>/en/<name>` without
+ * `<root>/ru/<name>`). Missing translations show up as pair issues; this is the
+ * other direction, the one a pair loop over the reference locale cannot see —
+ * the same rule as "every locale ships the same file sets" in the kit's suite.
+ */
+async function orphanTranslations(directory: string): Promise<string[]> {
+  const orphans: string[] = []
+  for (const root of ["agents", "docs"]) {
+    const localeRoot = path.join(directory, root)
+    const reference = new Set(await markdownFiles(path.join(localeRoot, "ru")))
+    for (const name of await markdownFiles(path.join(localeRoot, "en"))) {
+      if (!reference.has(name)) orphans.push(`${root}/en/${name}`)
+    }
+  }
+  return orphans.sort()
+}
+
 async function pairIssueList(pair: ProjectPair): Promise<string[]> {
   const source = await readFile(pair.reference, "utf8").catch(() => undefined)
   if (source === undefined) return [`missing source file: ${pair.reference}`]
@@ -136,7 +158,8 @@ async function pairIssueList(pair: ProjectPair): Promise<string[]> {
 
 async function runProjectStand(directory: string): Promise<number> {
   const pairs = await projectPairs(directory)
-  if (pairs.length === 0) {
+  const orphans = await orphanTranslations(directory)
+  if (pairs.length === 0 && orphans.length === 0) {
     console.log(`kit-verify: no agents/** or docs/** locale pairs under ${directory}`)
     return 2
   }
@@ -151,7 +174,13 @@ async function runProjectStand(directory: string): Promise<number> {
     console.log(`FAIL  ${pair.label}`)
     for (const issue of issues) console.log(`      - ${issue}`)
   }
-  console.log(`\nkit-verify --proj: ${pairs.length - failed}/${pairs.length} pairs ok`)
+  for (const orphan of orphans) {
+    failed += 1
+    console.log(`FAIL  ${orphan}`)
+    console.log(`      - orphan translation: no ${orphan.replace("/en/", "/ru/")}`)
+  }
+  const total = pairs.length + orphans.length
+  console.log(`\nkit-verify --proj: ${total - failed}/${total} pairs ok`)
   return failed === 0 ? 0 : 1
 }
 

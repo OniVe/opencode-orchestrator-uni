@@ -307,11 +307,13 @@ Markdown-файл в `~/.config/opencode/agents/` (либо `.opencode/agents/`)
 npm install          # ставит gray-matter + dev-инструменты
 npm run typecheck    # tsc --noEmit
 npm test             # bun test ./test/ (герметично: регистрация, инструменты, валидатор, снапшот, промпт↔схемы + стражи идентификаторов)
+npm run check:locales # bun tools/locale-check.ts (паритет ru↔en: агенты + документы)
+npm run verify:kit   # bun tools/kit-verify.ts (локали, тесты, линт, типы — стенд комплекта)
 npm run lint         # biome check . (линт + формат + порядок импортов; только чтение)
 npm run lint:fix     # biome check --write . (применяет безопасные фиксы)
 ```
 
-`npm test` сканирует только `./test/` — поставляемый набор (90 тестов в 8 файлах;
+`npm test` сканирует только `./test/` — поставляемый набор (93 теста в 8 файлах;
 до стражей идентификаторов было 72 в 5). Голый `bun test` из корня репозитория
 красный по замыслу: позиционный аргумент `bun test` — это фильтр-подстрока пути,
 поэтому голая команда подхватывает и специально падающие фикстуры в

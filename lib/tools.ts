@@ -46,25 +46,76 @@ interface SchemaDocument {
   readonly schema: JsonSchemaNode
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Typed failure of the schema registry (`schemas/*.json`): an unreadable
+ * directory, an unreadable file, malformed JSON or a document of the wrong
+ * shape. `loadSchemas` throws it on purpose — otherwise the plugin would
+ * validate against a silently smaller registry — and the `validate_report`
+ * executor converts it into an `E_SCHEMA_IO` refusal, so a caller always gets a
+ * structured code plus the directory/file instead of a raw IO/parse exception.
+ */
+export class SchemaIoError extends Error {
+  readonly code = "E_SCHEMA_IO"
+  readonly directory: string
+  readonly file: string | undefined
+
+  constructor(message: string, directory: string, file?: string) {
+    super(message)
+    this.name = "SchemaIoError"
+    this.directory = directory
+    this.file = file
+  }
+}
+
 /**
  * Read every `schemas/*.json` file into an id → schema map. Files are read in
- * sorted order; a malformed document throws (the plugin would otherwise
- * validate against a silently smaller registry).
+ * sorted order; a malformed document throws a `SchemaIoError` (fail-closed, typed).
  */
 export async function loadSchemas(directory: string = SCHEMAS_DIRECTORY): Promise<Map<string, JsonSchemaNode>> {
-  const entries = await readdir(directory, { withFileTypes: true })
-  const files = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => entry.name)
-    .sort()
+  let names: string[]
+  try {
+    const entries = await readdir(directory, { withFileTypes: true })
+    names = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => entry.name)
+      .sort()
+  } catch (error) {
+    throw new SchemaIoError(`cannot read schemas directory ${directory}: ${errorMessage(error)}`, directory)
+  }
   const schemas = new Map<string, JsonSchemaNode>()
-  for (const file of files) {
-    const source = await readFile(path.join(directory, file), "utf8")
-    const document = JSON.parse(source) as SchemaDocument
-    if (typeof document.id !== "string" || typeof document.schema !== "object" || document.schema === null) {
-      throw new Error(`schemas/${file}: expected { id: string, schema: object }`)
+  for (const file of names) {
+    const absolute = path.join(directory, file)
+    let source: string
+    try {
+      source = await readFile(absolute, "utf8")
+    } catch (error) {
+      throw new SchemaIoError(`cannot read schemas/${file} (${absolute}): ${errorMessage(error)}`, directory, absolute)
     }
-    schemas.set(document.id, document.schema)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(source)
+    } catch (error) {
+      throw new SchemaIoError(
+        `schemas/${file} (${absolute}) is not valid JSON: ${errorMessage(error)}`,
+        directory,
+        absolute,
+      )
+    }
+    const document = asRecord(parsed) as Partial<SchemaDocument> | undefined
+    const id = document?.id
+    const schema = document?.schema
+    if (typeof id !== "string" || typeof schema !== "object" || schema === null) {
+      throw new SchemaIoError(
+        `schemas/${file} (${absolute}): expected { id: string, schema: object }`,
+        directory,
+        absolute,
+      )
+    }
+    schemas.set(id, schema as JsonSchemaNode)
   }
   return schemas
 }
@@ -348,7 +399,20 @@ export async function registerAuditTools(
       }
     }
     if (toolContext.signal.aborted) return failure("E_ABORTED", "validation aborted")
-    const schemas = await loadSchemas(schemasDirectory)
+    let schemas: Map<string, JsonSchemaNode>
+    try {
+      schemas = await loadSchemas(schemasDirectory)
+    } catch (error) {
+      if (error instanceof SchemaIoError) {
+        return failure(error.code, error.message, {
+          directory: error.directory,
+          ...(error.file === undefined ? {} : { file: error.file }),
+        })
+      }
+      return failure("E_SCHEMA_IO", `cannot load schemas from ${schemasDirectory}: ${errorMessage(error)}`, {
+        directory: schemasDirectory,
+      })
+    }
     const report = checkReport(source, { ...(expectedSchema === undefined ? {} : { expectedSchema }), schemas })
     return json(report)
   }
@@ -491,7 +555,7 @@ export async function registerAuditTools(
       description:
         "Validate an SGR report: extract the last ```json block, resolve its schema, validate it and list prompt-level warnings. " +
         "Read-only. Returns JSON {valid, schema, errors, warnings} or a typed code " +
-        "(E_INPUT|E_NO_JSON|E_PARSE|E_UNKNOWN_SCHEMA|E_SCHEMA_MISMATCH|E_INVALID|E_ABORTED).",
+        "(E_INPUT|E_NO_JSON|E_PARSE|E_UNKNOWN_SCHEMA|E_SCHEMA_MISMATCH|E_INVALID|E_SCHEMA_IO|E_ABORTED).",
       input: VALIDATE_REPORT_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },
       execute: validateReport,

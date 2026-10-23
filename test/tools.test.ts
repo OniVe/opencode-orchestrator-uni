@@ -336,6 +336,34 @@ describe("schema freshness", () => {
   })
 })
 
+describe("schema registry failures", () => {
+  test("a broken or missing schemas directory is a typed refusal, not a throw", async () => {
+    const text = '```json\n{"schema":"x/v1"}\n```'
+
+    const broken = await mkdtemp(path.join(tmpdir(), "audit-schemas-broken-"))
+    await writeFile(path.join(broken, "broken.v1.json"), "{ not json", "utf8")
+    const brokenHarness = await createHarness({ schemasDirectory: broken })
+    const brokenResult = await runTool(brokenHarness, "orch_uni_validate_report", { text })
+    expect(brokenResult).toMatchObject({ ok: false, code: "E_SCHEMA_IO" })
+    expect(brokenResult.directory).toBe(broken)
+    expect(String(brokenResult.file)).toContain("broken.v1.json")
+    expect(String(brokenResult.message)).toContain(broken)
+    brokenHarness.dispose()
+    await rm(broken, { recursive: true, force: true })
+
+    const missingDirectory = path.join(await mkdtemp(path.join(tmpdir(), "audit-schemas-missing-")), "nope")
+    const missingHarness = await createHarness({ schemasDirectory: missingDirectory })
+    const missingResult = await runTool(missingHarness, "orch_uni_validate_report", { text })
+    expect(missingResult).toMatchObject({ ok: false, code: "E_SCHEMA_IO" })
+    expect(missingResult.directory).toBe(missingDirectory)
+    expect(missingResult.file).toBeUndefined()
+    expect(String(missingResult.message)).toContain(missingDirectory)
+    const parent = path.dirname(missingDirectory)
+    missingHarness.dispose()
+    await rm(parent, { recursive: true, force: true })
+  })
+})
+
 function child(id: string, parentID: string, agent: string) {
   return {
     id,
