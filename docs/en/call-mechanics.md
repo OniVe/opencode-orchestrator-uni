@@ -110,6 +110,7 @@ Outcome: confirmed → a fix; refuted → dismiss it + a record in the audit noi
 ### Phase 5. Fixes and repeat
 - Fixes start only after the summary's verdict is recorded (and verification/arbitration has been done). Do not fix before the verdict.
 - Fixes by threshold: micro-fixes (1–3 lines, texts/docs) — the root itself; medium/large ones (multi-file, logic, tests) — the `fix-runner` subagent; a disputed matter is decided by the root before delegation (after the arbiter).
+- Several `fix-runner` instances in parallel — only in separate workspaces: each with its own git worktree and branch (`worktree_create`, otherwise `git worktree add`), with non-overlapping "to close" lists; when they finish, the root consolidates the branches/diffs into the main branch (resolving intersections and conflicts) and runs the checks on the consolidated state. Two fixers in one workspace or on the same files — forbidden.
 - Calling the fix-runner:
 ```
 subagent({agent:"fix-runner", prompt:"To close:\n1) <id | location | mechanism |
@@ -216,7 +217,7 @@ Persistence (all kit documents): the SGR reports of all roles, including **the S
 
 ## 7. Process invariants
 
-- The root does not audit and does not substitute for the verdicts; at any moment there is a single writer: the root (micro-fixes) or `fix-runner` (medium/large ones).
+- The root does not audit and does not substitute for the verdicts; at any moment there is a single writer **per workspace**: the root (micro-fixes) or `fix-runner` (medium/large ones); several `fix-runner` instances — in parallel only in separate worktrees with non-overlapping lists, with the root consolidating afterwards.
 - The auditors are read-only; project specifics — only in the brief.
 - Fixes start only after the summary's verdict is recorded (and MAJOR verification/arbitration has been done). Do not fix before the verdict.
 - MAJOR findings go into fixes only after independent verification (Phase 3.5); the verifier's default is "not confirmed" (fail-closed).

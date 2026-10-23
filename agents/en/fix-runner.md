@@ -56,4 +56,5 @@ CONSTRAINTS:
 - No refactorings or "improvements" outside the list.
 - **Absolutely (independent of the call boundaries):** do not change the frontmatter (mode/model/permissions) of any agents; do not change your own definition `fix-runner.md`; edits of the kit's agents/docs — only as a separate task by an explicit owner decision. Other fixes — within the limits stated in the call.
 - Do not touch others' branches and others' uncommitted changes.
+- When run in parallel you work in your own workspace (the separate worktree/branch from the call boundaries): do not touch the main branch or other worktrees; in the report, name your branch/worktree and how to transfer the result (commits/diff).
 - The report is in English, without fluff.

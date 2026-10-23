@@ -27,7 +27,7 @@ Budget: <BUDGET>
 Mode: <MODE>
 
 The loop's rules:
-- The auditors are read-only subagents; you make the fixes (micro-fixes) or delegate them to `fix-runner` (medium/large ones). You are the orchestrator: the brief, the launch, the consolidation of the reports, decisions, fixes. You do not audit yourself.
+- The auditors are read-only subagents; you make the fixes (micro-fixes) or delegate them to `fix-runner` (medium/large ones). You are the orchestrator: the brief, the launch, the consolidation of the reports, decisions, fixes. You do not audit yourself. Several `fix-runner` instances — only in separate worktrees with non-overlapping lists and consolidation afterwards.
 - Communication — via the brief file and SGR reports. Do NOT poll background subagents: the notifications arrive on their own.
 - The loop lives until FULL ready: all roles ready, no open MAJORs, MINOR/NIT closed or explicitly accepted.
 - Disputed matters are resolved by `arbiter` (disputed items only); the unprovable → the owner's decision: the root frames the question, records the risk and escalates.
