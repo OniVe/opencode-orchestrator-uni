@@ -222,4 +222,5 @@
 - **G1/G4**: закрытие принято на уровне root-доказательств — 4 реальные сессии fix-runner найдены в `session_v2`/`session_message` (каталоги wt1–wt4, preflight-команды/выводы, отчёты с `workspace`/40-hex); git-часть независимо сверена redteam-r3. Независимая воспроизводимость session-части отсутствует (depth limit) — residual gap.
 - Reconciliation: coverage_gaps #4 «`worktree_create` не вызывался» в `redteam-r3.md` устарел — `verify-D` вызвал инструмент и воспроизвёл detached HEAD; live-experiment выполнен на базе `7b980c9` (preflight/session_move в дельте не менялись).
 - Ship: `gate=pass` ∧ `closing_list` пуст; требуется принятие владельцем coverage_gaps (5–7, npm-потребитель, session-часть) и принятых рисков (R19, R22–R26, R28–R31).
-- **Ship не открыт:** владелец не принял остаток (2026-10-23) — `pending-owner`; публикация запрещена. Локально: `ae6b9e4` + аудит-трейл; `origin/main` = `dfa4ee7`.
+- **Мета r5** (`reports/meta-r5.md`, valid): **gate=pass**, `closing_list = []`; gap 6 (fixer-scoped) и gap 7 (10 сессий) подтверждены по `opencode.db`; единственный оставшийся coverage gap — «другие версии OpenCode» (V2; 2.0.26), на принятие владельцем.
+- Локально: HEAD `c8b66b2` (lab-only), код `ae6b9e4`; `origin/main` = `dfa4ee7`; публикация запрещена до принятия и подтверждения.
