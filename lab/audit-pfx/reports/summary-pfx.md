@@ -123,3 +123,88 @@
 - `meta-r2` (`reports/meta-r2.md`, valid=true): **gate=pass**, `closing_list = []`. 7 `coverage_gaps` — на принятие владельцем (список — в `risks-pfx.md`).
 - Non-blocking замечания меты: исторические метки m7/R5; «R16 нет» в `arbiter-n4.md` (на момент арбитража); формулировка R3; `fix-runner-r2` solo (короткий SHA/без `workspace`) — R17; I12 при M12/M14; sessionID не в шапках артефактов.
 - **Ship не открыт:** владелец не принял 7 `coverage_gaps` (2026-10-23) — статус `pending-owner`; публикация запрещена. Локально: `7ab0d82` (3 коммита, `origin/main` = `dfa4ee7`).
+
+## Закрытие coverage_gaps (кандидат `476e9bd`)
+
+- Ревизия: commit `476e9bd`, aggregate `2290e3a95eb138202cabb8701b7b7f3a484cff60725d0e75ed4895805d6913e3` (96 файлов; `lab`, `eval/results` исключены). Диапазон `7ab0d82..476e9bd` (11 файлов, +232/−13); `7b980c9` — только lab (исключён из ревизии).
+- **G1 closed** — живой эксперимент: 4 дочерние сессии fix-runner, `session_move` 4/4, preflight подтвердил cwd до правок (`reports/live-experiment.md`).
+- **G2 closed** — `lib/tools.ts`: схемы перечитываются на каждом `validate_report`; тест `schema freshness` (rollback → FAIL, после → PASS); живая проба: `workspace_missing_base` → `invalid`, `workspace` строкой → `invalid`, полный объект → `valid`.
+- **G3 closed** — `tools/kit-verify.ts` (4/4 ok; `--proj` 12/12; rc=1/2 на негативных), script `verify:kit`; `kit-sync` удалён из 6 md-носителей (`reports/fix-runner-r3.md`).
+- **G4 closed** — 4 реальные LLM-сессии fix-runner: preflight, границы файлов, запрет stash/refs, полный SHA + `workspace`.
+- **G5 partial** — N=4 проверено; другие версии git/OpenCode — нет.
+- **G6/G7 open** — фактическое срабатывание N4 и частота прерываний F: нет исторических логов/статистики.
+- Out-of-scope fix-runner-r3: устаревший комментарий `test/support/locales.ts:3`; `tsconfig.include` без `tools/**`; README без `verify:kit` — на ревью пары.
+- Следующий шаг: re-audit дельты (пара r3) → ред-тим → мета; затем принятие владельцем остатка gaps (5–7).
+
+### Re-audit r3 (пара): расхождение вердиктов → арбитр
+
+- **empiric**: `ready` — G2/G3 подтверждены собственными прогонами; новые MINOR/NIT: T1 (tsconfig/tools + TS2353), T2 (стенд не в npm-пакете), T3 (комментарий), T4 (README), T5 (битая схема → сырое исключение), T6 (отчёт эксперимента: 3 merge + 1 ff — поправлено).
+- **invariant**: `not_ready` — 0 MAJOR; closing minimum **F2/F3**, рекомендация **F1**; NIT F4–F7 (`--proj` не ловит EN-сирот; недетерминированный вывод; комментарий; README). Инварианты I13/I15/I16 — violated; C4/I1–I12 — held. session_move-часть эксперимента им не воспроизводима (depth limit) — `not_verified`; git-часть воспроизведена.
+- **Расхождение**: ready vs not_ready при 0 MAJOR → **арбитр** (F1/F2/F3: блокируют ли ship). Отчёт: `reports/arbiter-r3.md`.
+- Остаток gaps (5–7) — на принятие владельцем после разрешения спора и правок.
+
+### Арбитраж r3: F1/F2/F3 — MINOR, ship не блокируют
+
+- `arbiter-r3.md` (valid): F1 — MINOR (contract+falsification; R18), F2 — MINOR (contract+falsification; R19) + сузить G3: «для git-чекаута, не для npm-потребителя», F3 — MINOR (reproducibility+contract; R20). Все — в риски-бэклог; doctrine: MINOR закрыть или явно принять.
+- Решение root: **F1/F3/F4/F5/F6/F7 — правки** (дешёвые, в новом коде); **F2 — принять** + сузить доки (R19); затем re-audit r4 → ред-тим → мета.
+- Запущен fix-runner r4 (F1: структурный отказ `E_SCHEMA_IO` + тест; F3: снять `shell`, `tools/**` в include; F4: EN-сироты; F5: детерминизм; F6: комментарий; F7: README; F2: доки).
+
+### Правки r4: коммит `816cffa`
+
+- Ревизия: commit `816cffa18069e105b8a2f753aafd29ffbc5b6550`, aggregate `87d0bdb4161410460ccce92a1ec5a438415b6cfaf3b61cbe2303c3d40eb6e33a` (96 файлов). Дельта `476e9bd..816cffa`: 14 файлов, +188/−42.
+- F1 — `E_SCHEMA_IO` (поля directory/file) + тест на битый JSON/отсутствующий каталог; отчётные коды целы.
+- F3 — мёртвая опция `shell` снята (Windows `.cmd` через `ComSpec /c`), `tools/**/*.ts` в `tsconfig.include`; `tsc --noEmit` rc=0 уже с `tools/`.
+- F4 — двустороннее сравнение наборов: EN-сирота → FAIL rc=1 (в `kit-verify --proj` и self-check `locale-check`).
+- F5 — вывод детерминирован (секунды убраны); F6 — комментарий; F7 — README (`check:locales`, `verify:kit`, 93 теста).
+- F2 — принято (R19): в 6 носителях явно сказано, что стенд — для git-чекаута; npm-пакет не поставляет `tools/` → `stand: unavailable`.
+- Guard'ы: `npm test` 93/93, `check:locales` 12/12, biome 0, tsc 0 (с tools), `kit-verify` 4/4; `--proj` 12/12, с сиротой rc=1.
+- Out-of-scope r4: таблица кодов в README без `E_SCHEMA_IO`; rc=2 перегружен (usage vs «нет пар/сирот»); симлинк-файлы молча выпадают; нет таймаута у child — на ревью пары.
+- Следующий шаг: re-audit r4 (пара) → ред-тим → мета.
+
+### Re-audit r4 (пара): R1/G1 — cross-verified
+
+- **empiric**: `ready` (R1/R2 MINOR, R3–R5 NIT; F1/F3/F4/F5/F7 подтверждены; поправка: «откат include → TS2353» не воспроизводится — ошибка устранена в коде, include доказан мутацией типа).
+- **invariant**: `not_ready` — 0 MAJOR; closing minimum **G1**; NIT G2–G5; I13–I16 held.
+- **R1/G1** (разрыв нормативной фразы в `docs/{ru,en}/{call-mechanics,root-runbook}`) независимо воспроизведён обеими ролями → **cross-verified**; R2/G2 (README-таблица кодов без `E_SCHEMA_IO`) — подтверждён обеими (MINOR/NIT).
+- Решение root: **G1/R1 + R2/G2 + G3 (README-оговорка npm) — правки r5**; **G4/R4 (симлинки), G5/R5 (таймаут), R3 (rc=2) — приняты NIT** (R22–R24).
+- Запущен fix-runner r5.
+
+### Правки r5: коммит `2f5c581`
+
+- Ревизия: commit `2f5c5817f9ffff68d43cab2e8bfde6b2db1a4709`, aggregate `872a2fb473fcfe50ec74a7af3f4b246f117064566af76d830868cd74bf2b630c` (96 файлов). Дельта `816cffa..2f5c581`: 6 файлов, +10/−4.
+- **G1/R1** — оговорка npm/`stand: unavailable` вынесена отдельным предложением после скобки в 4 носителях; условие «только если стенд явно включён в границы» осталось внутри скобки; repro-критерий 4→0.
+- **R2/G2** — `E_SCHEMA_IO` добавлен в таблицы кодов `README.md`/`README.ru.md` (поля `directory`/`file`, порядок enum).
+- **G3** — в README ru/en добавлена оговорка: `verify:kit`/`check:locales` требуют git-чекаута, в npm-пакете `tools/` нет → `stand: unavailable`.
+- Guard'ы: 93/93, 12/12, biome 0, tsc 0, kit-verify 4/4.
+- Out-of-scope r5: package.json (поставляется) объявляет `verify:kit`/`check:locales` → в npm-пакете ENOENT (документация предупреждает); generic-перечисление кодов в README не расширено — на ревью пары.
+- Следующий шаг: re-audit r5 (пара) → ред-тим → мета.
+
+### Правки r6 (root micro): `ae6b9e4`
+
+- `README.md`/`README.ru.md`: оговорка теперь называет команды — «`check:locales` и `verify:kit` требуют git-чекаута» (вместо позиционного «две последние») — **N1/S1 closed**. Re-audit r5: обе роли независимо воспроизвели N1/S1 (cross-verified); G1/G2/G3 подтверждены (скобка целая, `E_SCHEMA_IO` с полями, оговорка фактически верна).
+- Приняты NIT: **N2/S2** (dev-скрипты в npm-пакете → ENOENT; документировано) — R25; **N3/S3** (generic-перечисление кодов без guard'а) — R26.
+- Guard'ы: 12/12, 93/93, biome 0, tsc 0, kit-verify 4/4.
+- Ревизия: commit `ae6b9e4`, aggregate `53dd7b96ec4c2bba1eeaa6e2f630706633f7d8e2290c80af4b69b917d708a8ed` (96 файлов).
+- Следующий шаг: re-audit r6 (пара, узкий) → ред-тим → мета.
+
+### Re-audit r6 (пара): оба ready
+
+- **empiric**: `ready` — N1/S1 закрыт; референт подтверждён запуском в npm-пакете (оба скрипта `Module not found`); регрессий нет; находок нет.
+- **invariant**: `ready` — N1/S1 закрыт (позиционных ссылок 0, ru/en зеркальны), регрессий нет; NIT **W1** (`stand: unavailable` — поле отчёта, а в README-скобке читается как статус команд; смысл не искажён) — принято **R28**.
+- Ревизия: commit `ae6b9e4`, aggregate `53dd7b96ec4c2bba1eeaa6e2f630706633f7d8e2290c80af4b69b917d708a8ed` (96 файлов).
+- Следующий шаг: ред-тим r3 (дельта `7ab0d82..ae6b9e4`) → мета r3.
+
+### Ред-тим r3 (ворота): **ready**
+
+- `reports/redteam-r3.md` (valid): `verdict = ready`, `closing_list = []`. Воспроизведены: свежесть схем + `E_SCHEMA_IO` (живой инструмент отвергает `workspace` без `base_commit`; откат кэша валит 2 теста), `kit-verify` (kit 4/4, `--proj` good/orphan/missing/empty/usage, byte-identical), docs↔артефакт (`verify:kit`, 6 носителей, `kit-sync` 0, npm-оговорка), git-часть live-эксперимента, регрессии 93/93, 12/12, biome 0, tsc 0, kit-verify 4/4; hex-гейт/`not_consolidated` не ослаблены.
+- Новые NIT/MINOR: **T1** (диагностика `--proj` для пути-файла: «no pairs» вместо «not a directory»), **T2** (дубликаты `id` схем молча перезаписываются — единственная порча реестра без `E_SCHEMA_IO`), **T3** (MINOR: схема допускает `commit: null`/короткий/uppercase для `closed`; привязка SHA к ветке — только прозой) — приняты **R29–R31** (бэклог).
+- coverage_gaps ред-тима: session-часть live-experiment (depth limit); npm install не исполнялся; other versions; `worktree_create` не вызывался; частота/N4 — пересекаются с gaps 5–7 + npm-потребитель.
+- Следующий шаг: мета r3.
+
+### Мета r3: **gate=pass**
+
+- `reports/meta-r3.md` (valid): `gate = pass`, `closing_list = []`; 13 новых SGR — valid; открытых MAJOR нет; R18–R31 сведены (closed: R18/R20/R21/R27; accepted-risk: R19, R22–R26, R28–R31). Guard'ы (93/93, 12/12, biome 0, tsc 0, kit-verify 4/4, `--proj` 12/12) перепроверены метой лично.
+- **G1/G4**: закрытие принято на уровне root-доказательств — 4 реальные сессии fix-runner найдены в `session_v2`/`session_message` (каталоги wt1–wt4, preflight-команды/выводы, отчёты с `workspace`/40-hex); git-часть независимо сверена redteam-r3. Независимая воспроизводимость session-части отсутствует (depth limit) — residual gap.
+- Reconciliation: coverage_gaps #4 «`worktree_create` не вызывался» в `redteam-r3.md` устарел — `verify-D` вызвал инструмент и воспроизвёл detached HEAD; live-experiment выполнен на базе `7b980c9` (preflight/session_move в дельте не менялись).
+- Ship: `gate=pass` ∧ `closing_list` пуст; требуется принятие владельцем coverage_gaps (5–7, npm-потребитель, session-часть) и принятых рисков (R19, R22–R26, R28–R31).
+- **Ship не открыт:** владелец не принял остаток (2026-10-23) — `pending-owner`; публикация запрещена. Локально: `ae6b9e4` + аудит-трейл; `origin/main` = `dfa4ee7`.
