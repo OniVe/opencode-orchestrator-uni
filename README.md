@@ -307,7 +307,7 @@ npm run lint         # biome check . (lint + format + import order; read-only)
 npm run lint:fix     # biome check --write . (applies safe fixes)
 ```
 
-The last two commands need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package it is `stand: unavailable` plus your own reproducible checks.
+The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
 `npm test` scans only `./test/` — the shipped suite (93 tests in 8 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
