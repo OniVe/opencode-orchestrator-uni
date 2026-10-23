@@ -88,6 +88,7 @@ validates the document.
 | `E_UNKNOWN_SCHEMA`  | The report names an id that is not shipped (or no id at all)     |
 | `E_SCHEMA_MISMATCH` | The report names another schema than the expected one            |
 | `E_INVALID`         | The document does not satisfy its schema (see `errors`)          |
+| `E_SCHEMA_IO`       | `schemas/*.json` unreadable/malformed (see `directory`, `file`)  |
 | `E_ABORTED`         | The session was stopped while reading the report                 |
 
 `warnings` carry the prompt rules a *structurally valid* report can still miss — things
@@ -305,6 +306,8 @@ npm run verify:kit   # bun tools/kit-verify.ts (locales, tests, lint, types — 
 npm run lint         # biome check . (lint + format + import order; read-only)
 npm run lint:fix     # biome check --write . (applies safe fixes)
 ```
+
+The last two commands need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package it is `stand: unavailable` plus your own reproducible checks.
 
 `npm test` scans only `./test/` — the shipped suite (93 tests in 8 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
