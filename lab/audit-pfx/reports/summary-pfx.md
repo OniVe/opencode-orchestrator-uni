@@ -229,5 +229,5 @@
 ### Релиз v0.3.0 (2026-10-23)
 
 - Push `dfa4ee7..038eaca`; **CI — success**; **Release — success**: tag `v0.3.0` = `038eaca`, GitHub Release опубликован, notes-ref `semantic-release-v0.3.0` на origin. Release notes: 1 feature + 5 fixes.
-- `@semantic-release/npm`: «Published opencode-orchestrator-uni@0.3.0 to dist-tag @latest»; реестр отдаёт версию с лагом (проверка повторяется).
-- **Commitlint:** historical failure на `7b980c9` (`body-max-line-length`: строка тела >100). История после релиза не переписывается; forward-fix — новый коммит с чистым сообщением (workflow линтует только диапазон пуша).
+- `@semantic-release/npm`: «Published opencode-orchestrator-uni@0.3.0 to dist-tag @latest». **Проверено:** `dist-tags.latest = 0.3.0`, tarball 39 файлов (без `tools/` и `lab/`), integrity `sha512-DPbce…`; GitHub Release v0.3.0.
+- **Commitlint:** historical failure на `7b980c9` (`body-max-line-length`: строка тела >100). История после релиза не переписывается; forward-fix `2a291d6` — на нём Commitlint/CI **success**, Release — no-op (нет новых feat/fix).
