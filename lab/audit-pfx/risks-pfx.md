@@ -52,5 +52,7 @@
 8. ~~Gap 7 (частота F)~~ — измерено: 10 fixer-сессий pfx (5 раундов + 4 live + 1 probe), 0 прерываний; внешняя частота не заявляется.
 9. ~~Gap 5 (git)~~ — WSL git 2.43.0: `worktree add -b`, `cat-file`, ancestor/delta, merge по SHA, `check-ref-format` пропускает `;`.
 
-Остаётся для принятия владельцем (2026-10-23, `pending-owner`):
+Принято владельцем 2026-10-23 (`accepted (owner, 2026-10-23)`):
 - **другие версии OpenCode** (плагин V2; в среде 2.0.26) — не тестировались.
+
+Coverage_gaps после принятия: **пусто**; ship-условие (`meta.gate`=pass ∧ `closing_list` пуст ∧ gaps приняты) выполнено.
