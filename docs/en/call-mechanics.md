@@ -123,7 +123,7 @@ subagent({agent:"fix-runner", prompt:"To close:\n1) <id | location | mechanism |
  Return fix-runner/v1."})
 ```
 - The root checks the delta (`git diff <round-base>..HEAD --stat` + a key run) before the re-audit and updates the registry.
-- The round's test stand (if the kit ships a verification stand — the tools `tools/kit-verify` (the verifier) and `tools/kit-sync` (sync of copies + a snapshot) in the kit directory; in rounds on other projects — only if the stand is explicitly included in the call boundaries): baseline → fixes → sync of copies and a repeat run of the stand; the baseline→after delta is attached to the report (the `stand` field).
+- The round's test stand (if the kit ships a verification stand — the tool `tools/kit-verify` (the verifier) in the kit directory; in rounds on other projects — only if the stand is explicitly included in the call boundaries): baseline → fixes → a repeat run of the stand; the baseline→after delta is attached to the report (the `stand` field).
 - **re-audit = resuming the same sessions**:
 ```
 subagent({agent:"empiric", sessionID:<emp>, background:true,

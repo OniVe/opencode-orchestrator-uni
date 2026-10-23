@@ -4,7 +4,8 @@
  * editors as observed in OpenCode 2.0.x).
  */
 import { describe, expect, test } from "bun:test"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import path from "node:path"
 import { TOOL_IDS, TOOL_NAMESPACE } from "../lib/tools"
 import { createHarness, runTool } from "./support/harness"
@@ -301,6 +302,37 @@ describe("shipped files", () => {
     expect(result.code).toBe("E_INVALID")
     expect((result.errors as { path: string }[]).map((error) => error.path)).toContain("$.verdict")
     harness.dispose()
+  })
+})
+
+describe("schema freshness", () => {
+  test("a schema edited while the plugin is live is applied on the next validation", async () => {
+    const schemas = await mkdtemp(path.join(tmpdir(), "audit-schemas-"))
+    const document = (required: string[]) =>
+      JSON.stringify({
+        id: "probe/v1",
+        schema: {
+          type: "object",
+          required,
+          properties: { schema: { type: "string" }, verdict: { type: "string" } },
+        },
+      })
+    await writeFile(path.join(schemas, "probe.v1.json"), document(["schema", "verdict"]), "utf8")
+    const harness = await createHarness({ schemasDirectory: schemas })
+    const text = '```json\n{"schema":"probe/v1","verdict":"pass"}\n```'
+    expect(await runTool(harness, "orch_uni_validate_report", { text })).toMatchObject({
+      valid: true,
+      schema: "probe/v1",
+    })
+
+    // Same plugin instance, no reload: the next call must see the new file.
+    await writeFile(path.join(schemas, "probe.v1.json"), document(["schema", "verdict", "gate"]), "utf8")
+    const fresh = await runTool(harness, "orch_uni_validate_report", { text })
+    expect(fresh).toMatchObject({ valid: false, code: "E_INVALID" })
+    expect((fresh.errors as { path: string }[]).map((error) => error.path)).toContain("$.gate")
+
+    harness.dispose()
+    await rm(schemas, { recursive: true, force: true })
   })
 })
 

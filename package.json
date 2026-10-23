@@ -45,6 +45,7 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "check:locales": "bun tools/locale-check.ts",
+    "verify:kit": "bun tools/kit-verify.ts",
     "eval": "bun eval/run.ts",
     "eval:selfcheck": "bun eval/selfcheck.ts",
     "eval:recompute": "bun eval/recompute.ts"

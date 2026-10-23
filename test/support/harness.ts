@@ -30,6 +30,8 @@ export interface HarnessOptions {
   /** Set to false to simulate a build without an event stream. */
   readonly events?: boolean
   readonly sessionID?: string
+  /** Directory to read `schemas/*.json` from (defaults to the shipped schemas). */
+  readonly schemasDirectory?: string
 }
 
 export interface Harness {
@@ -151,7 +153,10 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     },
   } as unknown as Plugin.Context
 
-  const cleanup = await registerAuditTools(context)
+  const cleanup = await registerAuditTools(
+    context,
+    options.schemasDirectory === undefined ? {} : { schemasDirectory: options.schemasDirectory },
+  )
 
   return {
     directory,

@@ -298,13 +298,24 @@ export function resolveRoot(directory: string, input: string): string {
   return path.isAbsolute(input) ? path.normalize(input) : path.resolve(directory, input)
 }
 
+/** Optional seams for tests; the plugin calls this with no options. */
+export interface RegisterAuditToolsOptions {
+  /** Directory to read `schemas/*.json` from. Defaults to the shipped `schemas/`. */
+  readonly schemasDirectory?: string
+}
+
 /**
- * Register the audit tools on the plugin context. Loading the schemas and the
- * session index happens before the transform callback, because transforms are
- * synchronous and the executors must close over complete, immutable state.
+ * Register the audit tools on the plugin context. The session index is loaded
+ * before the transform callback, because transforms are synchronous; the report
+ * schemas are not: they are re-read on every `validate_report` call, so a schema
+ * edited while the plugin is live is applied without a reload (a price of a few
+ * small JSON reads per validation).
  */
-export async function registerAuditTools(context: Plugin.Context): Promise<() => void> {
-  const schemas = await loadSchemas()
+export async function registerAuditTools(
+  context: Plugin.Context,
+  options: RegisterAuditToolsOptions = {},
+): Promise<() => void> {
+  const schemasDirectory = options.schemasDirectory ?? SCHEMAS_DIRECTORY
   const directory = context.location.directory
   const session = context.session
   const index = new SessionIndex(context.storage)
@@ -337,6 +348,7 @@ export async function registerAuditTools(context: Plugin.Context): Promise<() =>
       }
     }
     if (toolContext.signal.aborted) return failure("E_ABORTED", "validation aborted")
+    const schemas = await loadSchemas(schemasDirectory)
     const report = checkReport(source, { ...(expectedSchema === undefined ? {} : { expectedSchema }), schemas })
     return json(report)
   }
