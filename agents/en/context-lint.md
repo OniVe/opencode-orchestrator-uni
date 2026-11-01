@@ -76,6 +76,6 @@ FORMAT (SGR): a summary (up to 10 lines) + json:
   "summary": "..."
 }
 
-Before submitting, validate the JSON as text through `orch_uni_validate_report` and make it `valid=true`; create files with the `write` tool, not a shell heredoc: on Windows a command longer than 32,767 characters is truncated.
+Before submitting, validate the JSON as text through `orch_uni_validate_report` and make it `valid=true`; return the report as text in the answer — do not create files.
 
 LIMITS: read-only; do not edit files; do not run builds/tests/migrations/deploys; the report is in English, without fluff.

@@ -411,12 +411,23 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   // `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions` (see
   // `lib/tools.ts` and README «Tools»). The tools cleanup only stops the
   // background session-index subscription; the commands cleanup disposes the
-  // command transform registration.
+  // command transform registration. A failure after the tools are registered
+  // must abort that subscription too — otherwise a half-registered plugin leaks
+  // an event listener for the lifetime of the server.
   const toolsCleanup = await registerAuditTools(ctx)
-  const commandsCleanup = await registerKitCommands(ctx, locale)
-  return async () => {
-    await commandsCleanup()
+  let commandsCleanup: Plugin.Cleanup
+  try {
+    commandsCleanup = await registerKitCommands(ctx, locale)
+  } catch (error) {
     toolsCleanup()
+    throw error
+  }
+  return async () => {
+    try {
+      await commandsCleanup()
+    } finally {
+      toolsCleanup()
+    }
   }
 }
 

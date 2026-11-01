@@ -28,7 +28,7 @@ const DESCRIPTIONS: Record<CommandLocale, { readonly agentsMd: string; readonly 
 
 function agentsMdPrompt(locale: CommandLocale, goal: string): string {
   if (locale === "ru") {
-    const audit = /\b(?:аудит|проверь|проверить)\b/i.test(goal)
+    const audit = /(?<![\p{L}\p{N}_])(?:аудит|проверь|проверить)(?![\p{L}\p{N}_])/iu.test(goal)
     return [
       "[Команда /agents-md]",
       `Цель: ${goal}.`,

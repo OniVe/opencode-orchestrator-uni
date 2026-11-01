@@ -38,13 +38,17 @@ interface CommandDraft {
   }) => Promise<void>
 }
 
-function createHarness(options?: unknown) {
+function createHarness(
+  options?: unknown,
+  faults: { readonly failingCommands?: boolean; readonly failingDispose?: boolean } = {},
+) {
   const agents = new Map<string, AgentDraft>()
   const references = new Map<string, unknown>()
   const tools = new Map<string, unknown>()
   const commands = new Map<string, CommandDraft>()
   const prompts: unknown[] = []
   const storage = new Map<string, unknown>()
+  let subscriptionSignal: AbortSignal | undefined
   const agentEditor = {
     list: () => [...agents.values()],
     get: (id: string) => agents.get(id),
@@ -95,11 +99,14 @@ function createHarness(options?: unknown) {
       scan: async () => ({ entries: [] }),
     },
     event: {
-      subscribe: () => ({
-        async *[Symbol.asyncIterator]() {
-          // no events: the subscription ends immediately
-        },
-      }),
+      subscribe: (requestOptions?: { signal?: AbortSignal }) => {
+        subscriptionSignal = requestOptions?.signal
+        return {
+          async *[Symbol.asyncIterator]() {
+            // no events: the subscription ends immediately
+          },
+        }
+      },
     },
     session: {
       get: async () => ({}),
@@ -110,8 +117,13 @@ function createHarness(options?: unknown) {
     },
     command: {
       transform: async (callback: (editor: typeof commandEditor) => void) => {
+        if (faults.failingCommands) throw new Error("command transform failed")
         callback(commandEditor)
-        return { dispose: async () => {} }
+        return {
+          dispose: async () => {
+            if (faults.failingDispose) throw new Error("dispose failed")
+          },
+        }
       },
       list: async () => ({ location: { directory: process.cwd() }, data: [...commands.values()] }),
     },
@@ -156,11 +168,14 @@ function createHarness(options?: unknown) {
     tools,
     commands,
     prompts,
+    get aborted() {
+      return subscriptionSignal?.aborted ?? false
+    },
   }
 }
 
-async function runSetup(options?: unknown) {
-  const harness = createHarness(options)
+async function runSetup(options?: unknown, faults: { failingCommands?: boolean; failingDispose?: boolean } = {}) {
+  const harness = createHarness(options, faults)
   const warnings: string[] = []
   const original = console.warn
   console.warn = (...args: unknown[]) => {
@@ -406,5 +421,56 @@ describe("opencode-orchestrator-uni", () => {
     expect(prompts).toHaveLength(1)
     expect(prompts[0]).toMatchObject({ sessionID: "ses_test", delivery: "queue" })
     expect(String((prompts[0] as { text?: string }).text)).toContain("context-efficiency.md")
+  })
+
+  /** Text the `/agents-md` handler injects for one typed goal. */
+  async function agentsMdGoal(locale: Locale, goal: string): Promise<string> {
+    const { commands, prompts } = await runSetup({ locale })
+    await commands.get("agents-md")!.execute({
+      sessionID: "ses_test",
+      prompt: { text: `/agents-md ${goal}` },
+      delivery: "queue",
+    })
+    return String((prompts.at(-1) as { text?: string } | undefined)?.text ?? "")
+  }
+
+  for (const goal of ["проверь AGENTS.md", "аудит репозитория", "проверить инструкции", "АУДИТ"]) {
+    test(`RU "${goal}" selects the audit branch`, async () => {
+      const text = await agentsMdGoal("ru", goal)
+      expect(text).toContain("Это аудит")
+      expect(text).not.toContain("Это черновик")
+    })
+  }
+
+  for (const goal of ["аудитория проекта", "собери черновик"]) {
+    test(`RU "${goal}" selects the draft branch`, async () => {
+      const text = await agentsMdGoal("ru", goal)
+      expect(text).toContain("Это черновик")
+      expect(text).not.toContain("Это аудит")
+    })
+  }
+
+  for (const goal of ["audit the repo", "review AGENTS.md", "check these rules"]) {
+    test(`EN "${goal}" still selects the audit branch`, async () => {
+      const text = await agentsMdGoal("en", goal)
+      expect(text).toContain("This is an audit")
+      expect(text).not.toContain("This is a draft")
+    })
+  }
+
+  test("a failing command registration aborts the tools subscription", async () => {
+    const harness = createHarness({ locale: "ru" }, { failingCommands: true })
+    await expect(plugin.setup(harness.ctx)).rejects.toThrow("command transform failed")
+    expect(harness.aborted).toBe(true)
+  })
+
+  test("a failing command dispose still aborts the tools subscription", async () => {
+    const harness = createHarness({ locale: "ru" }, { failingDispose: true })
+    const cleanup = await plugin.setup(harness.ctx)
+    expect(typeof cleanup).toBe("function")
+    expect(harness.aborted).toBe(false)
+    if (cleanup === undefined) return
+    await expect(cleanup()).rejects.toThrow("dispose failed")
+    expect(harness.aborted).toBe(true)
   })
 })

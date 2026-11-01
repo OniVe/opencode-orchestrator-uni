@@ -352,6 +352,28 @@ export function reportWarnings(schemaId: string, value: unknown): string[] {
     }
   }
 
+  if (schemaId === "context-lint/v1") {
+    const files = list("files").filter(isPlainObject)
+    const findings = files.flatMap((file) => (Array.isArray(file.findings) ? file.findings.filter(isPlainObject) : []))
+    const majorIds = findings
+      .filter((finding) => finding.severity === "MAJOR")
+      .map((finding) => finding.id)
+      .filter((id): id is string => typeof id === "string")
+    const closing = strings("closing_list")
+    // The verdict is a function of the findings, and `closing_list` is the set of
+    // MAJOR ids: a report that claims `pass` over its own MAJOR finding, or that
+    // lists something else, is a report whose closing_list cannot be trusted.
+    if (value.verdict === "pass" && majorIds.length > 0) {
+      warnings.push("verdict=pass with a MAJOR finding: verdict must be fail")
+    }
+    if (closing.length !== majorIds.length || closing.some((id) => !majorIds.includes(id))) {
+      warnings.push(`closing_list must equal the MAJOR finding ids (${majorIds.join(", ") || "none"})`)
+    }
+    if (value.verdict === "pass" && files.length === 0) {
+      warnings.push("verdict=pass with files=[]: no file was measured")
+    }
+  }
+
   return warnings
 }
 

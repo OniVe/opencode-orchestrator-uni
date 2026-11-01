@@ -244,6 +244,64 @@ describe("prompt-level warnings", () => {
     expect(reportWarnings("redteam/v1", { verdict: "not_ready", closing_list: ["R1"], coverage_gaps: [] })).toEqual([])
   })
 
+  test("context-lint: verdict, closing_list and files agree with the findings", () => {
+    const finding = (id: string, severity: string) => ({
+      id,
+      severity,
+      kind: "other",
+      evidence: "AGENTS.md:1",
+      detail: "d",
+      fix: "f",
+    })
+    const file = (findings: unknown[]) => ({
+      path: "AGENTS.md",
+      kind: "agents",
+      lines: 1,
+      words: 1,
+      chars: 1,
+      tokens_est: 1,
+      findings,
+    })
+    // pass over a MAJOR with an empty closing_list: three rules fire.
+    const lying = reportWarnings("context-lint/v1", {
+      verdict: "pass",
+      closing_list: [],
+      files: [],
+    })
+    expect(lying).toContain("verdict=pass with files=[]: no file was measured")
+
+    const withMajor = reportWarnings("context-lint/v1", {
+      verdict: "pass",
+      closing_list: [],
+      files: [file([finding("CTX-001", "MAJOR")])],
+    })
+    expect(withMajor).toContain("verdict=pass with a MAJOR finding: verdict must be fail")
+    expect(withMajor.some((line) => line.startsWith("closing_list must equal the MAJOR finding ids (CTX-001)"))).toBe(
+      true,
+    )
+
+    const mismatched = reportWarnings("context-lint/v1", {
+      verdict: "fail",
+      closing_list: ["CTX-002"],
+      files: [file([finding("CTX-001", "MAJOR")])],
+    })
+    expect(mismatched.some((line) => line.startsWith("closing_list must equal"))).toBe(true)
+
+    const clean = reportWarnings("context-lint/v1", {
+      verdict: "fail",
+      closing_list: ["CTX-001"],
+      files: [file([finding("CTX-001", "MAJOR"), finding("CTX-002", "MINOR")])],
+    })
+    expect(clean).toEqual([])
+
+    const passing = reportWarnings("context-lint/v1", {
+      verdict: "pass",
+      closing_list: [],
+      files: [file([finding("CTX-001", "MINOR")])],
+    })
+    expect(passing).toEqual([])
+  })
+
   test("warnings are only computed for structurally valid reports", () => {
     const value = { ...META_OK, verdict: "maybe", gate: "pass" }
     const report = checkReport(fence(JSON.stringify(value)), { schemas })
