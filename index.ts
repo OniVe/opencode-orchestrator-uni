@@ -24,6 +24,9 @@
  * - The `audit-kit` reference is registered only if that name is free; it points
  *   at this package's `docs/` directory so sessions can read the process
  *   documents directly.
+ * - Slash commands (`/agents-md`, `/spec`) are registered through
+ *   `ctx.command.transform`; their handlers inject a workflow prompt into the
+ *   current session and never write files themselves.
  *
  * Models are configuration, not definition: the agent files carry no `model`,
  * and the plugin applies models from its `plugins` entry options —
@@ -49,6 +52,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Agent, Model, Plugin, Reference } from "@opencode/plugin"
 import matter from "gray-matter"
+import { registerKitCommands } from "./lib/commands"
 import { registerAuditTools } from "./lib/tools"
 
 /** Stable plugin id: diagnostics, enable/disable selectors, storage scope. */
@@ -114,10 +118,10 @@ function localeCandidates(): string[] {
 const REFERENCE_DESCRIPTIONS: Record<Locale, string> = {
   ru:
     "Процессные документы комплекта оркестратора (аудиторский цикл): call-mechanics.md, " +
-    "process-ready-loop.md, root-runbook.md, instruction-other-session.md.",
+    "process-ready-loop.md, root-runbook.md, instruction-other-session.md, context-efficiency.md.",
   en:
     "Process documents of the orchestrator agent kit (audit loop): call-mechanics.md, " +
-    "process-ready-loop.md, root-runbook.md, instruction-other-session.md.",
+    "process-ready-loop.md, root-runbook.md, instruction-other-session.md, context-efficiency.md.",
 }
 
 /** Frontmatter keys this loader understands; anything else is reported and ignored. */
@@ -404,9 +408,16 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   })
 
   // Deterministic, read-only audit tools: `orch_uni_validate_report`,
-  // `orch_uni_snapshot`, `orch_uni_sessions` (see `lib/tools.ts` and README «Tools»).
-  // The returned cleanup only stops the background session-index subscription.
-  return await registerAuditTools(ctx)
+  // `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions` (see
+  // `lib/tools.ts` and README «Tools»). The tools cleanup only stops the
+  // background session-index subscription; the commands cleanup disposes the
+  // command transform registration.
+  const toolsCleanup = await registerAuditTools(ctx)
+  const commandsCleanup = await registerKitCommands(ctx, locale)
+  return async () => {
+    await commandsCleanup()
+    toolsCleanup()
+  }
 }
 
 export default { id: PLUGIN_ID, setup } satisfies Plugin.Plugin

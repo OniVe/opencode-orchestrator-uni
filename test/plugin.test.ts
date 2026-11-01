@@ -28,10 +28,22 @@ interface AgentDraft {
   model?: unknown
 }
 
+interface CommandDraft {
+  name: string
+  description?: string
+  execute: (input: {
+    sessionID: string
+    prompt: { text: string; files?: unknown; agents?: unknown; skills?: unknown }
+    delivery: string
+  }) => Promise<void>
+}
+
 function createHarness(options?: unknown) {
   const agents = new Map<string, AgentDraft>()
   const references = new Map<string, unknown>()
   const tools = new Map<string, unknown>()
+  const commands = new Map<string, CommandDraft>()
+  const prompts: unknown[] = []
   const storage = new Map<string, unknown>()
   const agentEditor = {
     list: () => [...agents.values()],
@@ -64,6 +76,11 @@ function createHarness(options?: unknown) {
     list: () => [...references.entries()],
     get: (name: string) => references.get(name),
   }
+  const commandEditor = {
+    add: (definition: CommandDraft) => {
+      commands.set(definition.name, definition)
+    },
+  }
   const ctx = {
     options,
     location: { directory: process.cwd() },
@@ -84,7 +101,20 @@ function createHarness(options?: unknown) {
         },
       }),
     },
-    session: { get: async () => ({}) },
+    session: {
+      get: async () => ({}),
+      prompt: async (input: unknown) => {
+        prompts.push(input)
+        return { id: "msg_test" }
+      },
+    },
+    command: {
+      transform: async (callback: (editor: typeof commandEditor) => void) => {
+        callback(commandEditor)
+        return { dispose: async () => {} }
+      },
+      list: async () => ({ location: { directory: process.cwd() }, data: [...commands.values()] }),
+    },
     tool: {
       transform: async (callback: (editor: unknown) => void) => {
         callback({
@@ -124,6 +154,8 @@ function createHarness(options?: unknown) {
     agents,
     references,
     tools,
+    commands,
+    prompts,
   }
 }
 
@@ -336,6 +368,43 @@ describe("opencode-orchestrator-uni", () => {
   test("setup registers the audit tools", async () => {
     const { tools, warnings } = await runSetup()
     expect(warnings).toEqual([])
-    expect([...tools.keys()].sort()).toEqual(["orch_uni_sessions", "orch_uni_snapshot", "orch_uni_validate_report"])
+    expect([...tools.keys()].sort()).toEqual([
+      "orch_uni_context_lint",
+      "orch_uni_sessions",
+      "orch_uni_snapshot",
+      "orch_uni_validate_report",
+    ])
+  })
+
+  test("setup registers both slash commands", async () => {
+    const { commands, warnings } = await runSetup({ locale: "ru" })
+    expect(warnings).toEqual([])
+    expect([...commands.keys()].sort()).toEqual(["agents-md", "spec"])
+    expect(commands.get("agents-md")?.description).toContain("AGENTS.md")
+  })
+
+  test("an existing slash command is not overridden", async () => {
+    const harness = createHarness()
+    const local: CommandDraft = {
+      name: "spec",
+      description: "local spec command",
+      execute: async () => {},
+    }
+    harness.commands.set("spec", local)
+    await plugin.setup(harness.ctx)
+    expect(harness.commands.get("spec")?.description).toBe("local spec command")
+    expect(harness.commands.has("agents-md")).toBe(true)
+  })
+
+  test("a command injects its workflow prompt into the session", async () => {
+    const { commands, prompts } = await runSetup()
+    await commands.get("spec")!.execute({
+      sessionID: "ses_test",
+      prompt: { text: "export orders" },
+      delivery: "queue",
+    })
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toMatchObject({ sessionID: "ses_test", delivery: "queue" })
+    expect(String((prompts[0] as { text?: string }).text)).toContain("context-efficiency.md")
   })
 })

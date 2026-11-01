@@ -16,6 +16,8 @@ INPUT: the path to the repository or files is in the call prompt; when absent, u
 
 MEASURE: for each file, count lines, words, characters, an estimated token count (`Cyrillic/3 + the rest/4`), and the number of headings, tables and lists. Use read-only commands only (`find`, `wc`, `grep`, `test -e`); do not run builds, tests, migrations or deploys.
 
+When the `orch_uni_context_lint` tool is available, run it on the target path first; use its findings as the deterministic base, then add the semantic checks (conflicts, testability, SPEC intent).
+
 AGENTS.md — check:
 1. Budget: >200 lines or >2500 tokens — MAJOR; 150–200 lines — MINOR.
 2. Commands: install/build/test/one test/lint/run are present, with flags and a working directory; restating the obvious (`npm test`) — MINOR.
