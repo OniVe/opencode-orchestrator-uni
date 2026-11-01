@@ -128,8 +128,12 @@ Deterministic, read-only audit of `AGENTS.md`, `SPEC.md` and `CLAUDE.md`. It ret
 `{ ok: true, verdict, closing_list, files, summary }`; each finding carries `id`,
 `severity`, `kind`, `evidence`, `detail` and `fix`. Checks: line/token budget, vague
 phrases, duplicate lines, broken relative links, placeholders, dates/versions in the
-first three lines, required sections and AC test columns. Typed failures: `E_INPUT`,
-`E_NOT_FOUND`, `E_NO_FILES`, `E_IO`, `E_ABORTED`.
+first three lines, required sections and AC test columns. Links are checked only for
+local paths inside the workspace; a target outside the root is refused (`E_OUT_OF_ROOT`).
+Limits: ≤ 2 MB per file, ≤ 500 files, ≤ 100 findings per file, ≤ 1000 findings per scan —
+truncation is reported (`truncated: true`), not silent. Typed failures: `E_INPUT`,
+`E_NOT_FOUND`, `E_NO_FILES`, `E_IO`, `E_ABORTED`, `E_LIMIT_FILE`, `E_LIMIT_FILES`,
+`E_OUT_OF_ROOT`.
 
 ### `orch_uni_snapshot`
 
@@ -336,7 +340,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (93 tests in 8 files, up from
+`npm test` scans only `./test/` — the shipped suite (155 tests in 9 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`

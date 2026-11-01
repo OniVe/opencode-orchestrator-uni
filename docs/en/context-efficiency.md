@@ -7,7 +7,7 @@ An instruction file is a budget of attention, not documentation. Every line is p
 | File | Target | Ceiling |
 |---|---:|---:|
 | Global `AGENTS.md` | 25–40 lines / <500 tokens | 60 lines |
-| Root `AGENTS.md` | 100–200 lines / 1–2k tokens | 250 lines |
+| Root `AGENTS.md` | 100–200 lines / 1–2k tokens | 200 lines |
 | Nested `AGENTS.md` | 20–60 lines / <700 tokens | 100 lines |
 | `SPEC.md` | 80–150 lines / ≤1.5k words | 2k words |
 | `ADR` | 30–60 lines / <700 tokens | 100 lines |

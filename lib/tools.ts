@@ -18,7 +18,7 @@
  *
  * Every tool answers with a JSON text body. Failures are typed (`E_*`) codes in
  * the body rather than thrown tool errors, so an agent can branch on the code.
- * All three are read-only: they never write to the workspace or the config; the
+ * All four are read-only: they never write to the workspace or the config; the
  * only state `sessions` keeps is a plugin-scoped session index in `ctx.storage`
  * (see the `sessions` tool notes below).
  */
@@ -463,7 +463,7 @@ export async function registerAuditTools(
 
   const contextLintTool = async (
     input: unknown,
-    toolContext: { readonly signal: AbortSignal },
+    toolContext: { readonly signal?: AbortSignal } | undefined,
   ): Promise<{ content: string }> => {
     const record = input === undefined ? {} : asRecord(input)
     if (record === undefined) return failure("E_INPUT", "input must be an object ({path?, max_lines?, max_tokens?})")
@@ -479,15 +479,27 @@ export async function registerAuditTools(
         return failure("E_INPUT", `"${key}" must be a positive number`)
       }
     }
-    if (toolContext.signal.aborted) return failure("E_ABORTED", "context lint aborted")
+    // The host may call an executor without a context (`execute(input, {})`), and
+    // some builds pass no signal at all: fall back to a local controller instead
+    // of throwing on `undefined.signal`.
+    const controller = new AbortController()
+    const signal = toolContext?.signal ?? controller.signal
+    if (signal.aborted) return failure("E_ABORTED", "context lint aborted")
     const outcome = await lintContext({
       root: directory,
       ...(target === undefined ? {} : { target: target as string }),
       ...(max_lines === undefined ? {} : { maxLines: max_lines as number }),
       ...(max_tokens === undefined ? {} : { maxTokens: max_tokens as number }),
-      signal: toolContext.signal,
+      signal,
     })
-    if (!outcome.ok) return failure(outcome.code, outcome.message)
+    if (!outcome.ok) {
+      const extra: Record<string, unknown> = {}
+      if (outcome.path !== undefined) extra.path = outcome.path
+      if (outcome.bytes !== undefined) extra.bytes = outcome.bytes
+      if (outcome.files !== undefined) extra.files = outcome.files
+      if (outcome.max !== undefined) extra.max = outcome.max
+      return failure(outcome.code, outcome.message, extra)
+    }
     return json(outcome)
   }
 
@@ -610,7 +622,7 @@ export async function registerAuditTools(
         "Deterministic, read-only audit of AGENTS.md/SPEC.md/CLAUDE.md: line/token budget, vague phrases, duplicate lines, " +
         "broken relative links, placeholders, dates in the first three lines, required sections, AC test columns. " +
         "Returns JSON {ok, verdict, closing_list, files, summary} or a typed code " +
-        "(E_INPUT|E_NOT_FOUND|E_NO_FILES|E_IO|E_ABORTED).",
+        "(E_INPUT|E_NOT_FOUND|E_NO_FILES|E_IO|E_ABORTED|E_LIMIT_FILE|E_LIMIT_FILES|E_OUT_OF_ROOT).",
       input: CONTEXT_LINT_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },
       execute: contextLintTool,
