@@ -148,14 +148,21 @@ file at 2000 candidates and yield to timers, so an abort wins; a capped candidat
 incomplete result (`truncated: true` plus a MAJOR `link candidates truncated` marker in
 `closing_list`), so it can never pass. Broken links have no separate per-file cap: the
 finding caps bound the output and report the overflow. A line longer than 4000 characters
-is skipped by the link/placeholder parsers and reported with an INFO `long line skipped`
-marker; duplicate lines have no inner cap. UNC/network targets are never probed.
+is skipped by the link/placeholder parsers, so it is reported with a MAJOR `long line
+skipped` marker that stays in `closing_list` and sets `truncated: true`: a skipped line may
+hide a broken link or placeholder. Duplicate lines have no inner cap. UNC/network targets
+are never probed.
 Limits: ≤ 2 MB per file, ≤ 500 files per scan. `max_findings` (per file) is N per
 severity: up to N MAJOR and N MINOR/INFO are kept, and any excess is replaced by one
 marker (MAJOR when a MAJOR was dropped, otherwise INFO); a MAJOR marker stays in
 `closing_list`. `max_total_findings` (global, default 1000) keeps MAJOR
 findings first; when MAJOR overflow, `max_total` findings plus one MAJOR `truncated`
 marker are kept. A capped list sets `truncated: true` instead of hiding findings.
+Markers are additional to `max_findings`: a capped link-candidate list and a capped
+findings list can both report a marker in the same run.
+Non-goals are counted as top-level items: a wrapped paragraph is one item, inline
+`;`/`,`/`and`/`и` split only at the top level (not inside `(…)`, `[…]` or backticks), and a
+4-space-indented bullet under a bold label is code, not an item — use `-` at 0–2 spaces.
 Placeholders are `<...>` (three or more dots) and `TODO`/`TBD`/`FIXME`; `<DoD>` and
 `<name>` are markup.
 `max_lines` is the single 200-line root budget the tool applies: the 60/200/100
