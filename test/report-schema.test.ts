@@ -300,6 +300,23 @@ describe("prompt-level warnings", () => {
       files: [file([finding("CTX-001", "MINOR")])],
     })
     expect(passing).toEqual([])
+
+    // A duplicate id hides a missing one: set equality, not containment.
+    const duplicates = reportWarnings("context-lint/v1", {
+      verdict: "fail",
+      closing_list: ["CTX-001", "CTX-001"],
+      files: [file([finding("CTX-001", "MAJOR"), finding("CTX-002", "MAJOR")])],
+    })
+    expect(duplicates.some((line) => line.startsWith("closing_list must equal"))).toBe(true)
+
+    // A capped list is reported: MAJOR is kept but MINOR/INFO may be missing.
+    const truncated = reportWarnings("context-lint/v1", {
+      verdict: "pass",
+      closing_list: [],
+      truncated: true,
+      files: [file([finding("CTX-001", "MINOR")])],
+    })
+    expect(truncated.some((line) => line.startsWith("truncated=true"))).toBe(true)
   })
 
   test("warnings are only computed for structurally valid reports", () => {

@@ -366,11 +366,20 @@ export function reportWarnings(schemaId: string, value: unknown): string[] {
     if (value.verdict === "pass" && majorIds.length > 0) {
       warnings.push("verdict=pass with a MAJOR finding: verdict must be fail")
     }
-    if (closing.length !== majorIds.length || closing.some((id) => !majorIds.includes(id))) {
+    // Set equality, not just containment: a repeated id hides a missing one.
+    const uniqueClosing = new Set(closing)
+    if (
+      uniqueClosing.size !== closing.length ||
+      closing.length !== majorIds.length ||
+      closing.some((id) => !majorIds.includes(id))
+    ) {
       warnings.push(`closing_list must equal the MAJOR finding ids (${majorIds.join(", ") || "none"})`)
     }
     if (value.verdict === "pass" && files.length === 0) {
       warnings.push("verdict=pass with files=[]: no file was measured")
+    }
+    if (value.truncated === true) {
+      warnings.push("truncated=true: the finding list is capped; MAJOR findings are kept, MINOR/INFO may be missing")
     }
   }
 

@@ -394,32 +394,154 @@ describe("limits", () => {
     }
   })
 
-  test("per-file findings are capped and the truncation is reported", async () => {
+  test("the per-file cap drops MINOR/INFO but keeps every MAJOR", async () => {
     const root = await temporary()
     try {
-      await write(root, "AGENTS.md", `${VALID_AGENTS}\n<...>\nTODO\n[gone](docs/gone.md)\n`)
+      const duplicated = Array.from({ length: 5 }, (_, index) => `- rule ${index}: ${"x".repeat(50)}`)
+      const body = [...duplicated, ...duplicated, "<...>"].join("\n")
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n${body}\n`)
       const result = await lintContext({ root, target: "AGENTS.md", maxFindingsPerFile: 2 })
       expect(result.ok).toBe(true)
       if (!result.ok) return
       const findings = result.files[0]?.findings ?? []
-      expect(findings.length).toBe(3)
-      expect(findings.at(-1)).toMatchObject({ severity: "INFO", detail: "findings truncated at 2" })
+      const majors = findings.filter((finding) => finding.severity === "MAJOR")
+      const minors = findings.filter((finding) => finding.severity === "MINOR")
+      expect(majors.some((finding) => finding.detail.startsWith("placeholder"))).toBe(true)
+      expect(minors.length).toBe(2)
+      expect(findings.at(-1)).toMatchObject({
+        severity: "INFO",
+        detail: "findings truncated at 2 (MAJOR findings are kept)",
+      })
+      expect(result.files[0]?.truncated).toBe(true)
+      expect(result.truncated).toBe(true)
+      expect(result.verdict).toBe("fail")
+      // The retained MAJOR ids are exactly the closing list: nothing was hidden.
+      expect(result.closing_list).toEqual(majors.map((finding) => finding.id))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("more than 100 MINOR findings are capped, the MAJORs are kept and closed", async () => {
+    const root = await temporary()
+    try {
+      const body = [
+        "# SPEC",
+        "",
+        "## Non-goals",
+        "",
+        "- a",
+        "- b",
+        "- c",
+        "",
+        "## Requirements",
+        "",
+        ...Array.from({ length: 120 }, (_, index) => `- R${index + 1} and shall do thing ${index + 1}.`),
+        "",
+        "| AC | R | Given | When | Then | Test |",
+        "|---|---|---|---|---|---|",
+      ].join("\n")
+      await write(root, "SPEC.md", body)
+      const result = await lintContext({ root, target: "SPEC.md", maxFindingsPerFile: 100 })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const findings = result.files[0]?.findings ?? []
+      const majors = findings.filter((finding) => finding.severity === "MAJOR")
+      expect(findings.filter((finding) => finding.severity === "MINOR").length).toBe(100)
+      expect(result.files[0]?.truncated).toBe(true)
+      expect(result.verdict).toBe("fail")
+      // 100 MAJOR findings are listed plus one MAJOR truncation marker.
+      expect(majors.length).toBe(101)
+      expect(majors.at(-1)?.detail).toBe("findings truncated at 100 MAJOR (further MAJOR findings are not listed)")
+      expect(result.closing_list).toEqual(majors.map((finding) => finding.id))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a 300k-placeholder file keeps a bounded finding list", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", "<...>\n".repeat(300_000))
+      const result = await lintContext({ root, target: "AGENTS.md", maxFindingsPerFile: 10 })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const findings = result.files[0]?.findings ?? []
+      // Budget MAJORs + 10 kept MAJOR findings + section MINORs + one MAJOR marker;
+      // never a raw 300k array.
+      expect(findings.length).toBeLessThanOrEqual(16)
+      const marker = findings.find(
+        (finding) => finding.detail === "findings truncated at 10 MAJOR (further MAJOR findings are not listed)",
+      )
+      expect(marker).toMatchObject({ severity: "MAJOR" })
+      expect(result.truncated).toBe(true)
+      expect(result.verdict).toBe("fail")
+      const majorCount = findings.filter((finding) => finding.severity === "MAJOR").length
+      expect(majorCount).toBe(11)
+      expect(result.closing_list.length).toBe(majorCount)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a truncated list with only MINOR findings still passes", async () => {
+    const root = await temporary()
+    try {
+      const duplicated = Array.from({ length: 5 }, (_, index) => `- rule ${index}: ${"z".repeat(50)}`)
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n${[...duplicated, ...duplicated].join("\n")}\n`)
+      const result = await lintContext({ root, target: "AGENTS.md", maxFindingsPerFile: 1 })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.verdict).toBe("pass")
+      expect(result.closing_list).toEqual([])
+      expect(result.truncated).toBe(true)
       expect(result.files[0]?.truncated).toBe(true)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("the total finding cap stops the scan and reports it", async () => {
+  test("the total cap drops MINOR/INFO but a later MAJOR is retained", async () => {
     const root = await temporary()
     try {
-      await write(root, "AGENTS.md", `${VALID_AGENTS}\n<...>\n`)
-      await write(root, "docs/SPEC.md", "# SPEC\n<...>\n")
+      const duplicated = Array.from({ length: 4 }, (_, index) => `- rule ${index}: ${"w".repeat(50)}`)
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n${[...duplicated, ...duplicated].join("\n")}\n`)
+      await write(root, "docs/AGENTS.md", `${VALID_AGENTS}\n<...>\n`)
       const result = await lintContext({ root, maxTotalFindings: 1 })
       expect(result.ok).toBe(true)
       if (!result.ok) return
-      expect(result.files.flatMap((file) => file.findings).length).toBe(1)
       expect(result.truncated).toBe(true)
+      const major = result.files
+        .flatMap((file) => file.findings)
+        .filter((finding) => finding.severity === "MAJOR" && finding.detail.startsWith("placeholder"))
+      expect(major.length).toBe(1)
+      expect(major[0]?.evidence.startsWith("docs/AGENTS.md")).toBe(true)
+      expect(result.verdict).toBe("fail")
+      expect(result.closing_list).toContain(major[0]?.id ?? "")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("500 files hit the default total cap and the last MAJOR is retained", async () => {
+    const root = await temporary()
+    try {
+      const line = "- rule: " + "q".repeat(50)
+      const body = ["## Commands", "bun test", ...Array.from({ length: 4 }, () => line)].join("\n")
+      for (let index = 0; index < 500; index += 1) {
+        await write(root, `d${index}/AGENTS.md`, index === 499 ? `${body}\n<...>\n` : body)
+      }
+      const result = await lintContext({ root })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.files.length).toBe(500)
+      expect(result.truncated).toBe(true)
+      const retained = result.files
+        .flatMap((file) => file.findings)
+        .filter((finding) => finding.severity === "MAJOR" && finding.detail.startsWith("placeholder"))
+      expect(retained.length).toBe(1)
+      expect(retained[0]?.evidence.startsWith("d499/AGENTS.md")).toBe(true)
+      expect(result.closing_list).toContain(retained[0]?.id ?? "")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -755,6 +877,569 @@ describe("root confinement", () => {
       expect(findingsOf(result).some((finding) => finding.kind === "broken_link")).toBe(false)
     } finally {
       await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+/** A directory link: `symlink(type: "junction")` or `mklink /J` on Windows. */
+async function directoryLink(target: string, link: string): Promise<boolean> {
+  try {
+    await symlink(target, link, process.platform === "win32" ? "junction" : "dir")
+    return true
+  } catch {
+    // fall through to mklink
+  }
+  if (process.platform !== "win32") return false
+  const created = Bun.spawnSync(["cmd", "/c", "mklink", "/J", link, target])
+  return created.exitCode === 0
+}
+
+const AC_TABLE = [
+  "| AC | R | Given | When | Then | Test |",
+  "|---|---|---|---|---|---|",
+  "| AC1.1 | R1 | given | when | then | row.test.ts |",
+]
+
+// R2-M1: the real path, not the lexical one, is the containment boundary.
+describe("real-path containment", () => {
+  test("a directory link outside the root is skipped, refused as a target and not link-checked", async () => {
+    const root = await temporary()
+    const outside = await temporary()
+    try {
+      await write(root, "AGENTS.md", VALID_AGENTS)
+      await write(outside, "AGENTS.md", VALID_AGENTS)
+      if (!(await directoryLink(outside, path.join(root, "out")))) return
+      const scanned = await lintContext({ root })
+      expect(scanned.ok).toBe(true)
+      if (!scanned.ok) return
+      expect(scanned.files.map((file) => file.path)).toEqual(["AGENTS.md"])
+      expect(await lintContext({ root, target: "out/AGENTS.md" })).toMatchObject({
+        ok: false,
+        code: "E_OUT_OF_ROOT",
+      })
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\nSee [out](out/AGENTS.md).`)
+      const linked = await lintContext({ root, target: "AGENTS.md" })
+      expect(linked.ok).toBe(true)
+      if (!linked.ok) return
+      expect(linked.files[0]?.findings.some((finding) => finding.kind === "broken_link")).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
+  test("a file link outside the root is not collected", async () => {
+    const root = await temporary()
+    const outside = await temporary()
+    try {
+      await write(root, "AGENTS.md", VALID_AGENTS)
+      await write(outside, "AGENTS.md", VALID_AGENTS)
+      try {
+        await symlink(path.join(outside, "AGENTS.md"), path.join(root, "CLAUDE.md"), "file")
+      } catch {
+        return // the OS/user cannot create file links
+      }
+      const result = await lintContext({ root })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.files.map((file) => file.path)).toEqual(["AGENTS.md"])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
+  test("a ..foo directory inside the root is allowed", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "..foo/AGENTS.md", VALID_AGENTS)
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\nSee [x](..foo/AGENTS.md).`)
+      const direct = await lintContext({ root, target: "..foo/AGENTS.md" })
+      expect(direct.ok).toBe(true)
+      const scanned = await lintContext({ root })
+      expect(scanned.ok).toBe(true)
+      if (!scanned.ok) return
+      expect(scanned.files.map((file) => file.path).sort()).toEqual(["..foo/AGENTS.md", "AGENTS.md"])
+      const linked = await lintContext({ root, target: "AGENTS.md" })
+      expect(linked.ok).toBe(true)
+      if (!linked.ok) return
+      expect(linked.files[0]?.findings.some((finding) => finding.kind === "broken_link")).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// R2-M4: one line-preserving mask for fences, inline code and HTML comments.
+describe("code mask", () => {
+  test("links, vague terms and placeholders in code or comments are ignored", async () => {
+    const root = await temporary()
+    try {
+      const body = [
+        VALID_AGENTS,
+        "",
+        "Inline `[gone](docs/inline-gone.md)` and `TODO <...> robust properly carefully`.",
+        "```md",
+        "[fenced](docs/fenced-gone.md)",
+        "TODO <...>",
+        "clean and robust and properly",
+        "```",
+        "",
+        "<!--",
+        "[comment](docs/comment-gone.md)",
+        "TODO <...>",
+        "-->",
+      ].join("\n")
+      await write(root, "AGENTS.md", body)
+      const result = await lintContext({ root, target: "AGENTS.md" })
+      const findings = findingsOf(result)
+      expect(findings.some((finding) => finding.kind === "broken_link")).toBe(false)
+      expect(findings.some((finding) => finding.kind === "vague")).toBe(false)
+      expect(findings.some((finding) => finding.detail.startsWith("placeholder"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a fenced requirements/AC block does not close SPEC sections", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        [
+          "# SPEC",
+          "",
+          "## Non-goals",
+          "",
+          "- a",
+          "- b",
+          "- c",
+          "",
+          "```md",
+          "## Requirements",
+          "- R1 — shall work.",
+          "| AC | R | Given | When | Then | Test |",
+          "|---|---|---|---|---|---|",
+          "| AC1.1 | R1 | given | when | then | row.test.ts |",
+          "```",
+        ].join("\n"),
+      )
+      const result = await lintContext({ root, target: "SPEC.md" })
+      const details = findingsOf(result).map((finding) => finding.detail)
+      expect(details).toContain("no numbered requirements")
+      expect(details).toContain("no acceptance criteria")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("real content outside the fence is still checked", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        `${VALID_AGENTS}\n\n\`\`\`\n[inside](docs/inside.md)\n\`\`\`\n[outside](docs/outside.md)\n`,
+      )
+      const result = await lintContext({ root, target: "AGENTS.md" })
+      const broken = findingsOf(result).filter((finding) => finding.kind === "broken_link")
+      expect(broken.length).toBe(1)
+      expect(broken[0]?.detail).toContain("docs/outside.md")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// R2-M3: the AC/R parser reads table blocks by header, not by row shape.
+describe("AC/R table parser", () => {
+  const spec = (extra: string[]): string =>
+    [
+      "# SPEC",
+      "",
+      "## Non-goals",
+      "",
+      "- a",
+      "- b",
+      "- c",
+      "",
+      "## Requirements",
+      "",
+      "- R1 — shall work.",
+      ...extra,
+    ].join("\n")
+
+  test("a heading without an AC table does not satisfy acceptance", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", spec(["", "## Acceptance criteria", "", "TBD."]))
+      const result = await lintContext({ root, target: "SPEC.md" })
+      expect(findingsOf(result).some((finding) => finding.detail === "no acceptance criteria")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a headerless AC row with an empty Test cell is MAJOR", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", spec(["", "| AC1.1 | R1 | given | when | then |  |"]))
+      const result = await lintContext({ root, target: "SPEC.md" })
+      const findings = findingsOf(result)
+      expect(findings.some((finding) => finding.severity === "MAJOR" && finding.detail === "AC row has no test")).toBe(
+        true,
+      )
+      expect(findings.some((finding) => finding.detail === "AC table lacks header")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a traceability table before the AC table does not mask it", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        spec([
+          "",
+          "| R | AC | Task |",
+          "|---|---|---|",
+          "| R1 | AC1.1 | T1 |",
+          "",
+          "| AC | R | Given | When | Then | Test |",
+          "|---|---|---|---|---|---|",
+          "| AC1.1 | R1 | given | when | then |  |",
+        ]),
+      )
+      const result = await lintContext({ root, target: "SPEC.md" })
+      expect(findingsOf(result).some((finding) => finding.detail === "AC row has no test")).toBe(true)
+      expect(findingsOf(result).some((finding) => finding.detail === "AC row lacks columns")).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("an escaped pipe does not shift the Test column", async () => {
+    const root = await temporary()
+    try {
+      const backslash = String.fromCharCode(92)
+      const row = `| AC1.1 | R1 | a ${backslash}| b | when | then |  |`
+      await write(root, "SPEC.md", spec(["", ...AC_TABLE.slice(0, 2), row]))
+      const result = await lintContext({ root, target: "SPEC.md" })
+      expect(findingsOf(result).some((finding) => finding.detail === "AC row has no test")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("an AC table without an R column reports the gap once, not per requirement", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        spec(["", "| AC | Given | When | Then | Test |", "|---|---|---|---|---|", "| AC1.1 | g | w | t | t.test.ts |"]),
+      )
+      const result = await lintContext({ root, target: "SPEC.md" })
+      const findings = findingsOf(result)
+      expect(findings.some((finding) => finding.detail === "AC table lacks R column")).toBe(true)
+      expect(findings.some((finding) => finding.detail.includes("has no acceptance criterion"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a traceability-only table is not an AC table", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", spec(["", "| R | AC | Task |", "|---|---|---|", "| R1 | AC1.1 | T1 |"]))
+      const details = findingsOf(await lintContext({ root, target: "SPEC.md" })).map((finding) => finding.detail)
+      expect(details).toContain("no acceptance criteria")
+      expect(details.some((detail) => detail.includes("has no acceptance criterion"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a Notes column before Test does not hide Test", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        spec([
+          "",
+          "| AC | R | Given | When | Then | Notes | Test |",
+          "|---|---|---|---|---|---|---|",
+          "| AC1.1 | R1 | g | w | t | note |  |",
+        ]),
+      )
+      const result = await lintContext({ root, target: "SPEC.md" })
+      expect(findingsOf(result).some((finding) => finding.detail === "AC row has no test")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// N5/N13: non-goals accept every documented form; the count stays 3–7.
+describe("non-goals forms", () => {
+  const spec = (section: string[]): string =>
+    ["# SPEC", "", ...section, "", "## Requirements", "", "- R1 — shall work.", "", ...AC_TABLE].join("\n")
+
+  const nonGoalMajor = (outcome: ContextLintOutcome): boolean =>
+    majors(outcome).some((finding) => finding.detail.includes("non-goals"))
+
+  for (const [name, section] of [
+    ["numbered heading + bullets", ["## 1. Non-goals", "", "- a", "- b", "- c"]],
+    ["numbered Russian heading + numbered list", ["## 2. Не цели", "", "1. a", "2. b", "3. c"]],
+    ["headerless table rows", ["## Non-goals", "", "| a |", "| b |", "| c |"]],
+    ["paragraph lines", ["## Non-goals", "", "the first", "the second", "the third"]],
+    ["inline semicolons", ["Non-goals: a; b; c"]],
+    ["inline comma and conjunction", ["Non-goals: a, b and c"]],
+    ["inline numbered", ["Non-goals: 1) a 2) b 3) c"]],
+  ] as const) {
+    test(`${name} count as 3 non-goals`, async () => {
+      const root = await temporary()
+      try {
+        await write(root, "SPEC.md", spec([...section]))
+        expect(nonGoalMajor(await lintContext({ root, target: "SPEC.md" }))).toBe(false)
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    })
+  }
+
+  test("an out-of-range numbered heading still fails", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", spec(["## 3. Non-goals", "", "- a", "- b"]))
+      expect(nonGoalMajor(await lintContext({ root, target: "SPEC.md" }))).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// N6/N7: numbered section headings, DoD wording, table requirements and subheadings.
+describe("section heading forms", () => {
+  test("numbered Requirements and Acceptance criteria headings are recognized", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        [
+          "# SPEC",
+          "",
+          "## 1. Non-goals",
+          "",
+          "- a",
+          "- b",
+          "- c",
+          "",
+          "## 4. Requirements",
+          "",
+          "- R1 — shall work.",
+          "",
+          "## 5. Acceptance criteria",
+          "",
+          ...AC_TABLE,
+        ].join("\n"),
+      )
+      const details = findingsOf(await lintContext({ root, target: "SPEC.md" })).map((finding) => finding.detail)
+      expect(details).not.toContain("no numbered requirements")
+      expect(details).not.toContain("no acceptance criteria")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("requirements table rows count as R", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        [
+          "# SPEC",
+          "",
+          "## Non-goals",
+          "",
+          "- a",
+          "- b",
+          "- c",
+          "",
+          "## Requirements",
+          "",
+          "| ID | Requirement |",
+          "|---|---|",
+          "| R1 | shall work |",
+          "",
+          ...AC_TABLE,
+        ].join("\n"),
+      )
+      const details = findingsOf(await lintContext({ root, target: "SPEC.md" })).map((finding) => finding.detail)
+      expect(details).not.toContain("no numbered requirements")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("«готовност» satisfies the definition of done", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        [
+          "# SPEC",
+          "",
+          "## Non-goals",
+          "",
+          "- a",
+          "- b",
+          "- c",
+          "",
+          "## Requirements",
+          "",
+          "- R1 — shall work.",
+          "",
+          ...AC_TABLE,
+          "",
+          "## Готовность",
+          "",
+          "- всё зелёное",
+        ].join("\n"),
+      )
+      const details = findingsOf(await lintContext({ root, target: "SPEC.md" })).map((finding) => finding.detail)
+      expect(details).not.toContain("no definition of done")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a numbered open-questions heading with subheadings allows TBD", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        `${VALID_AGENTS}\n\n## 10. Открытые вопросы\n\n### Q1\n\n- TBD: owner?\n\n### Q2\n\n- TODO: date?\n`,
+      )
+      const result = await lintContext({ root, target: "AGENTS.md" })
+      expect(findingsOf(result).some((finding) => finding.detail.startsWith("placeholder"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// N10: only `<...>` (three or more dots) and TODO/TBD/FIXME are placeholders.
+describe("placeholder policy", () => {
+  test("tags and named slots are not placeholders", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n\nUse <DoD> and <name> in the template.\n`)
+      const result = await lintContext({ root, target: "AGENTS.md" })
+      expect(findingsOf(result).some((finding) => finding.detail.startsWith("placeholder"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// N8: a caller abort must win over a completed large read.
+describe("abort", () => {
+  test("an abort observed right after the read is E_ABORTED", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n`)
+      // Structural AbortSignal double: the first two checks (entry, loop head) pass,
+      // the third (after readFile) reports the abort. Base has no third check.
+      let calls = 0
+      const signal = {
+        get aborted() {
+          calls += 1
+          return calls > 2
+        },
+      } as unknown as AbortSignal
+      const result = await lintContext({ root, target: "AGENTS.md", signal })
+      expect(result).toMatchObject({ ok: false, code: "E_ABORTED" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("abort during a 1.9 MB file returns E_ABORTED", async () => {
+    const root = await temporary()
+    try {
+      const line = `- rule ${"x".repeat(90)}`
+      await write(root, "docs/x.md", "# X")
+      await write(root, "AGENTS.md", `${Array.from({ length: 19_000 }, () => line).join("\n")}\n[x](docs/x.md)\n`)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 1)
+      const result = await lintContext({
+        root,
+        target: "AGENTS.md",
+        maxFileBytes: 5_000_000,
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+      expect(result).toMatchObject({ ok: false, code: "E_ABORTED" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// Contract: schema id, empty-path parity and the new tool limits.
+describe("contract", () => {
+  test("the result carries its schema id and the raw tool output validates", async () => {
+    const harness = await createHarness()
+    try {
+      await writeFile(path.join(harness.directory, "AGENTS.md"), VALID_AGENTS, "utf8")
+      const body = await runTool(harness, "orch_uni_context_lint", { path: "AGENTS.md" })
+      expect(body).toMatchObject({ schema: "context-lint/v1", ok: true, verdict: "pass" })
+      const text = ["Report.", "```json", JSON.stringify(body), "```"].join("\n")
+      const validated = await runTool(harness, "orch_uni_validate_report", { text, schema: "context-lint/v1" })
+      expect(validated).toMatchObject({ valid: true, schema: "context-lint/v1" })
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  test("an empty target is E_INPUT in the library, like the tool", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", VALID_AGENTS)
+      expect(await lintContext({ root, target: "" })).toMatchObject({ ok: false, code: "E_INPUT" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("the tool passes max_file_bytes and max_findings through", async () => {
+    const harness = await createHarness()
+    try {
+      await writeFile(path.join(harness.directory, "AGENTS.md"), VALID_AGENTS, "utf8")
+      expect(await runTool(harness, "orch_uni_context_lint", { path: "AGENTS.md", max_file_bytes: 100 })).toMatchObject(
+        {
+          ok: false,
+          code: "E_LIMIT_FILE",
+        },
+      )
+      await writeFile(
+        path.join(harness.directory, "AGENTS.md"),
+        `${VALID_AGENTS}\n${Array.from({ length: 3 }, () => "- rule: " + "v".repeat(50)).join("\n")}\n`,
+        "utf8",
+      )
+      const capped = await runTool(harness, "orch_uni_context_lint", { path: "AGENTS.md", max_findings: 1 })
+      expect(capped).toMatchObject({ ok: true, truncated: true })
+    } finally {
+      harness.dispose()
     }
   })
 })
