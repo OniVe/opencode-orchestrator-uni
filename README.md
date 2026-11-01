@@ -8,7 +8,7 @@ ships the **orchestrator agent kit**:
 - `orchestrator` — the root orchestrator (primary agent) with the audit loop as a
   built-in mode;
 - read-only audit subagents — `factcheck`, `empiric`, `invariant`,
-  `arbiter`, `meta`, `redteam`;
+  `arbiter`, `meta`, `redteam`, `context-lint`;
 - `fix-runner` — the only writing subagent (applies the "to close" list);
 - the kit's process documents, exposed as the **`audit-kit` reference**
   (`call-mechanics.md`, `process-ready-loop.md`, `root-runbook.md`,
@@ -34,6 +34,7 @@ On setup (`ctx.agent.transform` / `ctx.reference.transform`):
 | `arbiter`   | `subagent` | Read-only: resolves disputed findings only               |
 | `meta`      | `subagent` | Read-only: meta-audit of reports (pass/fail gate)        |
 | `redteam`   | `subagent` | Read-only: acceptance red team (release gates)           |
+| `context-lint` | `subagent` | Read-only: audits AGENTS.md/SPEC.md for token efficiency |
 | `fix-runner`      | `subagent` | Writer: applies the fix list and proves closure          |
 
 All agents ship **without a model**: models are deployment configuration (see
@@ -98,7 +99,7 @@ invariant that is `violated` without a counterexample, an uncovered mandatory
 `lines_checked` line, `meta`'s `verdict` diverging from its `gate`, and
 `redteam`'s `closing_list`/`verdict` invariants.
 
-The seven schemas ship as `schemas/*.json` and are derived **strictly** from the SGR
+The eight schemas ship as `schemas/*.json` and are derived **strictly** from the SGR
 sections of `agents/*.md`, which stay the source of truth: the test suite parses every
 agent's SGR template and fails when a prompt field or enum value is not accepted by its
 schema. Schemas set `additionalProperties` permissively — agents may add fields of their

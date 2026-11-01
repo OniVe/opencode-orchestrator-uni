@@ -18,6 +18,7 @@ import { agentFiles as localeAgentFiles, promptTemplates } from "./support/local
 
 /** `name.vN.json` → `name/vN` (the ids shipped with the kit). */
 const EXPECTED_SCHEMAS = [
+  "context-lint/v1",
   "factcheck/v1",
   "empiric/v1",
   "invariant/v1",
@@ -75,7 +76,7 @@ async function agentFiles(): Promise<string[]> {
 }
 
 describe("shipped report schemas", () => {
-  test("the seven kit schemas are shipped and no others", async () => {
+  test("the eight kit schemas are shipped and no others", async () => {
     const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
     expect([...schemas.keys()].sort()).toEqual([...EXPECTED_SCHEMAS].sort())
     const files = (await readdir(SCHEMAS_DIRECTORY)).filter((name) => name.endsWith(".json"))

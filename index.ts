@@ -4,7 +4,7 @@
  * Registers the orchestrator agent kit — the `orchestrator` root agent with the
  * built-in audit loop, the read-only audit subagents (`factcheck`,
  * `empiric`, `invariant`, `arbiter`, `meta`,
- * `redteam`), and the `fix-runner` writer subagent — plus the `audit-kit`
+ * `redteam`, `context-lint`), and the `fix-runner` writer subagent — plus the `audit-kit`
  * document reference and the kit's deterministic `orch_uni_*` tools, straight from
  * this TypeScript entry point.
  *

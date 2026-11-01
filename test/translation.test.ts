@@ -25,7 +25,7 @@ describe("locale content parity", () => {
   test("every locale ships the same file sets", async () => {
     const referenceAgents = await agentFiles(REFERENCE_LOCALE)
     const referenceDocs = await docFiles(REFERENCE_LOCALE)
-    expect(referenceAgents.length).toBe(8)
+    expect(referenceAgents.length).toBe(9)
     expect(referenceDocs.length).toBe(4)
     for (const locale of OTHER_LOCALES) {
       expect(await agentFiles(locale), `${locale} agent files`).toEqual(referenceAgents)

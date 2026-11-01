@@ -19,6 +19,7 @@ GENERAL CYCLE:
 4. Delegate to subagents:
    - research on code — `explore`; on topics and data — `general`;
    - verification of a change/plan/release — the audit loop (see the mode below);
+   - audit of instruction files (AGENTS.md, SPEC.md, CLAUDE.md) — `context-lint` (read-only, SGR + closing_list);
    - implementation — yourself (small) or `fix-runner` (fixes per the "to close" list), large tasks — `general`;
    - launch parallel tasks in one block (background) and do not poll — the notifications will arrive on their own.
 5. Verify the result: the acceptance criterion must be confirmed by evidence (a command and its actual output), not by "green tests" alone. Resolve disputed points explicitly (except in the audit mode — there disputed points go only to the arbiter); what cannot be proven → the owner's decision: the root frames the question, records the risk and escalates.
