@@ -142,11 +142,18 @@ placeholders, dates/versions in the first three lines, required sections and AC 
 columns. Links and explicit targets are confined by their **real** path: a symlink or
 junction that resolves outside the root is skipped, and such a target is refused
 (`E_OUT_OF_ROOT`). Code fences, inline code and HTML comments are masked, so a sample is
-never a rule; link checks are capped per file (2000 candidates / 2000 probes) and yield to
-timers, so an abort wins.
-Limits: ≤ 2 MB per file, ≤ 500 files per scan. `max_findings` (per file) caps
-MINOR/INFO and sets the hard cap for MAJOR: excess findings are replaced by one marker
-that stays in `closing_list`. `max_total_findings` (global, default 1000) keeps MAJOR
+never a rule: structural checks (commands, boundaries, verification) read the full mask,
+while requirements, AC ids and non-goals read the fence mask. Link checks are capped per
+file at 2000 candidates and yield to timers, so an abort wins; a capped candidate list is an
+incomplete result (`truncated: true` plus a MAJOR `link candidates truncated` marker in
+`closing_list`), so it can never pass. Broken links have no separate per-file cap: the
+finding caps bound the output and report the overflow. A line longer than 4000 characters
+is skipped by the link/placeholder parsers and reported with an INFO `long line skipped`
+marker; duplicate lines have no inner cap. UNC/network targets are never probed.
+Limits: ≤ 2 MB per file, ≤ 500 files per scan. `max_findings` (per file) is N per
+severity: up to N MAJOR and N MINOR/INFO are kept, and any excess is replaced by one
+marker (MAJOR when a MAJOR was dropped, otherwise INFO); a MAJOR marker stays in
+`closing_list`. `max_total_findings` (global, default 1000) keeps MAJOR
 findings first; when MAJOR overflow, `max_total` findings plus one MAJOR `truncated`
 marker are kept. A capped list sets `truncated: true` instead of hiding findings.
 Placeholders are `<...>` (three or more dots) and `TODO`/`TBD`/`FIXME`; `<DoD>` and
@@ -363,7 +370,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (220 tests in 9 files, up from
+`npm test` scans only `./test/` — the shipped suite (240 tests in 9 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`

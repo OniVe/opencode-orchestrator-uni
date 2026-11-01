@@ -22,7 +22,8 @@
  *   one MAJOR `truncated` finding that stays in `closing_list`; `truncated`
  *   reports every capped list;
  * - line-oriented parsers skip lines longer than `MAX_LINE_LENGTH`, so a minified
- *   bundle pasted into a file cannot make matching quadratic;
+ *   bundle pasted into a file cannot make matching quadratic; skipped lines are
+ *   reported with one INFO marker, never silently;
  * - code fences, inline code and HTML comments are masked once and every
  *   content check reads the masked lines: a sample is not a rule.
  */
@@ -145,12 +146,8 @@ const DEFAULT_MAX_TOTAL_FINDINGS = 1000
 const MAX_LINE_LENGTH = 4000
 /** Upper bound of a `detail` field that echoes source text. */
 const MAX_DETAIL_LENGTH = 120
-const MAX_BROKEN_LINKS = 20
-const MAX_DUPLICATES = 10
 /** Link candidates collected from one file before the list is truncated. */
 const MAX_LINK_CANDIDATES = 2000
-/** Filesystem probes (parent realpath + exists) allowed for one file. */
-const MAX_LINK_CHECKS = 2000
 /** Candidates between abort checks and a macrotask yield. */
 const LINK_CHECK_YIELD = 100
 
@@ -176,7 +173,6 @@ const TASK_TABLE_HEADER = /\|\s*(?:задача|task)\s*\|/i
 const SHELL_TOOL = /\b(?:npm|bun|pnpm|yarn|make|cargo|pytest|go test)\b/i
 const BOUNDARIES = /(never|никогда|ask first|сначала спроси|do not|не редактир|не коммит)/i
 const VERIFICATION = /(verification|verify|definition of done|определение готовности|готовност|готово|проверк)/i
-const AC_ROW_LINE = /^\s*\|\s*AC\d+(?:\.\d+)?\s*\|/im
 const DEFINITION_OF_DONE = /(definition of done|\bdod\b|готовност|готово)/i
 
 /**
@@ -649,7 +645,6 @@ function checkVague(file: ContextFileResult, lines: readonly string[], sink: Fin
 
 function checkDuplicates(file: ContextFileResult, masked: readonly string[], sink: FindingSink): void {
   const seen = new Map<string, number>()
-  let emitted = 0
   for (let index = 0; index < masked.length; index += 1) {
     // Code samples repeat on purpose: the mask blanks fences, inline code and
     // comments, so a copy-pasted snippet is not a duplicate rule.
@@ -661,8 +656,8 @@ function checkDuplicates(file: ContextFileResult, masked: readonly string[], sin
       seen.set(normalized, index + 1)
       continue
     }
-    if (emitted >= MAX_DUPLICATES) continue
-    emitted += 1
+    // No inner duplicate cap: the finding sink bounds the output, and a cap here
+    // would silently hide duplicates.
     sink.push({
       severity: "MINOR",
       kind: "duplicate",
@@ -688,15 +683,16 @@ async function existingRealPath(target: string): Promise<string | undefined> {
 
 /**
  * Check local relative links. Cost and containment are bounded:
- * - at most `MAX_LINK_CANDIDATES` candidates are collected per file and at most
- *   `MAX_LINK_CHECKS` filesystem probes are made; exceeding either appends one
- *   `link checks truncated` finding instead of continuing;
+ * - at most `MAX_LINK_CANDIDATES` candidates are collected per file; exceeding
+ *   the cap returns `truncated: true` and the caller adds one MAJOR marker (the
+ *   unverified remainder must never let the verdict pass);
  * - every `LINK_CHECK_YIELD` candidates the signal is checked and the event
  *   loop is yielded to, so a timer-driven abort can win;
  * - the parent's real path is resolved (and cached) before `existsSync`; an
  *   unknown or out-of-root parent is skipped, so a junction pointing outside
  *   the root is never probed and never reported as a broken link.
- * Returns `true` when the caller aborted.
+ * There is no per-file cap on reported broken links: the finding sink and the
+ * global cap replace overflow with a MAJOR marker instead of dropping MAJORs.
  */
 async function checkLinks(
   file: ContextFileResult,
@@ -706,7 +702,7 @@ async function checkLinks(
   absolute: string,
   sink: FindingSink,
   signal: AbortSignal | undefined,
-): Promise<boolean> {
+): Promise<{ readonly aborted: boolean; readonly truncated: boolean }> {
   const candidates: { readonly target: string; readonly line: number }[] = []
   let candidatesTruncated = false
   for (let index = 0; index < lines.length; index += 1) {
@@ -725,16 +721,13 @@ async function checkLinks(
   }
   const parentRealPaths = new Map<string, string | undefined>()
   const seen = new Set<string>()
-  let emitted = 0
-  let checks = 0
-  let checksTruncated = false
   for (let index = 0; index < candidates.length; index += 1) {
     if (index % LINK_CHECK_YIELD === 0) {
-      if (signal?.aborted) return true
+      if (signal?.aborted) return { aborted: true, truncated: candidatesTruncated }
       // A macrotask boundary lets setTimeout-driven abort timers fire; microtasks
       // alone would starve them.
       await new Promise<void>((resolve) => setImmediate(resolve))
-      if (signal?.aborted) return true
+      if (signal?.aborted) return { aborted: true, truncated: candidatesTruncated }
     }
     const { target, line } = candidates[index]
     const key = `${line}:${target}`
@@ -746,13 +739,6 @@ async function checkLinks(
     // Only local, in-root paths reach the filesystem: a path outside the
     // workspace is not ours to check, and a network path would block on SMB.
     if (!isInside(root, resolved)) continue
-    // The cap counts candidates before any parent/target probe: a file with
-    // 20k unique missing parents must not trigger 20k realpath calls.
-    if (checks >= MAX_LINK_CHECKS) {
-      checksTruncated = true
-      break
-    }
-    checks += 1
     const parent = path.dirname(resolved)
     let parentReal = parentRealPaths.get(parent)
     if (!parentRealPaths.has(parent)) {
@@ -785,8 +771,6 @@ async function checkLinks(
       if (targetReal === undefined || !isInside(realRoot, targetReal)) continue
       continue
     }
-    if (emitted >= MAX_BROKEN_LINKS) continue
-    emitted += 1
     sink.push({
       severity: "MAJOR",
       kind: "broken_link",
@@ -795,16 +779,7 @@ async function checkLinks(
       fix: "Fix the link or remove it.",
     })
   }
-  if (candidatesTruncated || checksTruncated) {
-    sink.push({
-      severity: "MINOR",
-      kind: "other",
-      evidence: `${file.path}:1`,
-      detail: `link checks truncated at ${MAX_LINK_CANDIDATES} candidates / ${MAX_LINK_CHECKS} probes`,
-      fix: "Split the file or remove generated links; the rest are shown on the next run.",
-    })
-  }
-  return false
+  return { aborted: false, truncated: candidatesTruncated }
 }
 
 function checkPlaceholders(
@@ -854,6 +829,33 @@ function checkFirstLines(file: ContextFileResult, lines: readonly string[], sink
   }
 }
 
+/** Split `X and Y` / `X и Y` only at the top level: not inside `(…)`, `[…]` or `` `…` ``. */
+function splitTopLevelItems(text: string): string[] {
+  const parts: string[] = []
+  let current = ""
+  let depth = 0
+  let inCode = false
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (character === "`") inCode = !inCode
+    if (!inCode) {
+      if (character === "(" || character === "[") depth += 1
+      else if (character === ")" || character === "]") depth = Math.max(0, depth - 1)
+      const previous = index === 0 ? " " : text[index - 1]
+      const joined = /^(?:and|и)\s+/i.exec(text.slice(index))
+      if (depth === 0 && /\s/.test(previous) && joined !== null) {
+        parts.push(current)
+        current = ""
+        index += joined[0].length - 1
+        continue
+      }
+    }
+    current += character
+  }
+  parts.push(current)
+  return parts
+}
+
 /** Split an inline `Non-goals: …` value into items: `;`, commas, `and`/`и`, `1)`. */
 function inlineItems(rest: string): string[] {
   const text = rest.trim()
@@ -866,7 +868,7 @@ function inlineItems(rest: string): string[] {
   return parts
     .flatMap((part) => part.split(/\s*;\s*/))
     .flatMap((part) => part.split(/,(?![^(]*\))/))
-    .flatMap((part) => part.split(/\s+(?:and|и)\s+/i))
+    .flatMap((part) => splitTopLevelItems(part))
     .map((item) =>
       item
         .replace(/^[-*+]\s+/, "")
@@ -881,30 +883,50 @@ function isSeparatorRow(line: string): boolean {
   return /^\s*\|[\s:|-]+\|\s*$/.test(line)
 }
 
-/** Count top-level items in a section: bullets, numbered items, table rows, paragraphs. */
+/**
+ * Count top-level items in a section: bullets, numbered items, table rows and
+ * paragraphs. A wrapped paragraph is one item (not one per line); a bullet is
+ * top-level when it is not nested deeper than the list's base indent, so a
+ * 2-space list under a bold label stays top-level.
+ */
 function countSectionItems(lines: readonly string[], start: number): number {
   let count = 0
+  let bulletIndent: number | undefined
+  let paragraphOpen = false
   for (let index = start; index < lines.length; index += 1) {
     const raw = lines[index]
     if (HEADING.test(raw)) break
     const trimmed = raw.trim()
-    if (trimmed === "" || isSeparatorRow(raw)) continue
+    if (trimmed === "" || isSeparatorRow(raw)) {
+      paragraphOpen = false
+      continue
+    }
     const indent = raw.length - raw.trimStart().length
     if (TABLE_ROW.test(raw)) {
       // The header row of a table is not an item; its data rows are.
+      paragraphOpen = false
       if (isSeparatorRow(lines[index + 1] ?? "")) continue
       count += 1
       continue
     }
     if (/^(?:[-*+]|\d+[.)])\s+/.test(raw.trimStart())) {
+      paragraphOpen = false
+      bulletIndent = bulletIndent === undefined ? indent : Math.min(bulletIndent, indent)
       // A sub-bullet belongs to its parent item, not to the count.
-      if (indent >= 2) continue
+      if (indent > bulletIndent + 1) continue
       count += 1
       continue
     }
     // An indented non-bullet line is a continuation of the previous item.
-    if (indent >= 2) continue
-    count += 1
+    if (indent >= 2) {
+      paragraphOpen = false
+      continue
+    }
+    // Consecutive prose lines are one paragraph, hence one item.
+    if (!paragraphOpen) {
+      count += 1
+      paragraphOpen = true
+    }
   }
   return count
 }
@@ -1033,36 +1055,69 @@ function hasTestValue(cell: string | undefined): boolean {
   return value !== "" && value !== "-" && value !== "—"
 }
 
-/**
- * AC tables, located by header rather than by row shape: the header carries an
- * `AC`/`AC1` cell (not necessarily first: ID-first shapes are accepted), a
- * `Test`/`Tests` cell and `Given`/`When`/`Then`. A traceability table
- * (`| R | AC | Task |`) is not an AC table, and every block is scanned, so an
- * earlier traceability table cannot mask a later AC one.
- */
-function findAcTables(lines: readonly string[]): { readonly table: AcTable; readonly block: TableBlock }[] {
-  const found: { table: AcTable; block: TableBlock }[] = []
-  for (const block of tableBlocks(lines)) {
-    const header = block.header
-    if (header === undefined) continue
-    const cells = header.map((cell) => cellText(cell).toLowerCase())
-    const ac = cells.findIndex((cell) => AC_HEADER.test(cell) || AC_HEADER_NUMBERED.test(cell))
-    if (ac === -1) continue
-    const test = cells.findIndex((cell) => /\btests?\b|\bтест/.test(cell))
-    if (test === -1) continue
-    const scenario = cells.some((cell) => /^(?:given|when|then|дано|когда|тогда)\b/.test(cell))
-    if (!scenario) continue
-    const r = cells.findIndex((cell) => /^(?:r|req|requirement|требование)$/.test(cell))
-    found.push({ table: { ac, r, test, columns: cells.length }, block })
-  }
-  return found
+interface AcScan {
+  /** Valid AC tables: header has AC, Test and Given/When/Then. */
+  readonly tables: readonly { readonly table: AcTable; readonly block: TableBlock }[]
+  /** Headed blocks with an AC column but no Test column: a MAJOR, never a pass. */
+  readonly withoutTest: readonly { readonly block: TableBlock; readonly r: number }[]
+  /** Rows of headerless blocks whose first cell is an AC id. */
+  readonly headerless: readonly { readonly line: number; readonly cells: readonly string[] }[]
 }
 
 /**
- * Requirement ids: `R\d+` list lines, R lines inside a table, and R rows of a
- * requirements/traceability table. The first declaration wins for the line.
+ * Locate AC material by block, not by row shape. An AC table needs a header with
+ * an `AC`/`AC1` cell, a `Test`/`Tests` cell and `Given`/`When`/`Then`; a
+ * traceability table (`| AC | R | Task | Test |`) is not an AC table. A headed
+ * table with AC ids but no Test column is recorded separately, and headerless
+ * AC-id rows are collected per block, so a headed traceability table cannot
+ * masquerade as headerless acceptance criteria.
  */
-function collectRequirements(lines: readonly string[]): Map<string, number> {
+function scanAcTables(lines: readonly string[]): AcScan {
+  const tables: { table: AcTable; block: TableBlock }[] = []
+  const withoutTest: { block: TableBlock; r: number }[] = []
+  const headerless: { line: number; cells: readonly string[] }[] = []
+  for (const block of tableBlocks(lines)) {
+    const header = block.header
+    if (header === undefined) {
+      for (const row of block.rows) {
+        if (AC_ID.exec(cellText(row.cells[0])) !== null) headerless.push({ line: row.line, cells: row.cells })
+      }
+      continue
+    }
+    const cells = header.map((cell) => cellText(cell).toLowerCase())
+    const ac = cells.findIndex((cell) => AC_HEADER.test(cell) || AC_HEADER_NUMBERED.test(cell))
+    if (ac === -1) continue
+    const r = cells.findIndex((cell) => /^(?:r|req|requirement|требование)$/.test(cell))
+    const test = cells.findIndex((cell) => /\btests?\b|\bтест/.test(cell))
+    const scenario = cells.some((cell) => /^(?:given|when|then|дано|когда|тогда)\b/.test(cell))
+    if (test === -1) {
+      // Given/When/Then without Test is a defective AC table; no scenario and no
+      // Test is a traceability table, not acceptance criteria.
+      if (scenario) withoutTest.push({ block, r })
+      continue
+    }
+    if (!scenario) continue
+    tables.push({ table: { ac, r, test, columns: cells.length }, block })
+  }
+  return { tables, withoutTest, headerless }
+}
+
+/** Lines that belong to AC material: their R cells are not requirement declarations. */
+function acSkipLines(scan: AcScan): Set<number> {
+  const skip = new Set<number>()
+  for (const { block } of scan.tables) {
+    for (let index = block.start; index <= block.end; index += 1) skip.add(index)
+  }
+  for (const row of scan.headerless) skip.add(row.line)
+  return skip
+}
+
+/**
+ * Requirement ids: `R\d+` list lines and R cells of tables outside the AC
+ * material. An AC R column maps requirements to criteria; it never declares
+ * one, so `## Requirements` with only an AC table is empty.
+ */
+function collectRequirements(lines: readonly string[], skip: ReadonlySet<number>): Map<string, number> {
   const found = new Map<string, number>()
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
@@ -1073,7 +1128,7 @@ function collectRequirements(lines: readonly string[]): Map<string, number> {
       if (!found.has(listMatch[1])) found.set(listMatch[1], index + 1)
       continue
     }
-    if (!TABLE_ROW.test(line)) continue
+    if (!TABLE_ROW.test(line) || skip.has(index)) continue
     for (const cell of splitRow(line)) {
       const match = /^(R\d+)$/.exec(cellText(cell))
       if (match !== null && !found.has(match[1])) found.set(match[1], index + 1)
@@ -1088,15 +1143,31 @@ const HEADERLESS_COLUMNS = 6
 
 function checkAcRows(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
   if (file.kind !== "spec") return
-  const tables = findAcTables(lines)
-  const requirements = collectRequirements(lines)
+  const scan = scanAcTables(lines)
+  const requirements = collectRequirements(lines, acSkipLines(scan))
   const covered = new Set<string>()
   let hasRequirementColumn = false
   let hasHeaderlessR = false
   // A header-only AC table still declares the mapping contract, so R coverage
   // is checked even when the table has no data rows.
-  let sawAc = tables.length > 0
-  for (const { table, block } of tables) {
+  let sawAc = scan.tables.length > 0 || scan.withoutTest.length > 0 || scan.headerless.length > 0
+  // A headed table with an AC column and no Test column is a MAJOR on its own;
+  // headerless detection must not hide it.
+  for (const { block, r } of scan.withoutTest) {
+    sink.push({
+      severity: "MAJOR",
+      kind: "missing_section",
+      evidence: `${file.path}:${block.start + 1}`,
+      detail: "AC table lacks Test column",
+      fix: "Add the Test column; every AC row needs a test name or reference.",
+    })
+    if (r === -1) continue
+    hasRequirementColumn = true
+    for (const row of block.rows) {
+      for (const match of cellText(row.cells[r]).matchAll(/R\d+/gi)) covered.add(match[0].toUpperCase())
+    }
+  }
+  for (const { table, block } of scan.tables) {
     if (table.r !== -1) hasRequirementColumn = true
     for (const row of block.rows) {
       const id = AC_ID.exec(cellText(row.cells[table.ac]))
@@ -1128,29 +1199,25 @@ function checkAcRows(file: ContextFileResult, lines: readonly string[], sink: Fi
   // Headerless rows are inspected even when a normal AC table exists: otherwise
   // a malformed row next to a valid table would pass silently.
   let headerless = 0
-  for (const block of tableBlocks(lines)) {
-    if (block.header !== undefined) continue
-    for (const row of block.rows) {
-      const cells = row.cells
-      if (AC_ID.exec(cellText(cells[0])) === null) continue
-      headerless += 1
-      sawAc = true
-      // The R column of a headerless row still proves coverage.
-      const requirement = cellText(cells[1])
-      if (/^R\d+$/.test(requirement)) {
-        hasHeaderlessR = true
-        covered.add(requirement.toUpperCase())
-      }
-      // A 5-cell row has no Test column at all; that is a missing test, not a pass.
-      if (cells.length < HEADERLESS_COLUMNS || !hasTestValue(cells[HEADERLESS_TEST_COLUMN])) {
-        sink.push({
-          severity: "MAJOR",
-          kind: "missing_section",
-          evidence: `${file.path}:${row.line + 1}`,
-          detail: "AC row has no test",
-          fix: "Add a test name or reference.",
-        })
-      }
+  for (const row of scan.headerless) {
+    const cells = row.cells
+    headerless += 1
+    sawAc = true
+    // The R column of a headerless row still proves coverage.
+    const requirement = cellText(cells[1])
+    if (/^R\d+$/.test(requirement)) {
+      hasHeaderlessR = true
+      covered.add(requirement.toUpperCase())
+    }
+    // A 5-cell row has no Test column at all; that is a missing test, not a pass.
+    if (cells.length < HEADERLESS_COLUMNS || !hasTestValue(cells[HEADERLESS_TEST_COLUMN])) {
+      sink.push({
+        severity: "MAJOR",
+        kind: "missing_section",
+        evidence: `${file.path}:${row.line + 1}`,
+        detail: "AC row has no test",
+        fix: "Add a test name or reference.",
+      })
     }
   }
   if (headerless > 0) {
@@ -1187,10 +1254,25 @@ function checkAcRows(file: ContextFileResult, lines: readonly string[], sink: Fi
   }
 }
 
-function checkSections(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
-  const text = lines.join("\n")
+/**
+ * Structural section checks. Commands/Boundaries/Verification/Definition of done
+ * read the full mask (`masked`): a command or a check that exists only as inline
+ * code is a sample, not a rule. Requirements, AC and non-goals read
+ * `fenceMasked`: inline code keeps its text there (`AC1.1`, `R1`).
+ */
+function checkSections(
+  file: ContextFileResult,
+  fenceMasked: readonly string[],
+  masked: readonly string[],
+  sink: FindingSink,
+): void {
+  const text = masked.join("\n")
   if (file.kind === "agents" || file.kind === "claude") {
-    if (!lines.some((line) => COMMANDS_HEADING.test(line)) && !TASK_TABLE_HEADER.test(text) && !SHELL_TOOL.test(text)) {
+    if (
+      !masked.some((line) => COMMANDS_HEADING.test(line)) &&
+      !TASK_TABLE_HEADER.test(text) &&
+      !SHELL_TOOL.test(text)
+    ) {
       sink.push({
         severity: "MINOR",
         kind: "missing_section",
@@ -1219,7 +1301,7 @@ function checkSections(file: ContextFileResult, lines: readonly string[], sink: 
     }
   }
   if (file.kind === "spec") {
-    const nonGoals = countNonGoals(lines)
+    const nonGoals = countNonGoals(fenceMasked)
     if (!nonGoals.present) {
       sink.push({
         severity: "MAJOR",
@@ -1237,9 +1319,11 @@ function checkSections(file: ContextFileResult, lines: readonly string[], sink: 
         fix: "List 3–7 things the feature deliberately does not do.",
       })
     }
-    const requirements = collectRequirements(lines)
+    const scan = scanAcTables(fenceMasked)
+    const requirements = collectRequirements(fenceMasked, acSkipLines(scan))
     // A heading alone is not a requirement set: at least one R line or R table
-    // row must exist, otherwise a `## Requirements` stub would pass.
+    // row outside the AC material must exist, otherwise a `## Requirements`
+    // stub with an AC table R cell would pass.
     if (requirements.size === 0) {
       sink.push({
         severity: "MAJOR",
@@ -1249,11 +1333,11 @@ function checkSections(file: ContextFileResult, lines: readonly string[], sink: 
         fix: "Add R1..Rn, one observable behavior per requirement.",
       })
     }
-    // A heading alone is not acceptance: the table (or a headerless AC row)
-    // must exist and carry a Test column.
-    const hasAcTable = findAcTables(lines).length > 0
-    const hasHeaderlessAcRow = AC_ROW_LINE.test(text)
-    if (!hasAcTable && !hasHeaderlessAcRow) {
+    // Acceptance evidence is block-aware: a valid AC table, a headed AC table
+    // that is missing its Test column (reported by `checkAcRows`), or a
+    // headerless AC-id row. A headed traceability table is none of these.
+    const hasAcceptance = scan.tables.length > 0 || scan.withoutTest.length > 0 || scan.headerless.length > 0
+    if (!hasAcceptance) {
       sink.push({
         severity: "MAJOR",
         kind: "missing_section",
@@ -1389,9 +1473,11 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     // file was being read must still get E_ABORTED rather than a full report.
     if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
     const { lines, body } = normalizedLines(text)
-    // AC/requirements/sections read the fence mask: inline code keeps its text,
-    // so `AC1.1`, `R1` and `test_export` in backticks still parse. Links,
-    // vague phrases and placeholders read the full mask: a sample is not a rule.
+    // Requirements, AC ids and non-goals read the fence mask: inline code keeps
+    // its text, so `AC1.1`, `R1` and `test_export` in backticks still parse.
+    // Links, vague phrases, placeholders and the structural section checks read
+    // the full mask: a command or a check that exists only as inline code is a
+    // sample, not a rule.
     const fenceMasked = maskFences(lines)
     const masked = maskAll(lines)
     const chars = [...body].length
@@ -1409,16 +1495,40 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     checkBudget(file, sink, maxLines, maxTokens, maxWords)
     checkVague(file, masked, sink)
     checkDuplicates(file, masked, sink)
-    const aborted = await checkLinks(file, masked, root, realRoot, absolute, sink, options.signal)
-    if (aborted || options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+    const links = await checkLinks(file, masked, root, realRoot, absolute, sink, options.signal)
+    if (links.aborted || options.signal?.aborted) {
+      return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+    }
     checkPlaceholders(file, lines, masked, sink)
     checkFirstLines(file, lines, sink)
-    checkSections(file, fenceMasked, sink)
+    checkSections(file, fenceMasked, masked, sink)
     checkAcRows(file, fenceMasked, sink)
-    checkAndChains(file, fenceMasked, sink)
+    checkAndChains(file, masked, sink)
     if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
     // Markers are appended directly after the checks: they never displace a kept
     // finding. The MAJOR marker is itself MAJOR, so it is closed with the rest.
+    if (links.truncated) {
+      // The unverified remainder must not let the verdict pass: a capped link
+      // list is incomplete, and a deterministic rerun is identical.
+      sink.kept.push({
+        severity: "MAJOR",
+        kind: "other",
+        evidence: `${file.path}:1`,
+        detail: `link candidates truncated at ${MAX_LINK_CANDIDATES}; result incomplete (further links are not checked)`,
+        fix: "Split the file or remove generated links so every target is checked.",
+      })
+    }
+    const longLines = lines.reduce((count, line) => (line.length > MAX_LINE_LENGTH ? count + 1 : count), 0)
+    if (longLines > 0) {
+      // Line-oriented parsers skip long lines; say so instead of hiding them.
+      sink.kept.push({
+        severity: "INFO",
+        kind: "other",
+        evidence: `${file.path}:1`,
+        detail: `long line skipped: ${longLines} line(s) over ${MAX_LINE_LENGTH} characters were not parsed`,
+        fix: "Split the line; links and placeholders on it are not checked.",
+      })
+    }
     if (sink.majorDropped) {
       sink.kept.push({
         severity: "MAJOR",
@@ -1437,7 +1547,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
         fix: "Fix the listed findings first; the rest are shown on the next run.",
       })
     }
-    scanned.push({ ...file, findings: sink.kept, truncated: sink.truncated })
+    scanned.push({ ...file, findings: sink.kept, truncated: sink.truncated || links.truncated })
   }
 
   // The global cap applies to every finding and prioritizes MAJOR: a pathological
