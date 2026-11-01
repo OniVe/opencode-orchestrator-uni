@@ -379,7 +379,12 @@ export function reportWarnings(schemaId: string, value: unknown): string[] {
       warnings.push("verdict=pass with files=[]: no file was measured")
     }
     if (value.truncated === true) {
-      warnings.push("truncated=true: the finding list is capped; MAJOR findings are kept, MINOR/INFO may be missing")
+      warnings.push(
+        "truncated=true: the finding list is capped; MAJOR findings are prioritized and a dropped MAJOR leaves a MAJOR marker, MINOR/INFO may be missing",
+      )
+      if (value.verdict === "pass") {
+        warnings.push("truncated=true with verdict=pass: the capped list may hide a later finding; re-run after fixes")
+      }
     }
   }
 

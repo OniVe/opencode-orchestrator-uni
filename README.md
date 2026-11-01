@@ -17,6 +17,10 @@ ships the **orchestrator agent kit**:
   `orch_uni_snapshot`, `orch_uni_sessions` (see [Tools](#tools));
 - two slash commands — `/agents-md` and `/spec` (see [Commands](#commands)).
 
+Read-only audit agents are enforced by `edit: deny` plus the prompt ban; their shell
+permission stays allowed so they can run verification commands (an accepted risk, no
+permission is relaxed).
+
 The package is loaded directly from TypeScript: `exports` points at
 [`index.ts`](./index.ts). There is **no build step and no `dist/`** — OpenCode's
 Bun-based runtime resolves and loads the entry point natively (same pattern as the
@@ -126,25 +130,31 @@ own (`verdict_label`, `check`, …).
 ```jsonc
 { "path": "AGENTS.md" }                  // file or directory, relative to the location
 { "path": ".", "max_lines": 150, "max_tokens": 2000 }
+{ "path": ".", "max_words": 2000 }       // SPEC word budget; default 1500 (target), ceiling 2000
 { "path": ".", "max_file_bytes": 500000, "max_files": 100, "max_findings": 50, "max_total_findings": 500 }
 ```
 
 Deterministic, read-only audit of `AGENTS.md`, `SPEC.md` and `CLAUDE.md`. It returns
 `{ schema: "context-lint/v1", ok: true, verdict, closing_list, files, summary, truncated? }`;
 each finding carries `id`, `severity`, `kind`, `evidence`, `detail` and `fix`. Checks:
-line/token budget, vague phrases, duplicate lines, broken relative links, placeholders,
-dates/versions in the first three lines, required sections and AC test columns. Links
-and explicit targets are confined by their **real** path: a symlink or junction that
-resolves outside the root is skipped, and such a target is refused (`E_OUT_OF_ROOT`).
-Code fences, inline code and HTML comments are masked, so a sample is never a rule.
+line/token/word budget, distinct vague phrases, duplicate lines, broken relative links,
+placeholders, dates/versions in the first three lines, required sections and AC test
+columns. Links and explicit targets are confined by their **real** path: a symlink or
+junction that resolves outside the root is skipped, and such a target is refused
+(`E_OUT_OF_ROOT`). Code fences, inline code and HTML comments are masked, so a sample is
+never a rule; link checks are capped per file (2000 candidates / 2000 probes) and yield to
+timers, so an abort wins.
 Limits: ≤ 2 MB per file, ≤ 500 files per scan. `max_findings` (per file) caps
-MINOR/INFO and sets the hard cap for MAJOR: excess MAJOR findings are replaced by one
-MAJOR `truncated` finding that stays in `closing_list`; `max_total_findings` caps
-MINOR/INFO only. A capped list sets `truncated: true` instead of hiding findings.
+MINOR/INFO and sets the hard cap for MAJOR: excess findings are replaced by one marker
+that stays in `closing_list`. `max_total_findings` (global, default 1000) keeps MAJOR
+findings first; when MAJOR overflow, `max_total` findings plus one MAJOR `truncated`
+marker are kept. A capped list sets `truncated: true` instead of hiding findings.
 Placeholders are `<...>` (three or more dots) and `TODO`/`TBD`/`FIXME`; `<DoD>` and
 `<name>` are markup.
 `max_lines` is the single 200-line root budget the tool applies: the 60/200/100
 per-level figures in [`docs/`](./docs) are authoring guidance, not separate tool limits.
+`max_words` defaults to the 1500-word SPEC target; pass `max_words: 2000` to enforce the
+documented ceiling instead.
 Typed failures: `E_INPUT`, `E_NOT_FOUND`, `E_NO_FILES`, `E_IO`, `E_ABORTED`,
 `E_LIMIT_FILE`, `E_LIMIT_FILES`, `E_OUT_OF_ROOT`.
 
@@ -353,7 +363,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (156 tests in 9 files, up from
+`npm test` scans only `./test/` — the shipped suite (220 tests in 9 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`
