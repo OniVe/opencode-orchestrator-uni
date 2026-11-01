@@ -1,12 +1,16 @@
 /**
  * tools — registration of the kit's deterministic, read-only audit tools.
  *
- * `registerAuditTools(ctx)` publishes three tools in the `orch_uni` namespace
- * (effective names `orch_uni_validate_report`, `orch_uni_snapshot`, `orch_uni_sessions`)
- * and returns a cleanup that stops the background session-index subscription:
+ * `registerAuditTools(ctx)` publishes four tools in the `orch_uni` namespace
+ * (effective names `orch_uni_validate_report`, `orch_uni_context_lint`,
+ * `orch_uni_snapshot`, `orch_uni_sessions`) and returns a cleanup that stops the
+ * background session-index subscription:
  *
  * - `validate_report` — extract the SGR JSON block of an agent report, resolve
  *   its schema, validate it and report prompt-level warnings;
+ * - `context_lint` — deterministic, read-only checks for AGENTS.md/SPEC.md/CLAUDE.md:
+ *   budget, vague phrases, duplicates, broken relative links, placeholders,
+ *   dates in the first lines, required sections;
  * - `snapshot` — deterministic revision of a directory tree (per-file sha256 +
  *   aggregate hash) for "the state the verdict was fixed on";
  * - `sessions` — child sessions of a session (agent, model, cost, tokens, time),
@@ -22,6 +26,7 @@ import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode/plugin"
+import { lintContext } from "./context-lint"
 import { checkReport, type JsonSchemaNode, type ValidationCode } from "./report-schema"
 import { DEFAULT_EXCLUDE, isSnapshotFailure, snapshotTree } from "./snapshot"
 
@@ -29,7 +34,12 @@ import { DEFAULT_EXCLUDE, isSnapshotFailure, snapshotTree } from "./snapshot"
 export const TOOL_NAMESPACE = "orch_uni"
 
 /** Effective tool names as they appear to a model. */
-export const TOOL_IDS: readonly string[] = ["orch_uni_validate_report", "orch_uni_snapshot", "orch_uni_sessions"]
+export const TOOL_IDS: readonly string[] = [
+  "orch_uni_validate_report",
+  "orch_uni_context_lint",
+  "orch_uni_snapshot",
+  "orch_uni_sessions",
+]
 
 /** Directory holding the shipped report schemas (`schemas/*.json`). */
 export const SCHEMAS_DIRECTORY = fileURLToPath(new URL("../schemas/", import.meta.url))
@@ -141,6 +151,20 @@ const VALIDATE_REPORT_INPUT = {
     text: { type: "string", description: "Report text to validate (use either text or path)." },
     path: { type: "string", description: "Path to a report file, absolute or relative to the location directory." },
     schema: { type: "string", description: 'Expected schema id, e.g. "empiric/v1".' },
+  },
+} as const
+
+/** `context_lint` input contract. */
+const CONTEXT_LINT_INPUT = {
+  type: "object",
+  properties: {
+    path: {
+      type: "string",
+      description:
+        "File or directory to inspect, absolute or relative to the location directory. Default: the location directory.",
+    },
+    max_lines: { type: "number", description: "AGENTS/CLAUDE line budget. Default: 200." },
+    max_tokens: { type: "number", description: "AGENTS/CLAUDE estimated token budget. Default: 2500." },
   },
 } as const
 
@@ -437,6 +461,36 @@ export async function registerAuditTools(
     return json({ root: outcome.root, files: outcome.files, aggregate: outcome.aggregate })
   }
 
+  const contextLintTool = async (
+    input: unknown,
+    toolContext: { readonly signal: AbortSignal },
+  ): Promise<{ content: string }> => {
+    const record = input === undefined ? {} : asRecord(input)
+    if (record === undefined) return failure("E_INPUT", "input must be an object ({path?, max_lines?, max_tokens?})")
+    const { path: target, max_lines, max_tokens } = record
+    if (target !== undefined && (typeof target !== "string" || target === "")) {
+      return failure("E_INPUT", '"path" must be a non-empty string')
+    }
+    for (const [key, value] of [
+      ["max_lines", max_lines],
+      ["max_tokens", max_tokens],
+    ] as const) {
+      if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value <= 0)) {
+        return failure("E_INPUT", `"${key}" must be a positive number`)
+      }
+    }
+    if (toolContext.signal.aborted) return failure("E_ABORTED", "context lint aborted")
+    const outcome = await lintContext({
+      root: directory,
+      ...(target === undefined ? {} : { target: target as string }),
+      ...(max_lines === undefined ? {} : { maxLines: max_lines as number }),
+      ...(max_tokens === undefined ? {} : { maxTokens: max_tokens as number }),
+      signal: toolContext.signal,
+    })
+    if (!outcome.ok) return failure(outcome.code, outcome.message)
+    return json(outcome)
+  }
+
   const sessionsTool = async (
     input: unknown,
     toolContext: { readonly signal: AbortSignal; readonly sessionID: string },
@@ -548,7 +602,18 @@ export async function registerAuditTools(
     editor.namespace({
       name: TOOL_NAMESPACE,
       description:
-        "Deterministic, read-only tools of the orchestrator agent kit (SGR validation, state snapshots, session accounting).",
+        "Deterministic, read-only tools of the orchestrator agent kit (SGR validation, context-file lint, state snapshots, session accounting).",
+    })
+    editor.add({
+      name: "context_lint",
+      description:
+        "Deterministic, read-only audit of AGENTS.md/SPEC.md/CLAUDE.md: line/token budget, vague phrases, duplicate lines, " +
+        "broken relative links, placeholders, dates in the first three lines, required sections, AC test columns. " +
+        "Returns JSON {ok, verdict, closing_list, files, summary} or a typed code " +
+        "(E_INPUT|E_NOT_FOUND|E_NO_FILES|E_IO|E_ABORTED).",
+      input: CONTEXT_LINT_INPUT,
+      options: { namespace: TOOL_NAMESPACE, codemode: true },
+      execute: contextLintTool,
     })
     editor.add({
       name: "validate_report",

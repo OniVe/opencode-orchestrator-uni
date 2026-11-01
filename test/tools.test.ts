@@ -11,7 +11,7 @@ import { TOOL_IDS, TOOL_NAMESPACE } from "../lib/tools"
 import { createHarness, runTool } from "./support/harness"
 
 describe("audit tool registration", () => {
-  test("registers the three tools in the orch_uni namespace", async () => {
+  test("registers the four tools in the orch_uni namespace", async () => {
     const harness = await createHarness()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_IDS].sort())
     expect(harness.namespaces.map((entry) => entry.name)).toEqual([TOOL_NAMESPACE])
@@ -34,6 +34,14 @@ describe("audit tool registration", () => {
         text: { type: "string", description: expect.any(String) },
         path: { type: "string", description: expect.any(String) },
         schema: { type: "string", description: expect.any(String) },
+      },
+    })
+    expect(inputs.orch_uni_context_lint).toEqual({
+      type: "object",
+      properties: {
+        path: { type: "string", description: expect.any(String) },
+        max_lines: { type: "number", description: expect.any(String) },
+        max_tokens: { type: "number", description: expect.any(String) },
       },
     })
     expect((inputs.orch_uni_snapshot as { required: string[] }).required).toEqual(["path"])
