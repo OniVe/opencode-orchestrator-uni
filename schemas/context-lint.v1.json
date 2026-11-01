@@ -1,0 +1,54 @@
+{
+  "id": "context-lint/v1",
+  "schema": {
+    "type": "object",
+    "required": ["schema", "verdict", "closing_list", "files", "summary"],
+    "properties": {
+      "schema": { "type": "string", "const": "context-lint/v1" },
+      "verdict": { "type": "string", "enum": ["pass", "fail"] },
+      "closing_list": { "type": "array", "items": { "type": "string" } },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["path", "kind", "lines", "words", "tokens_est", "findings"],
+          "properties": {
+            "path": { "type": "string" },
+            "kind": { "type": "string", "enum": ["agents", "spec", "claude", "other"] },
+            "lines": { "type": "number" },
+            "words": { "type": "number" },
+            "tokens_est": { "type": "number" },
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "severity", "kind", "evidence", "detail", "fix"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "severity": { "type": "string", "enum": ["MAJOR", "MINOR", "INFO"] },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "budget",
+                      "vague",
+                      "duplicate",
+                      "broken_link",
+                      "missing_section",
+                      "conflict",
+                      "unverified_command",
+                      "other"
+                    ]
+                  },
+                  "evidence": { "type": "string" },
+                  "detail": { "type": "string" },
+                  "fix": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "summary": { "type": "string" }
+    }
+  }
+}

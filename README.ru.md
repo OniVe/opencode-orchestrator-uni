@@ -8,7 +8,7 @@
 - `orchestrator` — root-оркестратор (основной агент) со встроенным режимом
   аудиторского цикла;
 - read-only субагенты аудита — `factcheck`, `empiric`, `invariant`,
-  `arbiter`, `meta`, `redteam`;
+  `arbiter`, `meta`, `redteam`, `context-lint`;
 - `fix-runner` — единственный пишущий субагент (применяет список «к закрытию»);
 - процессные документы комплекта, доступные как **reference `audit-kit`**
   (`call-mechanics.md`, `process-ready-loop.md`, `root-runbook.md`,
@@ -34,6 +34,7 @@
 | `arbiter`      | `subagent` | Read-only: разбирает только спорные находки                      |
 | `meta`         | `subagent` | Read-only: мета-аудит отчётов (гейт pass/fail)                   |
 | `redteam`      | `subagent` | Read-only: приёмочный ред-тим (релизные ворота)                  |
+| `context-lint` | `subagent` | Read-only: аудит AGENTS.md/SPEC.md на token-эффективность         |
 | `fix-runner`   | `subagent` | Пишущий: применяет список правок и доказывает закрытие           |
 
 Все агенты поставляются **без модели**: модели — это конфигурация развёртывания
@@ -99,7 +100,7 @@ claim'а `empiric` с `method` = `run|measure|compare_base`, элементы `s
 непокрытая обязательная строка `lines_checked`, расхождение `verdict` и `gate` у
 `meta`, инварианты `closing_list`/`verdict` у `redteam`.
 
-Семь схем лежат в `schemas/*.json` и выведены **строго** из SGR-секций
+Восемь схем лежат в `schemas/*.json` и выведены **строго** из SGR-секций
 `agents/*.md`, которые остаются источником истины: тестовый набор парсит
 SGR-шаблон каждого агента и падает, когда поле промпта или значение enum не
 принимается его схемой. Схемы разрешают `additionalProperties` — агенты могут

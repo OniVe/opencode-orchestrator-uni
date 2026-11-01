@@ -166,6 +166,7 @@ const SYSTEM_MARKERS: Record<Locale, Record<string, string>> = {
     orchestrator: "Ты — root-оркестратор",
     "fix-runner": "Ты — fix-runner",
     factcheck: "Ты — факт-чекер",
+    "context-lint": "Ты — read-only аудитор файлов инструкций",
     empiric: "Ты — эмпирический read-only аудитор",
     invariant: "Ты — read-only аудитор защитных инвариантов",
     arbiter: "Ты — арбитр",
@@ -176,6 +177,7 @@ const SYSTEM_MARKERS: Record<Locale, Record<string, string>> = {
     orchestrator: "You are the root orchestrator.",
     "fix-runner": "You are the fix-runner of the audit loop.",
     factcheck: "You are the fact-checker of the audit loop.",
+    "context-lint": "You are the read-only auditor of instruction files",
     empiric: "You are the empirical read-only auditor.",
     invariant: "You are the read-only auditor of protective invariants.",
     arbiter: "You are the arbiter of the audit loop.",
@@ -196,7 +198,7 @@ describe("opencode-orchestrator-uni", () => {
       const { agents, warnings } = await runSetup({ locale })
 
       expect(shipped.length).toBe(Object.keys(SYSTEM_MARKERS[locale]).length)
-      expect(shipped.length).toBe(8)
+      expect(shipped.length).toBe(9)
       expect(warnings).toEqual([])
       expect(agents.size).toBe(shipped.length)
       for (const file of shipped) {
@@ -212,7 +214,7 @@ describe("opencode-orchestrator-uni", () => {
   test("an unsupported options.locale warns and falls back to detection", async () => {
     const { agents, warnings } = await runSetup({ locale: "fr" })
     expect(warnings.some((line) => line.includes("options.locale"))).toBe(true)
-    expect(agents.size).toBe(8)
+    expect(agents.size).toBe(9)
   })
 
   test("agents carry no model without options (subagents inherit the session model)", async () => {
@@ -230,7 +232,7 @@ describe("opencode-orchestrator-uni", () => {
 
   test("audit subagents are read-only, fix-runner may write", async () => {
     const { agents } = await runSetup()
-    const auditors = ["factcheck", "empiric", "invariant", "arbiter", "meta", "redteam"]
+    const auditors = ["factcheck", "empiric", "invariant", "arbiter", "meta", "redteam", "context-lint"]
     for (const id of auditors) {
       const agent = agents.get(id)!
       expect(agent.mode, id).toBe("subagent")
@@ -248,7 +250,7 @@ describe("opencode-orchestrator-uni", () => {
   test("options.model applies to every kit agent", async () => {
     const { agents, warnings } = await runSetup({ model: "deepseek/deepseek-flash" })
     expect(warnings).toEqual([])
-    expect(agents.size).toBe(8)
+    expect(agents.size).toBe(9)
     for (const agent of agents.values()) {
       expect(agent.model).toEqual({ providerID: "deepseek", id: "deepseek-flash" })
     }
