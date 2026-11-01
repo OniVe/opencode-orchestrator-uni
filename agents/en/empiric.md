@@ -76,7 +76,7 @@ Fill-in rules:
 - contract_gaps — contract/reference gaps (what is not specified and why it is ambiguous); an empty array if there are no gaps; do not duplicate not_verified here.
 - The JSON must parse with a standard parser: no comments, no trailing commas, no text outside the block in the JSON itself.
 
-Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON (text or path) and achieve `valid=true`.
+Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON **as text** (`text`) and achieve `valid=true`; create files with the `write` tool, not a shell heredoc: on Windows a command over 32,767 characters is truncated and the heredoc hangs.
 
 CONSTRAINTS:
 - Change nothing in the audited repository: only reads and git objects. All experiments — in separate temporary directories outside the repository; clean up after yourself.

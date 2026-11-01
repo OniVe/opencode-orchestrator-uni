@@ -38,6 +38,6 @@ FACT-CHECK (for the auditors, ≤15 lines):
 
 Fill-in rules: verdict=stale — if at least one key claim is outdated; already_done — if the declared change is already implemented; the "FACT-CHECK" block — condensed: the current state, what is outdated, what is already done.
 
-Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON.
+Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON **as text** (`text`) and achieve `valid=true`; create files with the `write` tool, not a shell heredoc: on Windows a command over 32,767 characters is truncated and the heredoc hangs.
 
 CONSTRAINTS: read-only; do not commit, do not push, do not publish; the report is in English.

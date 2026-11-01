@@ -192,7 +192,7 @@ Persistence (all kit documents): the SGR reports of all roles, including **the S
 ### The `orch_uni_*` tools (if registered by the plugin)
 
 - the state revision → `orch_uni_snapshot` (aggregate = the directory hash): recorded together with the verdict and the verification;
-- a role's report → `orch_uni_validate_report` (path or text): `valid=false` → a step defect, resume the same session and demand that the SGR be reissued; do not ignore `warnings`;
+- a role's report → `orch_uni_validate_report` (prefer `text`; files — `write`, not a shell heredoc: the Windows limit is 32,767): `valid=false` → a step defect, resume the same session and demand that the SGR be reissued; do not ignore `warnings`;
 - the roles' sessionIDs, their model and cost → `orch_uni_sessions`;
 - if the tools are unavailable, work manually, as before.
 
@@ -238,5 +238,5 @@ The session's environment can change in the course of work: direct tools are rep
 - Preflight: before the audit phase, check that `subagent` is available; if not — do not start the loop.
 - The outcome status: "done; the regular audit is deferred". The outcome includes the state revision (commit/directory hash), compensating checks as a list (explicitly as checks), and the run plan in a normal session.
 - Forbidden: passing a self-check/`ai` review off as an independent audit; marking the task as audited; writing "ready".
-- Handoff: the audit is run on the recorded revision in a normal session; or the roles are launched as separate processes `opencode run --agent <role> "<brief>"` in the project directory (if the environment provides a shell — for example, AetherShell); keep the roles' sessionIDs (Phase 3.5/re-audit).
+- Handoff: the audit is run on the recorded revision in a normal session; or the roles are launched as separate processes `opencode run --agent <role> "<brief>"` in the project directory (if the environment provides a shell); keep the roles' sessionIDs (Phase 3.5/re-audit).
 - If the environment is restored before completion — run the deferred audit and update the verdict.

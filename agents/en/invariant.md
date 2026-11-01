@@ -71,7 +71,7 @@ Fill-in rules:
 - Empty arrays are allowed only when honestly justified; inventing data is forbidden.
 - The JSON must parse with a standard parser: no comments, no trailing commas, no text outside the block in the JSON itself.
 
-Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON (text or path) and achieve `valid=true`.
+Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON **as text** (`text`) and achieve `valid=true`; create files with the `write` tool, not a shell heredoc: on Windows a command over 32,767 characters is truncated and the heredoc hangs.
 
 CONSTRAINTS:
 - Change nothing in the audited repository; only reads and git objects. Experiments — in separate temporary directories, if needed.

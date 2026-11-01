@@ -30,7 +30,7 @@ FORMAT (SGR): a summary + json:
   ]
 }
 
-Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON.
+Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON **as text** (`text`) and achieve `valid=true`; create files with the `write` tool, not a shell heredoc: on Windows a command over 32,767 characters is truncated and the heredoc hangs.
 
 CONSTRAINTS:
 - Read-only; change nothing; experiments — only in temporary directories.

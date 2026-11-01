@@ -45,7 +45,7 @@ A "Fact-check (pre-pass): …" block is added to the pair's prompts — 5–15 l
 
 ## Subtleties
 
-- The `orch_uni_*` tools (if registered by the plugin): the state revision — `orch_uni_snapshot` (aggregate), an SGR report check — `orch_uni_validate_report` (invalid → resume the session and demand that the SGR be reissued), the roles' sessionID/model/cost — `orch_uni_sessions`; otherwise — manually, as before.
+- The `orch_uni_*` tools (if registered by the plugin): the state revision — `orch_uni_snapshot` (aggregate), an SGR report check — `orch_uni_validate_report` (text; files — `write`, not a heredoc; invalid → resume the session and demand that the SGR be reissued), the roles' sessionID/model/cost — `orch_uni_sessions`; otherwise — manually, as before.
 - The brief and the risk registry — as files; the subagents return the reports to the chat (the `edit deny` rule in `permissions`; `shell` is allowed), the root itself saves what is needed.
 - "Blind" runs — a sandbox without git history (without fix commits); re-audit — by contrast, the fixes delta is shown.
 - The root's verdict does not substitute for the auditors' verdicts: until both roles are ready, the loop lives (plus the escalation rules from `process-ready-loop.md`).

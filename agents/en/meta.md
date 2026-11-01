@@ -41,7 +41,7 @@ FORMAT (SGR): a summary + json:
 
 `gate` — the **only blocking aggregate** (pass only when all reports pass, MAJOR findings are verified and `closing_list` is empty/closed); `verdict` is a synonym of `gate` (kept for compatibility, carries no separate meaning). The origin of `closing_list`: it is a **copy** of the red-team report's `closing_list` (ids of findings mandatory for closure; the red team is mandatory at the gates) — if the composition diverges from the red-team report, the meta issues a **fail**. `coverage_gaps` — what could not be checked; ship is allowed only with `gate`=pass and the owner's explicit acceptance of `coverage_gaps` (a record in `risks-<id>.md`).
 
-Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON.
+Before submitting, if the `orch_uni_validate_report` tool is available, validate your JSON **as text** (`text`) and achieve `valid=true`; create files with the `write` tool, not a shell heredoc: on Windows a command over 32,767 characters is truncated and the heredoc hangs.
 
 CONSTRAINTS:
 - Read-only; do not look for new code defects (reports only); do not edit the reports.
