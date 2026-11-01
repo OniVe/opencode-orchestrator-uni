@@ -42,6 +42,10 @@ All agents ship **without a model**: models are deployment configuration (see
 [Models](#models)). Definitions live in [`agents/`](./agents) as plain Markdown agent
 files and are parsed at setup time — the files are the single source of truth.
 
+"Read-only" here means `edit` is denied and the prompt forbids writes; `shell` stays
+allowed so an auditor can run the verification commands it needs (accepted risk
+I-M15). The audit loop treats that as a contract, not as a sandbox.
+
 The `audit-kit` reference points at this package's per-locale `docs/<locale>/`
 directory (see [Locale](#locale)). OpenCode lists it in session context as an
 additional local directory, so the orchestrator (and any other agent) can read
@@ -122,18 +126,27 @@ own (`verdict_label`, `check`, …).
 ```jsonc
 { "path": "AGENTS.md" }                  // file or directory, relative to the location
 { "path": ".", "max_lines": 150, "max_tokens": 2000 }
+{ "path": ".", "max_file_bytes": 500000, "max_files": 100, "max_findings": 50, "max_total_findings": 500 }
 ```
 
 Deterministic, read-only audit of `AGENTS.md`, `SPEC.md` and `CLAUDE.md`. It returns
-`{ ok: true, verdict, closing_list, files, summary }`; each finding carries `id`,
-`severity`, `kind`, `evidence`, `detail` and `fix`. Checks: line/token budget, vague
-phrases, duplicate lines, broken relative links, placeholders, dates/versions in the
-first three lines, required sections and AC test columns. Links are checked only for
-local paths inside the workspace; a target outside the root is refused (`E_OUT_OF_ROOT`).
-Limits: ≤ 2 MB per file, ≤ 500 files, ≤ 100 findings per file, ≤ 1000 findings per scan —
-truncation is reported (`truncated: true`), not silent. Typed failures: `E_INPUT`,
-`E_NOT_FOUND`, `E_NO_FILES`, `E_IO`, `E_ABORTED`, `E_LIMIT_FILE`, `E_LIMIT_FILES`,
-`E_OUT_OF_ROOT`.
+`{ schema: "context-lint/v1", ok: true, verdict, closing_list, files, summary, truncated? }`;
+each finding carries `id`, `severity`, `kind`, `evidence`, `detail` and `fix`. Checks:
+line/token budget, vague phrases, duplicate lines, broken relative links, placeholders,
+dates/versions in the first three lines, required sections and AC test columns. Links
+and explicit targets are confined by their **real** path: a symlink or junction that
+resolves outside the root is skipped, and such a target is refused (`E_OUT_OF_ROOT`).
+Code fences, inline code and HTML comments are masked, so a sample is never a rule.
+Limits: ≤ 2 MB per file, ≤ 500 files per scan. `max_findings` (per file) caps
+MINOR/INFO and sets the hard cap for MAJOR: excess MAJOR findings are replaced by one
+MAJOR `truncated` finding that stays in `closing_list`; `max_total_findings` caps
+MINOR/INFO only. A capped list sets `truncated: true` instead of hiding findings.
+Placeholders are `<...>` (three or more dots) and `TODO`/`TBD`/`FIXME`; `<DoD>` and
+`<name>` are markup.
+`max_lines` is the single 200-line root budget the tool applies: the 60/200/100
+per-level figures in [`docs/`](./docs) are authoring guidance, not separate tool limits.
+Typed failures: `E_INPUT`, `E_NOT_FOUND`, `E_NO_FILES`, `E_IO`, `E_ABORTED`,
+`E_LIMIT_FILE`, `E_LIMIT_FILES`, `E_OUT_OF_ROOT`.
 
 ### `orch_uni_snapshot`
 

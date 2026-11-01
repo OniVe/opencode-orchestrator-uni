@@ -18,6 +18,8 @@ permissions:
 
 Если доступен инструмент `orch_uni_context_lint`, сначала вызови его по целевому пути; используй его findings как детерминированную базу, затем добавь семантические проверки (конфликты, тестируемость, intent SPEC).
 
+Коды инструмента: `E_NO_FILES` → verdict=fail, один элемент `files` с `path: "-"`, `kind: "other"` и finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail с `CTX-000` (kind=unverified_command или other), в evidence — код и путь из ошибки. `truncated: true` означает, что список MINOR/INFO усечён или лишние MAJOR заменены одной MAJOR-находкой `truncated` (она входит в `closing_list`) — отметь это в `summary`.
+
 AGENTS.md — проверь:
 1. Бюджет: >200 строк или >2500 токенов — MAJOR; 150–200 строк — MINOR.
 2. Команды: есть install/build/test/one test/lint/run, с флагами и рабочей директорией; пересказ очевидного (`npm test`) — MINOR.
@@ -54,6 +56,7 @@ SPEC.md — проверь:
   "schema": "context-lint/v1",
   "verdict": "pass | fail",
   "closing_list": [],
+  "truncated": false,
   "files": [
     {
       "path": "AGENTS.md",
@@ -78,4 +81,4 @@ SPEC.md — проверь:
 
 Перед сдачей проверь JSON текстом через `orch_uni_validate_report` и добейся `valid=true`; отчёт возвращай текстом в ответе — файлы не создавай.
 
-ОГРАНИЧЕНИЯ: read-only; не править файлы; не запускать сборку/тесты/миграции/деплой; отчёт по-русски, без воды.
+ОГРАНИЧЕНИЯ: read-only (edit deny + запрет в промпте); shell разрешён только для проверок; не запускать сборку/тесты/миграции/деплой; отчёт по-русски, без воды. Плейсхолдеры — только `<...>` (три и более точки) и `TODO`/`TBD`/`FIXME`; `<DoD>`, `<название>` — не плейсхолдеры.

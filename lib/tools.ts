@@ -165,6 +165,17 @@ const CONTEXT_LINT_INPUT = {
     },
     max_lines: { type: "number", description: "AGENTS/CLAUDE line budget. Default: 200." },
     max_tokens: { type: "number", description: "AGENTS/CLAUDE estimated token budget. Default: 2500." },
+    max_file_bytes: { type: "number", description: "Largest file that may be read, in bytes. Default: 2000000." },
+    max_files: { type: "number", description: "Most files a directory target may expand to. Default: 500." },
+    max_findings: {
+      type: "number",
+      description:
+        "Per-file cap: MINOR/INFO findings kept, and the hard cap for MAJOR (excess becomes one MAJOR truncated finding). Default: 100.",
+    },
+    max_total_findings: {
+      type: "number",
+      description: "MINOR/INFO findings kept across the scan; MAJOR is never capped by the total. Default: 1000.",
+    },
   },
 } as const
 
@@ -466,14 +477,22 @@ export async function registerAuditTools(
     toolContext: { readonly signal?: AbortSignal } | undefined,
   ): Promise<{ content: string }> => {
     const record = input === undefined ? {} : asRecord(input)
-    if (record === undefined) return failure("E_INPUT", "input must be an object ({path?, max_lines?, max_tokens?})")
-    const { path: target, max_lines, max_tokens } = record
+    if (record === undefined)
+      return failure(
+        "E_INPUT",
+        "input must be an object ({path?, max_lines?, max_tokens?, max_file_bytes?, max_files?, max_findings?, max_total_findings?})",
+      )
+    const { path: target, max_lines, max_tokens, max_file_bytes, max_files, max_findings, max_total_findings } = record
     if (target !== undefined && (typeof target !== "string" || target === "")) {
       return failure("E_INPUT", '"path" must be a non-empty string')
     }
     for (const [key, value] of [
       ["max_lines", max_lines],
       ["max_tokens", max_tokens],
+      ["max_file_bytes", max_file_bytes],
+      ["max_files", max_files],
+      ["max_findings", max_findings],
+      ["max_total_findings", max_total_findings],
     ] as const) {
       if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value <= 0)) {
         return failure("E_INPUT", `"${key}" must be a positive number`)
@@ -490,6 +509,10 @@ export async function registerAuditTools(
       ...(target === undefined ? {} : { target: target as string }),
       ...(max_lines === undefined ? {} : { maxLines: max_lines as number }),
       ...(max_tokens === undefined ? {} : { maxTokens: max_tokens as number }),
+      ...(max_file_bytes === undefined ? {} : { maxFileBytes: max_file_bytes as number }),
+      ...(max_files === undefined ? {} : { maxFiles: max_files as number }),
+      ...(max_findings === undefined ? {} : { maxFindingsPerFile: max_findings as number }),
+      ...(max_total_findings === undefined ? {} : { maxTotalFindings: max_total_findings as number }),
       signal,
     })
     if (!outcome.ok) {
@@ -621,7 +644,8 @@ export async function registerAuditTools(
       description:
         "Deterministic, read-only audit of AGENTS.md/SPEC.md/CLAUDE.md: line/token budget, vague phrases, duplicate lines, " +
         "broken relative links, placeholders, dates in the first three lines, required sections, AC test columns. " +
-        "Returns JSON {ok, verdict, closing_list, files, summary} or a typed code " +
+        "Returns JSON {schema, ok, verdict, closing_list, files, summary, truncated?}; a cap drops MINOR/INFO and sets " +
+        "truncated=true, and excess MAJOR findings become one MAJOR truncated finding in closing_list. Failure is a typed code " +
         "(E_INPUT|E_NOT_FOUND|E_NO_FILES|E_IO|E_ABORTED|E_LIMIT_FILE|E_LIMIT_FILES|E_OUT_OF_ROOT).",
       input: CONTEXT_LINT_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },

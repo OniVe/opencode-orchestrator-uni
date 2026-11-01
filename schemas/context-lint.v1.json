@@ -7,6 +7,7 @@
       "schema": { "type": "string", "const": "context-lint/v1" },
       "verdict": { "type": "string", "enum": ["pass", "fail"] },
       "closing_list": { "type": "array", "items": { "type": "string" } },
+      "truncated": { "type": "boolean" },
       "files": {
         "type": "array",
         "items": {
@@ -18,6 +19,7 @@
             "lines": { "type": "number" },
             "words": { "type": "number" },
             "tokens_est": { "type": "number" },
+            "truncated": { "type": "boolean" },
             "findings": {
               "type": "array",
               "items": {

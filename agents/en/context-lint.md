@@ -18,6 +18,8 @@ MEASURE: for each file, count lines, words, characters, an estimated token count
 
 When the `orch_uni_context_lint` tool is available, run it on the target path first; use its findings as the deterministic base, then add the semantic checks (conflicts, testability, SPEC intent).
 
+Tool codes: `E_NO_FILES` → verdict=fail with one `files` entry with `path: "-"`, `kind: "other"` and finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail with `CTX-000` (kind=unverified_command or other), the code and path from the error in evidence. `truncated: true` means the MINOR/INFO list was capped or excess MAJOR findings were replaced by one MAJOR `truncated` finding (it is in `closing_list`) — say so in `summary`.
+
 AGENTS.md — check:
 1. Budget: >200 lines or >2500 tokens — MAJOR; 150–200 lines — MINOR.
 2. Commands: install/build/test/one test/lint/run are present, with flags and a working directory; restating the obvious (`npm test`) — MINOR.
@@ -54,6 +56,7 @@ FORMAT (SGR): a summary (up to 10 lines) + json:
   "schema": "context-lint/v1",
   "verdict": "pass | fail",
   "closing_list": [],
+  "truncated": false,
   "files": [
     {
       "path": "AGENTS.md",
@@ -78,4 +81,4 @@ FORMAT (SGR): a summary (up to 10 lines) + json:
 
 Before submitting, validate the JSON as text through `orch_uni_validate_report` and make it `valid=true`; return the report as text in the answer — do not create files.
 
-LIMITS: read-only; do not edit files; do not run builds/tests/migrations/deploys; the report is in English, without fluff.
+LIMITS: read-only (edit deny + the prompt ban); shell is allowed for verification only; do not edit files; do not run builds/tests/migrations/deploys; the report is in English, without fluff. Placeholders are only `<...>` (three or more dots) and `TODO`/`TBD`/`FIXME`; `<DoD>` and `<name>` are not placeholders.
