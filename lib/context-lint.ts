@@ -22,8 +22,9 @@
  *   one MAJOR `truncated` finding that stays in `closing_list`; `truncated`
  *   reports every capped list;
  * - line-oriented parsers skip lines longer than `MAX_LINE_LENGTH`, so a minified
- *   bundle pasted into a file cannot make matching quadratic; skipped lines are
- *   reported with one INFO marker, never silently;
+ *   bundle pasted into a file cannot make matching quadratic; a skipped line might
+ *   hide a broken link or placeholder, so it is reported with one MAJOR marker
+ *   that stays in `closing_list` and sets `truncated: true`;
  * - code fences, inline code and HTML comments are masked once and every
  *   content check reads the masked lines: a sample is not a rule.
  */
@@ -829,7 +830,11 @@ function checkFirstLines(file: ContextFileResult, lines: readonly string[], sink
   }
 }
 
-/** Split `X and Y` / `X и Y` only at the top level: not inside `(…)`, `[…]` or `` `…` ``. */
+/**
+ * Split an inline list at the top level only: never inside `(…)`, `[…]` or
+ * `` `…` ``. Separators are `;`, `,`, `X and Y` / `X и Y` and a numbered marker
+ * (`1.`/`2)`); a comma or semicolon inside brackets or code is content.
+ */
 function splitTopLevelItems(text: string): string[] {
   const parts: string[] = []
   let current = ""
@@ -842,11 +847,25 @@ function splitTopLevelItems(text: string): string[] {
       if (character === "(" || character === "[") depth += 1
       else if (character === ")" || character === "]") depth = Math.max(0, depth - 1)
       const previous = index === 0 ? " " : text[index - 1]
+      if (depth === 0 && (character === ";" || character === ",")) {
+        parts.push(current)
+        current = ""
+        continue
+      }
       const joined = /^(?:and|и)\s+/i.exec(text.slice(index))
       if (depth === 0 && /\s/.test(previous) && joined !== null) {
         parts.push(current)
         current = ""
         index += joined[0].length - 1
+        continue
+      }
+      // A numbered marker starts an item only at the start or after whitespace;
+      // `AC1.1` and `v1.2` stay inside their item.
+      const numbered = /^\d+[.)]\s+/.exec(text.slice(index))
+      if (depth === 0 && /\s/.test(previous) && numbered !== null) {
+        parts.push(current)
+        current = ""
+        index += numbered[0].length - 1
         continue
       }
     }
@@ -856,19 +875,11 @@ function splitTopLevelItems(text: string): string[] {
   return parts
 }
 
-/** Split an inline `Non-goals: …` value into items: `;`, commas, `and`/`и`, `1)`. */
+/** Split an inline `Non-goals: …` value into top-level items (`;`, `,`, `and`/`и`, `1)`). */
 function inlineItems(rest: string): string[] {
   const text = rest.trim()
   if (text === "" || NONE_ITEM.test(text)) return []
-  const numbered = text
-    .split(/(?:^|\s)\d+[.)]\s+/)
-    .map((part) => part.trim())
-    .filter((part) => part !== "")
-  const parts = numbered.length > 1 ? numbered : [text]
-  return parts
-    .flatMap((part) => part.split(/\s*;\s*/))
-    .flatMap((part) => part.split(/,(?![^(]*\))/))
-    .flatMap((part) => splitTopLevelItems(part))
+  return splitTopLevelItems(text)
     .map((item) =>
       item
         .replace(/^[-*+]\s+/, "")
@@ -1105,7 +1116,9 @@ function scanAcTables(lines: readonly string[]): AcScan {
 /** Lines that belong to AC material: their R cells are not requirement declarations. */
 function acSkipLines(scan: AcScan): Set<number> {
   const skip = new Set<number>()
-  for (const { block } of scan.tables) {
+  // A defective AC table (no Test column) still maps R→AC: its R cells must not
+  // be read as requirement declarations, or the table would declare its own R.
+  for (const { block } of [...scan.tables, ...scan.withoutTest]) {
     for (let index = block.start; index <= block.end; index += 1) skip.add(index)
   }
   for (const row of scan.headerless) skip.add(row.line)
@@ -1520,13 +1533,15 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     }
     const longLines = lines.reduce((count, line) => (line.length > MAX_LINE_LENGTH ? count + 1 : count), 0)
     if (longLines > 0) {
-      // Line-oriented parsers skip long lines; say so instead of hiding them.
+      // Line-oriented parsers skip long lines, so a broken link or placeholder on
+      // one is not seen. That is an incomplete result: a MAJOR marker keeps the
+      // verdict honest instead of letting a pass hide it.
       sink.kept.push({
-        severity: "INFO",
+        severity: "MAJOR",
         kind: "other",
         evidence: `${file.path}:1`,
-        detail: `long line skipped: ${longLines} line(s) over ${MAX_LINE_LENGTH} characters were not parsed`,
-        fix: "Split the line; links and placeholders on it are not checked.",
+        detail: `long line skipped: ${longLines} line(s) over ${MAX_LINE_LENGTH} characters were not parsed (possible broken links or placeholders are not checked)`,
+        fix: "Split the line; every line must stay under the parser limit.",
       })
     }
     if (sink.majorDropped) {
@@ -1535,7 +1550,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
         kind: "other",
         evidence: `${file.path}:1`,
         detail: `findings truncated at ${maxFindingsPerFile} MAJOR (further MAJOR findings are not listed)`,
-        fix: "Fix the listed MAJOR findings first; the rest are shown on the next run.",
+        fix: "Fix the listed findings or increase max_findings/max_total, then rerun; a deterministic rerun with the same caps shows the same prefix.",
       })
     }
     if (sink.minorDropped) {
@@ -1544,10 +1559,14 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
         kind: "other",
         evidence: `${file.path}:1`,
         detail: `findings truncated at ${maxFindingsPerFile} (MAJOR findings are kept)`,
-        fix: "Fix the listed findings first; the rest are shown on the next run.",
+        fix: "Fix the listed findings or increase max_findings/max_total, then rerun; a deterministic rerun with the same caps shows the same prefix.",
       })
     }
-    scanned.push({ ...file, findings: sink.kept, truncated: sink.truncated || links.truncated })
+    scanned.push({
+      ...file,
+      findings: sink.kept,
+      truncated: sink.truncated || links.truncated || longLines > 0,
+    })
   }
 
   // The global cap applies to every finding and prioritizes MAJOR: a pathological
@@ -1588,7 +1607,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
           detail: majorOverflow
             ? `findings truncated at ${maxTotalFindings}; further MAJOR findings are not listed`
             : `findings truncated at ${maxTotalFindings} (MAJOR findings are kept)`,
-          fix: "Fix the listed findings first; the rest are shown on the next run.",
+          fix: "Fix the listed findings or increase max_findings/max_total, then rerun; a deterministic rerun with the same caps shows the same prefix.",
         },
       },
     ]

@@ -2505,7 +2505,7 @@ describe("R4-6 non-goals counting", () => {
 
 // R4-7: inner caps are reported, never silent.
 describe("R4-7 inner caps are reported", () => {
-  test("a 4000-char line has no marker; a 4001-char line gets an INFO marker", async () => {
+  test("a 4001-char line gets a MAJOR marker and the run cannot pass", async () => {
     const root = await temporary()
     try {
       await write(root, "AGENTS.md", [VALID_AGENTS, "q".repeat(4000)].join("\n"))
@@ -2513,9 +2513,15 @@ describe("R4-7 inner caps are reported", () => {
       expect(findingsOf(atLimit).some((finding) => finding.detail.startsWith("long line skipped"))).toBe(false)
       await write(root, "AGENTS.md", [VALID_AGENTS, "q".repeat(4001)].join("\n"))
       const overLimit = await lintContext({ root, target: "AGENTS.md", maxLines: 10_000, maxTokens: 1_000_000 })
-      const longLine = findingsOf(overLimit).find((finding) => finding.detail.startsWith("long line skipped"))
-      expect(longLine?.severity).toBe("INFO")
+      expect(overLimit.ok).toBe(true)
+      if (!overLimit.ok) return
+      const longLine = overLimit.files[0]?.findings.find((finding) => finding.detail.startsWith("long line skipped"))
+      expect(longLine?.severity).toBe("MAJOR")
       expect(longLine?.detail).toContain("1 line")
+      expect(overLimit.verdict).toBe("fail")
+      expect(overLimit.truncated).toBe(true)
+      expect(overLimit.files[0]?.truncated).toBe(true)
+      expect(overLimit.closing_list).toContain(longLine?.id ?? "")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -2528,6 +2534,209 @@ describe("R4-7 inner caps are reported", () => {
       await write(root, "AGENTS.md", [VALID_AGENTS, ...rules, ...rules].join("\n"))
       const result = await lintContext({ root, target: "AGENTS.md", maxLines: 10_000, maxTokens: 1_000_000 })
       expect(findingsOf(result).filter((finding) => finding.kind === "duplicate").length).toBe(20)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// R5-1: a skipped long line may hide a broken link or a placeholder, so it is a
+// MAJOR marker in `closing_list`, never an INFO note.
+describe("R5-1 long lines cannot hide MAJOR", () => {
+  const lint = async (root: string) =>
+    await lintContext({ root, target: "AGENTS.md", maxLines: 10_000, maxTokens: 1_000_000 })
+  const longLineMarker = (result: ContextLintOutcome) =>
+    result.ok ? result.files[0]?.findings.find((finding) => finding.detail.startsWith("long line skipped")) : undefined
+
+  test("a 4000-char line is still checked: a broken link on it is a MAJOR", async () => {
+    const root = await temporary()
+    try {
+      const link = "[bad](missing.md)"
+      const atLimit = "q".repeat(4000 - link.length) + link
+      expect(atLimit.length).toBe(4000)
+      await write(root, "AGENTS.md", [VALID_AGENTS, atLimit].join("\n"))
+      const result = await lint(root)
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(longLineMarker(result)).toBeUndefined()
+      expect(
+        result.files[0]?.findings.some((finding) => finding.kind === "broken_link" && finding.severity === "MAJOR"),
+      ).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("4100 chars with a broken link fail with the MAJOR long-line marker", async () => {
+    const root = await temporary()
+    try {
+      const link = "[bad](missing.md)"
+      await write(root, "AGENTS.md", [VALID_AGENTS, "q".repeat(4100 - link.length) + link].join("\n"))
+      const result = await lint(root)
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const marker = longLineMarker(result)
+      expect(marker).toMatchObject({ severity: "MAJOR", kind: "other" })
+      expect(result.verdict).toBe("fail")
+      expect(result.truncated).toBe(true)
+      expect(result.closing_list).toContain(marker?.id ?? "")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("4100 chars with a placeholder fail with the MAJOR long-line marker", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", [VALID_AGENTS, "q".repeat(4100 - "<...>".length) + "<...>"].join("\n"))
+      const result = await lint(root)
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(longLineMarker(result)?.severity).toBe("MAJOR")
+      expect(result.verdict).toBe("fail")
+      expect(result.closing_list).toContain(longLineMarker(result)?.id ?? "")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// N28: inline non-goals split on `;`, `,`, `and`/`и` and numbered markers only at
+// the top level, never inside brackets or backticks.
+describe("N28 inline non-goals separators", () => {
+  const specBody = (nonGoals: string): string =>
+    ["# SPEC", "", `## Non-goals: ${nonGoals}`, "", "## Requirements", "", "- R1 — shall work.", "", ...AC_TABLE].join(
+      "\n",
+    )
+  const countDetail = (result: ContextLintOutcome): string | undefined =>
+    majors(result).find((finding) => finding.detail.includes("non-goals"))?.detail
+  const count = async (nonGoals: string): Promise<string | undefined> => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", specBody(nonGoals))
+      return countDetail(await lintContext({ root, target: "SPEC.md" }))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+
+  test("a comma list inside backticks is one item", async () => {
+    expect(await count("only `a, b, c`")).toBe("1 non-goals; expected 3–7 items")
+  })
+
+  test("a semicolon inside parentheses is not a separator", async () => {
+    expect(await count("a (b; c); d")).toBe("2 non-goals; expected 3–7 items")
+  })
+
+  test("a comma inside backticks does not split, a top-level semicolon does", async () => {
+    expect(await count("a `b, c`; d")).toBe("2 non-goals; expected 3–7 items")
+  })
+
+  test("a plain comma list is three items and passes", async () => {
+    expect(await count("a, b, c")).toBeUndefined()
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", specBody("a, b, c"))
+      const result = await lintContext({ root, target: "SPEC.md" })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.verdict).toBe("pass")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// N32: a defective AC table (no Test column) is an R→AC mapping; it cannot
+// declare requirements of its own.
+describe("N32 defective AC table requirements", () => {
+  test("no R list + defective AC table → both no-requirements and lacks-Test", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        [
+          "# SPEC",
+          "",
+          "## Non-goals",
+          "",
+          "- a",
+          "- b",
+          "- c",
+          "",
+          "| AC | R | Given | When | Then |",
+          "|---|---|---|---|---|",
+          "| AC1.1 | R1 | given | when | then |",
+        ].join("\n"),
+      )
+      const result = await lintContext({ root, target: "SPEC.md" })
+      const details = findingsOf(result).map((finding) => finding.detail)
+      expect(details).toContain("no numbered requirements")
+      expect(details).toContain("AC table lacks Test column")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// N36: cap markers are additional to `max_findings`; both may appear in a run,
+// and neither promises a different result on a deterministic rerun.
+describe("N36 cap markers are additional and honest", () => {
+  test("2001 broken links with maxFindings=2 show both markers", async () => {
+    const root = await temporary()
+    try {
+      const links = Array.from({ length: 2001 }, (_, index) => `[x](docs/missing-${index}.md)`)
+      await write(root, "AGENTS.md", [VALID_AGENTS, ...links].join("\n"))
+      const result = await lintContext({
+        root,
+        target: "AGENTS.md",
+        maxLines: 10_000,
+        maxTokens: 1_000_000,
+        maxFindingsPerFile: 2,
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const findings = result.files[0]?.findings ?? []
+      const linkMarker = findings.find((finding) => finding.detail.startsWith("link candidates truncated"))
+      const findingsMarker = findings.find((finding) => finding.detail.startsWith("findings truncated at 2 MAJOR"))
+      expect(linkMarker?.severity).toBe("MAJOR")
+      expect(findingsMarker?.severity).toBe("MAJOR")
+      expect(result.closing_list).toContain(linkMarker?.id ?? "")
+      expect(result.closing_list).toContain(findingsMarker?.id ?? "")
+      expect(result.truncated).toBe(true)
+      expect(findingsMarker?.fix).toContain("same prefix")
+      for (const marker of [linkMarker, findingsMarker]) expect(marker?.fix).not.toContain("next run")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// N33: a paragraph is one non-goal item; 4-space bullets are code, not items.
+describe("N33 paragraph and 4-space documentation", () => {
+  const countDetail = (result: ContextLintOutcome): string | undefined =>
+    majors(result).find((finding) => finding.detail.includes("non-goals"))?.detail
+
+  test("a three-line paragraph is one item", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        ["# SPEC", "", "## Non-goals", "", "does not track,", "does not notify,", "does not sync.", ""].join("\n"),
+      )
+      expect(countDetail(await lintContext({ root, target: "SPEC.md" }))).toBe("1 non-goals; expected 3–7 items")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("4-space-indented bullets under a bold label are code, not items", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", ["# SPEC", "", "**Non-goals:**", "", "    - a", "    - b", "    - c", ""].join("\n"))
+      expect(countDetail(await lintContext({ root, target: "SPEC.md" }))).toBe("0 non-goals; expected 3–7 items")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
