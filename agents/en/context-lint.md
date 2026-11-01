@@ -18,14 +18,14 @@ MEASURE: for each file, count lines, words, characters, an estimated token count
 
 When the `orch_uni_context_lint` tool is available, run it on the target path first; use its findings as the deterministic base, then add the semantic checks (conflicts, testability, SPEC intent).
 
-Tool codes: `E_NO_FILES` → verdict=fail with one `files` entry with `path: "-"`, `kind: "other"` and finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail with `CTX-000` (kind=unverified_command or other), the code and path from the error in evidence. `truncated: true` means the MINOR/INFO list was capped or excess MAJOR findings were replaced by one MAJOR `truncated` finding (it is in `closing_list`) — say so in `summary`.
+Tool codes: `E_NO_FILES` → verdict=fail with one `files` entry with `path: "-"`, `kind: "other"` and finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail with `CTX-000` (kind=unverified_command or other), the code and path from the error in evidence. `truncated: true` means the finding list was capped: MINOR/INFO may be missing, and when MAJOR overflow a MAJOR `truncated` marker stays in `closing_list` — say so in `summary`.
 
 AGENTS.md — check:
 1. Budget: >200 lines or >2500 tokens — MAJOR; 150–200 lines — MINOR.
 2. Commands: install/build/test/one test/lint/run are present, with flags and a working directory; restating the obvious (`npm test`) — MINOR.
 3. Boundaries: generated/vendor/prod/secrets/migrations — otherwise MINOR.
 4. Precedence and scope — otherwise MINOR.
-5. Vague phrases: clean, best practices, robust, "carefully", "properly", "optimally" — MINOR; three or more — MAJOR.
+5. Vague phrases: clean, best practices, robust, "carefully", "properly", "optimally" — MINOR; three or more distinct terms — MAJOR (the tool counts distinct terms).
 6. Duplicate lines of ≥40 characters; restating README/linter — MINOR.
 7. Relative links and paths exist — otherwise MAJOR.
 8. Placeholders `<...>`, `TODO`, `TBD`, `FIXME` — MAJOR.

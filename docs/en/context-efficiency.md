@@ -12,7 +12,7 @@ An instruction file is a budget of attention, not documentation. Every line is p
 | `SPEC.md` | 80–150 lines / ≤1.5k words | 2k words |
 | `ADR` | 30–60 lines / <700 tokens | 100 lines |
 
-`orch_uni_context_lint` applies one root budget (`max_lines`, 200 lines by default); the per-level figures above are authoring guidance, not separate tool limits.
+`orch_uni_context_lint` applies one root budget (`max_lines`, 200 lines by default) and one SPEC word budget (`max_words`, 1500 by default — the target from the table; pass `max_words: 2000` for the ceiling). The per-level figures above are authoring guidance, not separate tool limits.
 
 Selection rule: if a line is not testable, is inferable from code/linters, or is needed in fewer than half of sessions — delete it or move it to a link.
 

@@ -18,14 +18,14 @@ permissions:
 
 Если доступен инструмент `orch_uni_context_lint`, сначала вызови его по целевому пути; используй его findings как детерминированную базу, затем добавь семантические проверки (конфликты, тестируемость, intent SPEC).
 
-Коды инструмента: `E_NO_FILES` → verdict=fail, один элемент `files` с `path: "-"`, `kind: "other"` и finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail с `CTX-000` (kind=unverified_command или other), в evidence — код и путь из ошибки. `truncated: true` означает, что список MINOR/INFO усечён или лишние MAJOR заменены одной MAJOR-находкой `truncated` (она входит в `closing_list`) — отметь это в `summary`.
+Коды инструмента: `E_NO_FILES` → verdict=fail, один элемент `files` с `path: "-"`, `kind: "other"` и finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail с `CTX-000` (kind=unverified_command или other), в evidence — код и путь из ошибки. `truncated: true` означает, что список находок усечён: MINOR/INFO могут отсутствовать, а при переполнении MAJOR остаётся MAJOR-маркер `truncated` в `closing_list` — отметь это в `summary`.
 
 AGENTS.md — проверь:
 1. Бюджет: >200 строк или >2500 токенов — MAJOR; 150–200 строк — MINOR.
 2. Команды: есть install/build/test/one test/lint/run, с флагами и рабочей директорией; пересказ очевидного (`npm test`) — MINOR.
 3. Границы: generated/vendor/prod/secrets/migrations — иначе MINOR.
 4. Приоритеты и область действия — иначе MINOR.
-5. Vague-фразы: clean, best practices, robust, «аккуратно», «правильно», «оптимально» — MINOR; три и более — MAJOR.
+5. Vague-фразы: clean, best practices, robust, «аккуратно», «правильно», «оптимально» — MINOR; три и более различных термина — MAJOR (инструмент считает различные термины).
 6. Дубли строк длиной ≥40 символов; пересказ README/линтера — MINOR.
 7. Относительные ссылки и пути существуют — иначе MAJOR.
 8. Плейсхолдеры `<...>`, `TODO`, `TBD`, `FIXME` — MAJOR.

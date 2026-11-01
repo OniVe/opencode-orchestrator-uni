@@ -76,9 +76,9 @@ export interface ContextLintResult {
   readonly files: ContextFileResult[]
   readonly summary: string
   /**
-   * True when `maxTotalFindings` dropped MINOR/INFO findings (or a per-file cap
-   * did). MAJOR findings are never dropped silently: above the per-file cap they
-   * are replaced by one MAJOR `truncated` finding kept in `closing_list`.
+   * True when a cap dropped findings. Above `maxTotalFindings` MAJOR findings
+   * are kept first and the overflow is replaced by one MAJOR `truncated` marker
+   * that stays in `closing_list`.
    */
   readonly truncated?: boolean
 }
@@ -119,13 +119,19 @@ export interface ContextLintOptions {
   readonly maxLines?: number
   /** AGENTS/CLAUDE token budget (estimated). Default: 2500. */
   readonly maxTokens?: number
+  /** SPEC word budget. Default: 1500 (the authoring target; 2000 is the ceiling). */
+  readonly maxWords?: number
   /** Largest file that may be read, in bytes. Default: 2_000_000. */
   readonly maxFileBytes?: number
   /** Most files a directory target may expand to. Default: 500. */
   readonly maxFiles?: number
   /** MINOR/INFO findings kept per file and the hard cap for MAJOR. Default: 100. */
   readonly maxFindingsPerFile?: number
-  /** MINOR/INFO findings kept across the whole scan; MAJOR is never capped. Default: 1000. */
+  /**
+   * Global cap for every finding. MAJOR findings are kept first; when they
+   * overflow, `maxTotal` findings plus one MAJOR `truncated` marker are kept.
+   * Default: 1000.
+   */
   readonly maxTotalFindings?: number
   /** Optional abort signal, checked around reads and inside directory walks. */
   readonly signal?: AbortSignal
@@ -141,6 +147,12 @@ const MAX_LINE_LENGTH = 4000
 const MAX_DETAIL_LENGTH = 120
 const MAX_BROKEN_LINKS = 20
 const MAX_DUPLICATES = 10
+/** Link candidates collected from one file before the list is truncated. */
+const MAX_LINK_CANDIDATES = 2000
+/** Filesystem probes (parent realpath + exists) allowed for one file. */
+const MAX_LINK_CHECKS = 2000
+/** Candidates between abort checks and a macrotask yield. */
+const LINK_CHECK_YIELD = 100
 
 const SKIP = new Set(["node_modules", ".git", ".ae", "dist", "build", "target", "vendor"])
 const TARGET_NAME = /^(AGENTS|SPEC|CLAUDE)\.md$/i
@@ -152,7 +164,6 @@ const LINK_TARGET = /\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g
  */
 const PLACEHOLDER = /<\.{3,}>|\b(?:TODO|TBD|FIXME)\b/g
 const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i
-const FENCE_LINE = /^\s*(?:```+|~~~+)/
 const HEADING = /^#{1,6}\s/
 const HEADING_LEVEL = /^(#{1,6})\s/
 const TABLE_ROW = /^\s*\|/
@@ -164,18 +175,19 @@ const COMMANDS_HEADING = new RegExp(`${HEADING_PREFIX}(?:commands?|команд�
 const TASK_TABLE_HEADER = /\|\s*(?:задача|task)\s*\|/i
 const SHELL_TOOL = /\b(?:npm|bun|pnpm|yarn|make|cargo|pytest|go test)\b/i
 const BOUNDARIES = /(never|никогда|ask first|сначала спроси|do not|не редактир|не коммит)/i
-const VERIFICATION = /(verification|verify|definition of done|определение готовности|готовност|готово)/i
-const REQUIREMENTS_HEADING = new RegExp(`${HEADING_PREFIX}(?:requirements?|требования)(?=$|[\\s:.,;—–-])`, "im")
-const REQUIREMENT_LINE = /^\s*[-*]?\s*\*{0,2}R\d+(?!\d)/m
+const VERIFICATION = /(verification|verify|definition of done|определение готовности|готовност|готово|проверк)/i
 const AC_ROW_LINE = /^\s*\|\s*AC\d+(?:\.\d+)?\s*\|/im
 const DEFINITION_OF_DONE = /(definition of done|\bdod\b|готовност|готово)/i
 
-const NON_GOALS_HEADING = new RegExp(
-  `${HEADING_PREFIX}(?:non-goals?|non goals?|out of scope|не-цели|не цели|не делаем)(?=$|[\\s:.,;—–-])`,
-  "i",
-)
+/**
+ * A non-goals heading: `## Non-goals`, `## 2. Goal and non-goals`,
+ * `## Non-goals: A; B; C`. The optional group is the inline list after the label.
+ */
+const NON_GOALS_HEADING =
+  /^#{1,6}\s*(?:\d+[.)]\s*)?.*?(?:non-goals?|non goals?|out of scope|не-цели|не цели|не делаем)\s*(?::\s*(.*))?$/i
+/** A wrapped or inline `Non-goals:` label. */
 const NON_GOALS_INLINE =
-  /^\s*(?:[-*+]\s+)?(?:\*\*)?(?:non-goals?|non goals?|out of scope|не-цели|не цели|не делаем)(?:\*\*)?\s*[::]\s*(.*)$/i
+  /^\s*(?:[-*+]\s+)?(?:\*\*)?(?:non-goals?|non goals?|out of scope|не-цели|не цели|не делаем)(?:\*\*)?\s*[::]\s*(?:\*\*)?\s*(.*)$/i
 const NONE_ITEM = /^(?:none|nothing|n\/a|na|нет|никаких|отсутствуют)\s*[.!]?$/i
 
 const VAGUE: readonly { readonly term: string; readonly pattern: RegExp }[] = [
@@ -392,26 +404,55 @@ async function resolveTargets(
 }
 
 /**
- * Replace code fences, inline code and HTML comments with spaces, keeping the
- * line count and every line length. Content checks read the masked lines, so a
- * sample cannot satisfy a rule, close a section or become a broken link.
+ * Replace code blocks, `<pre>` blocks, indented code and (when
+ * `options.inlineCode` is set) inline code and HTML comments with spaces,
+ * keeping the line count and every line length. A fence opened with N markers
+ * closes only with at least N markers of the same character.
  */
-function maskCode(lines: readonly string[]): string[] {
+function maskCode(lines: readonly string[], options: { readonly inlineCode: boolean }): string[] {
   const masked: string[] = []
-  let fenceChar: string | undefined
+  let fence: { readonly char: string; readonly length: number } | undefined
   let inComment = false
+  let inPre = false
+  let inIndented = false
+  let previousBlank = true
   for (const line of lines) {
-    if (fenceChar !== undefined) {
-      const close = new RegExp(`^\\s*${fenceChar}{3,}\\s*$`)
-      if (close.test(line)) fenceChar = undefined
+    const blank = line.trim() === ""
+    if (fence !== undefined) {
+      const close = new RegExp(`^\\s*${fence.char}{${fence.length},}\\s*$`)
+      if (close.test(line)) fence = undefined
       masked.push(" ".repeat(line.length))
+      previousBlank = false
+      continue
+    }
+    if (inPre) {
+      masked.push(" ".repeat(line.length))
+      if (line.toLowerCase().includes("</pre>")) inPre = false
+      previousBlank = false
       continue
     }
     if (!inComment) {
+      // CommonMark indented code: four spaces (or a tab) after a blank line.
+      const indented = /^(?: {4,}|\t)/.test(line)
+      if (indented && (inIndented || previousBlank)) {
+        inIndented = true
+        masked.push(" ".repeat(line.length))
+        previousBlank = false
+        continue
+      }
+      if (!indented && !blank) inIndented = false
       const open = /^\s*(`{3,}|~{3,})/.exec(line)
       if (open !== null) {
-        fenceChar = open[1][0]
+        fence = { char: open[1][0], length: open[1].length }
         masked.push(" ".repeat(line.length))
+        previousBlank = false
+        continue
+      }
+      const pre = /<pre\b/i.exec(line)
+      if (pre !== null) {
+        masked.push(" ".repeat(line.length))
+        if (!line.slice(pre.index).toLowerCase().includes("</pre>")) inPre = true
+        previousBlank = false
         continue
       }
     }
@@ -434,7 +475,7 @@ function maskCode(lines: readonly string[]): string[] {
         if (character === "`") inline = false
         continue
       }
-      if (character === "`") {
+      if (character === "`" && options.inlineCode) {
         out += " "
         inline = true
         continue
@@ -448,8 +489,19 @@ function maskCode(lines: readonly string[]): string[] {
       out += character
     }
     masked.push(out)
+    previousBlank = blank
   }
   return masked
+}
+
+/** Fences, `<pre>`, comments and indented code only: AC/R cells keep their text. */
+function maskFences(lines: readonly string[]): string[] {
+  return maskCode(lines, { inlineCode: false })
+}
+
+/** Fences plus inline code and comments: links, vague phrases and placeholders. */
+function maskAll(lines: readonly string[]): string[] {
+  return maskCode(lines, { inlineCode: true })
 }
 
 /** Heading level of a line, or `undefined` when it is not a heading. */
@@ -459,11 +511,11 @@ function headingLevel(line: string): number | undefined {
 }
 
 /**
- * One finding sink per file. MINOR/INFO respect `maxFindingsPerFile` and the
- * shared total budget; MAJOR is kept up to the same hard cap so a pathological
- * file cannot materialize a huge list. When the MAJOR cap fires, one MAJOR
- * `truncated` finding is appended (and lands in `closing_list`), so the verdict
- * and the closing list still reflect that MAJOR findings exist. Checks stop
+ * One finding sink per file. Both severities respect `maxFindingsPerFile`; the
+ * global `maxTotalFindings` cap is applied after the scan, with MAJOR findings
+ * prioritized. When a per-file cap fires, one marker is appended (a MAJOR
+ * marker for dropped MAJOR findings, an INFO marker for dropped MINOR/INFO), so
+ * the verdict and the closing list still reflect what exists. Checks stop
  * pushing through the sink, so a 300k-line file stays bounded.
  */
 interface FindingSink {
@@ -474,7 +526,7 @@ interface FindingSink {
   push(finding: Omit<ContextFinding, "id">): void
 }
 
-function createSink(maxFindingsPerFile: number, budget: { remaining: number; truncated: boolean }): FindingSink {
+function createSink(maxFindingsPerFile: number): FindingSink {
   const kept: Omit<ContextFinding, "id">[] = []
   let majors = 0
   let minors = 0
@@ -501,19 +553,23 @@ function createSink(maxFindingsPerFile: number, budget: { remaining: number; tru
         kept.push(finding)
         return
       }
-      if (minors >= maxFindingsPerFile || budget.remaining <= 0) {
+      if (minors >= maxFindingsPerFile) {
         minorDropped = true
-        budget.truncated = true
         return
       }
       minors += 1
-      budget.remaining -= 1
       kept.push(finding)
     },
   }
 }
 
-function checkBudget(file: ContextFileResult, sink: FindingSink, maxLines: number, maxTokens: number): void {
+function checkBudget(
+  file: ContextFileResult,
+  sink: FindingSink,
+  maxLines: number,
+  maxTokens: number,
+  maxWords: number,
+): void {
   if (file.kind === "agents" || file.kind === "claude") {
     if (file.lines > maxLines) {
       sink.push({
@@ -542,20 +598,20 @@ function checkBudget(file: ContextFileResult, sink: FindingSink, maxLines: numbe
       })
     }
   } else if (file.kind === "spec") {
-    if (file.words > 1500) {
+    if (file.words > maxWords) {
       sink.push({
         severity: "MAJOR",
         kind: "budget",
         evidence: `${file.path}:1`,
-        detail: `${file.words} words > 1500 budget`,
+        detail: `${file.words} words > ${maxWords} budget`,
         fix: "Split the spec via a roadmap/spec-of-specs; keep one feature per file.",
       })
-    } else if (file.words > 1200) {
+    } else if (file.words > Math.round(maxWords * 0.8)) {
       sink.push({
         severity: "MINOR",
         kind: "budget",
         evidence: `${file.path}:1`,
-        detail: `${file.words} words is close to the 1500-word budget`,
+        detail: `${file.words} words is close to the ${maxWords}-word budget`,
         fix: "Remove restated context and implementation details.",
       })
     }
@@ -591,19 +647,13 @@ function checkVague(file: ContextFileResult, lines: readonly string[], sink: Fin
   }
 }
 
-function checkDuplicates(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
+function checkDuplicates(file: ContextFileResult, masked: readonly string[], sink: FindingSink): void {
   const seen = new Map<string, number>()
   let emitted = 0
-  let inFence = false
-  for (let index = 0; index < lines.length; index += 1) {
-    const raw = lines[index]
-    if (FENCE_LINE.test(raw)) {
-      inFence = !inFence
-      continue
-    }
-    // Code samples repeat on purpose: a copy-pasted snippet is not a duplicate rule.
-    if (inFence) continue
-    const line = raw.trim()
+  for (let index = 0; index < masked.length; index += 1) {
+    // Code samples repeat on purpose: the mask blanks fences, inline code and
+    // comments, so a copy-pasted snippet is not a duplicate rule.
+    const line = masked[index].trim()
     if (line.length < 40 || line.startsWith("|")) continue
     const normalized = line.replace(/\s+/g, " ")
     const first = seen.get(normalized)
@@ -623,6 +673,31 @@ function checkDuplicates(file: ContextFileResult, lines: readonly string[], sink
   }
 }
 
+/**
+ * Canonical path of an existing entry, or `undefined` when it does not exist or
+ * cannot be resolved. Unlike `canonical`, a failure is not replaced by a
+ * lexical guess: the caller must not probe a path whose real parent is unknown.
+ */
+async function existingRealPath(target: string): Promise<string | undefined> {
+  try {
+    return await realpath(target)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Check local relative links. Cost and containment are bounded:
+ * - at most `MAX_LINK_CANDIDATES` candidates are collected per file and at most
+ *   `MAX_LINK_CHECKS` filesystem probes are made; exceeding either appends one
+ *   `link checks truncated` finding instead of continuing;
+ * - every `LINK_CHECK_YIELD` candidates the signal is checked and the event
+ *   loop is yielded to, so a timer-driven abort can win;
+ * - the parent's real path is resolved (and cached) before `existsSync`; an
+ *   unknown or out-of-root parent is skipped, so a junction pointing outside
+ *   the root is never probed and never reported as a broken link.
+ * Returns `true` when the caller aborted.
+ */
 async function checkLinks(
   file: ContextFileResult,
   lines: readonly string[],
@@ -630,32 +705,84 @@ async function checkLinks(
   realRoot: string,
   absolute: string,
   sink: FindingSink,
-): Promise<void> {
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
   const candidates: { readonly target: string; readonly line: number }[] = []
+  let candidatesTruncated = false
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
     if (line.length > MAX_LINE_LENGTH) continue
     for (const match of line.matchAll(LINK_TARGET)) {
       const target = localLinkTarget(match[1])
-      if (target !== undefined) candidates.push({ target, line: index + 1 })
+      if (target === undefined) continue
+      if (candidates.length >= MAX_LINK_CANDIDATES) {
+        candidatesTruncated = true
+        break
+      }
+      candidates.push({ target, line: index + 1 })
     }
+    if (candidatesTruncated) break
   }
+  const parentRealPaths = new Map<string, string | undefined>()
   const seen = new Set<string>()
   let emitted = 0
-  for (const { target, line } of candidates) {
+  let checks = 0
+  let checksTruncated = false
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (index % LINK_CHECK_YIELD === 0) {
+      if (signal?.aborted) return true
+      // A macrotask boundary lets setTimeout-driven abort timers fire; microtasks
+      // alone would starve them.
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      if (signal?.aborted) return true
+    }
+    const { target, line } = candidates[index]
     const key = `${line}:${target}`
     if (seen.has(key)) continue
     seen.add(key)
     const resolved = target.startsWith("/")
       ? path.join(root, target.slice(1))
       : path.resolve(path.dirname(absolute), target)
-    // Only local, in-root paths reach `existsSync`: a path outside the workspace
-    // is not ours to check, and a network path would block on the SMB timeout.
+    // Only local, in-root paths reach the filesystem: a path outside the
+    // workspace is not ours to check, and a network path would block on SMB.
     if (!isInside(root, resolved)) continue
+    // The cap counts candidates before any parent/target probe: a file with
+    // 20k unique missing parents must not trigger 20k realpath calls.
+    if (checks >= MAX_LINK_CHECKS) {
+      checksTruncated = true
+      break
+    }
+    checks += 1
+    const parent = path.dirname(resolved)
+    let parentReal = parentRealPaths.get(parent)
+    if (!parentRealPaths.has(parent)) {
+      parentReal = await existingRealPath(parent)
+      if (parentReal === undefined) {
+        // A missing suffix cannot contain a junction: resolve the nearest
+        // existing ancestor instead and probe only if it is still in-root.
+        let ancestor = parent
+        while (true) {
+          const up = path.dirname(ancestor)
+          if (up === ancestor) break
+          ancestor = up
+          if (!isInside(root, ancestor)) break
+          const real = await existingRealPath(ancestor)
+          if (real !== undefined) {
+            parentReal = real
+            break
+          }
+        }
+      }
+      parentRealPaths.set(parent, parentReal)
+    }
+    // Unknown or out-of-root parent: do not probe the child (a junction could
+    // otherwise pull `existsSync` outside the workspace).
+    if (parentReal === undefined || !isInside(realRoot, parentReal)) continue
     if (existsSync(resolved)) {
       // An existing symlink/junction inside the root can still resolve outside
       // it; such a target is not ours to check either.
-      if (!isInside(realRoot, await canonical(resolved))) continue
+      const targetReal = await existingRealPath(resolved)
+      if (targetReal === undefined || !isInside(realRoot, targetReal)) continue
       continue
     }
     if (emitted >= MAX_BROKEN_LINKS) continue
@@ -668,6 +795,16 @@ async function checkLinks(
       fix: "Fix the link or remove it.",
     })
   }
+  if (candidatesTruncated || checksTruncated) {
+    sink.push({
+      severity: "MINOR",
+      kind: "other",
+      evidence: `${file.path}:1`,
+      detail: `link checks truncated at ${MAX_LINK_CANDIDATES} candidates / ${MAX_LINK_CHECKS} probes`,
+      fix: "Split the file or remove generated links; the rest are shown on the next run.",
+    })
+  }
+  return false
 }
 
 function checkPlaceholders(
@@ -744,30 +881,63 @@ function isSeparatorRow(line: string): boolean {
   return /^\s*\|[\s:|-]+\|\s*$/.test(line)
 }
 
-/** A non-goals section: a heading (numbered too), or an inline `Non-goals: …`. */
+/** Count top-level items in a section: bullets, numbered items, table rows, paragraphs. */
+function countSectionItems(lines: readonly string[], start: number): number {
+  let count = 0
+  for (let index = start; index < lines.length; index += 1) {
+    const raw = lines[index]
+    if (HEADING.test(raw)) break
+    const trimmed = raw.trim()
+    if (trimmed === "" || isSeparatorRow(raw)) continue
+    const indent = raw.length - raw.trimStart().length
+    if (TABLE_ROW.test(raw)) {
+      // The header row of a table is not an item; its data rows are.
+      if (isSeparatorRow(lines[index + 1] ?? "")) continue
+      count += 1
+      continue
+    }
+    if (/^(?:[-*+]|\d+[.)])\s+/.test(raw.trimStart())) {
+      // A sub-bullet belongs to its parent item, not to the count.
+      if (indent >= 2) continue
+      count += 1
+      continue
+    }
+    // An indented non-bullet line is a continuation of the previous item.
+    if (indent >= 2) continue
+    count += 1
+  }
+  return count
+}
+
+/**
+ * A non-goals section: a heading (numbered too, alone or combined as
+ * `Goal and non-goals`), an inline `Non-goals: A; B; C`, or a wrapped label
+ * followed by bullets. The count is top-level items, 3–7 by contract.
+ */
 function countNonGoals(lines: readonly string[]): { readonly present: boolean; readonly count: number } {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    if (NON_GOALS_HEADING.test(line)) {
-      let count = 0
+    const heading = NON_GOALS_HEADING.exec(line)
+    if (heading !== null) {
+      const rest = (heading[1] ?? "").trim()
+      if (rest !== "") return { present: true, count: inlineItems(rest).length }
+      // A combined `Goal and non-goals` section may carry a separate label.
       for (let next = index + 1; next < lines.length; next += 1) {
-        const candidate = lines[next]
-        if (HEADING.test(candidate)) break
-        if (candidate.trim() === "" || isSeparatorRow(candidate)) continue
-        if (TABLE_ROW.test(candidate)) {
-          // A table row is one item; the header row of a table is not.
-          if (isSeparatorRow(lines[next + 1] ?? "")) continue
-          count += 1
-          continue
-        }
-        // Bullets, numbered lists and paragraph lines all count as items.
-        count += 1
+        if (HEADING.test(lines[next])) break
+        const label = NON_GOALS_INLINE.exec(lines[next])
+        if (label === null) continue
+        const inline = (label[1] ?? "").trim()
+        if (inline !== "") return { present: true, count: inlineItems(inline).length }
+        return { present: true, count: countSectionItems(lines, next + 1) }
       }
-      return { present: true, count }
+      return { present: true, count: countSectionItems(lines, index + 1) }
     }
     const inline = NON_GOALS_INLINE.exec(line)
     if (inline !== null) {
-      return { present: true, count: inlineItems(inline[1] ?? "").length }
+      const rest = (inline[1] ?? "").trim()
+      if (rest !== "") return { present: true, count: inlineItems(rest).length }
+      // A wrapped `Non-goals:` label: the bullets below are the items.
+      return { present: true, count: countSectionItems(lines, index + 1) }
     }
   }
   return { present: false, count: 0 }
@@ -848,28 +1018,42 @@ interface AcTable {
 
 const AC_HEADER = /^ac(?:\s*id)?$/i
 const AC_HEADER_NUMBERED = /^ac\d+$/i
+const AC_ID = /^AC\d+(?:\.\d+)?$/
+
+/** Cell text without surrounding backticks: `` `test_export` `` → `test_export`. */
+function cellText(cell: string | undefined): string {
+  const trimmed = (cell ?? "").trim()
+  const unwrapped = /^`+([\s\S]*?)`+$/.exec(trimmed)
+  return (unwrapped === null ? trimmed : unwrapped[1]).trim()
+}
+
+/** A Test cell counts as missing when blank, `-` or an em dash. */
+function hasTestValue(cell: string | undefined): boolean {
+  const value = cellText(cell)
+  return value !== "" && value !== "-" && value !== "—"
+}
 
 /**
- * AC tables, located by header rather than by row shape: the first column is
- * `AC` (or `AC1`), and the header carries `Test` plus `Given`/`When`/`Then`.
- * A traceability table (`| R | AC | Task |`) is not an AC table, and every
- * block is scanned, so an earlier traceability table cannot mask a later AC one.
+ * AC tables, located by header rather than by row shape: the header carries an
+ * `AC`/`AC1` cell (not necessarily first: ID-first shapes are accepted), a
+ * `Test`/`Tests` cell and `Given`/`When`/`Then`. A traceability table
+ * (`| R | AC | Task |`) is not an AC table, and every block is scanned, so an
+ * earlier traceability table cannot mask a later AC one.
  */
 function findAcTables(lines: readonly string[]): { readonly table: AcTable; readonly block: TableBlock }[] {
   const found: { table: AcTable; block: TableBlock }[] = []
   for (const block of tableBlocks(lines)) {
     const header = block.header
     if (header === undefined) continue
-    const cells = header.map((cell) => cell.toLowerCase())
-    const first = cells[0] ?? ""
-    if (!AC_HEADER.test(first) && !AC_HEADER_NUMBERED.test(first)) continue
-    const test = cells.findIndex((cell) => /\btest\b|\bтест/.test(cell))
+    const cells = header.map((cell) => cellText(cell).toLowerCase())
+    const ac = cells.findIndex((cell) => AC_HEADER.test(cell) || AC_HEADER_NUMBERED.test(cell))
+    if (ac === -1) continue
+    const test = cells.findIndex((cell) => /\btests?\b|\bтест/.test(cell))
     if (test === -1) continue
     const scenario = cells.some((cell) => /^(?:given|when|then|дано|когда|тогда)\b/.test(cell))
     if (!scenario) continue
-    const ac = cells.findIndex((cell) => AC_HEADER.test(cell) || AC_HEADER_NUMBERED.test(cell))
     const r = cells.findIndex((cell) => /^(?:r|req|requirement|требование)$/.test(cell))
-    found.push({ table: { ac: ac === -1 ? 0 : ac, r, test, columns: cells.length }, block })
+    found.push({ table: { ac, r, test, columns: cells.length }, block })
   }
   return found
 }
@@ -882,66 +1066,43 @@ function collectRequirements(lines: readonly string[]): Map<string, number> {
   const found = new Map<string, number>()
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    const listMatch = /^\s*[-*]?\s*\*{0,2}(R\d+)(?!\d)/.exec(line)
+    // Backticks around an id are markup: `` `R1` `` still declares R1.
+    const plain = line.replace(/`/g, "")
+    const listMatch = /^\s*[-*]?\s*\*{0,2}(R\d+)(?!\d)/.exec(plain)
     if (listMatch !== null) {
       if (!found.has(listMatch[1])) found.set(listMatch[1], index + 1)
       continue
     }
     if (!TABLE_ROW.test(line)) continue
     for (const cell of splitRow(line)) {
-      const match = /^(R\d+)$/.exec(cell)
+      const match = /^(R\d+)$/.exec(cellText(cell))
       if (match !== null && !found.has(match[1])) found.set(match[1], index + 1)
     }
   }
   return found
 }
 
-/** Headerless `| AC… |` rows with at least six cells: `AC | R | Given | When | Then | Test`. */
+/** Headerless AC rows: `AC | R | Given | When | Then | Test` (six cells). */
 const HEADERLESS_TEST_COLUMN = 5
+const HEADERLESS_COLUMNS = 6
 
 function checkAcRows(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
   if (file.kind !== "spec") return
   const tables = findAcTables(lines)
-  if (tables.length === 0) {
-    let headerless = 0
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index]
-      if (!/^\s*\|\s*AC\d+(?:\.\d+)?\s*\|/.test(line)) continue
-      const cells = splitRow(line)
-      if (cells.length < 6) continue
-      headerless += 1
-      const test = (cells[HEADERLESS_TEST_COLUMN] ?? "").trim()
-      if (test === "" || test === "-" || test === "—") {
-        sink.push({
-          severity: "MAJOR",
-          kind: "missing_section",
-          evidence: `${file.path}:${index + 1}`,
-          detail: "AC row has no test",
-          fix: "Add a test name or reference.",
-        })
-      }
-    }
-    if (headerless > 0) {
-      sink.push({
-        severity: "MINOR",
-        kind: "missing_section",
-        evidence: `${file.path}:1`,
-        detail: "AC table lacks header",
-        fix: "Add the header AC | R | Given | When | Then | Test.",
-      })
-    }
-    return
-  }
   const requirements = collectRequirements(lines)
   const covered = new Set<string>()
   let hasRequirementColumn = false
+  let hasHeaderlessR = false
+  // A header-only AC table still declares the mapping contract, so R coverage
+  // is checked even when the table has no data rows.
+  let sawAc = tables.length > 0
   for (const { table, block } of tables) {
     if (table.r !== -1) hasRequirementColumn = true
     for (const row of block.rows) {
-      const line = row.cells
-      const id = /^AC\d+(?:\.\d+)?$/.exec((line[table.ac] ?? "").trim())
+      const id = AC_ID.exec(cellText(row.cells[table.ac]))
       if (id === null) continue // header, separator or a traceability row
-      if (line.length < table.columns) {
+      sawAc = true
+      if (row.cells.length < table.columns) {
         sink.push({
           severity: "MINOR",
           kind: "missing_section",
@@ -951,10 +1112,9 @@ function checkAcRows(file: ContextFileResult, lines: readonly string[], sink: Fi
         })
       }
       if (table.r !== -1) {
-        for (const match of (line[table.r] ?? "").matchAll(/R\d+/gi)) covered.add(match[0].toUpperCase())
+        for (const match of cellText(row.cells[table.r]).matchAll(/R\d+/gi)) covered.add(match[0].toUpperCase())
       }
-      const test = (line[table.test] ?? "").trim()
-      if (test === "" || test === "-" || test === "—") {
+      if (!hasTestValue(row.cells[table.test])) {
         sink.push({
           severity: "MAJOR",
           kind: "missing_section",
@@ -965,7 +1125,45 @@ function checkAcRows(file: ContextFileResult, lines: readonly string[], sink: Fi
       }
     }
   }
-  if (!hasRequirementColumn) {
+  // Headerless rows are inspected even when a normal AC table exists: otherwise
+  // a malformed row next to a valid table would pass silently.
+  let headerless = 0
+  for (const block of tableBlocks(lines)) {
+    if (block.header !== undefined) continue
+    for (const row of block.rows) {
+      const cells = row.cells
+      if (AC_ID.exec(cellText(cells[0])) === null) continue
+      headerless += 1
+      sawAc = true
+      // The R column of a headerless row still proves coverage.
+      const requirement = cellText(cells[1])
+      if (/^R\d+$/.test(requirement)) {
+        hasHeaderlessR = true
+        covered.add(requirement.toUpperCase())
+      }
+      // A 5-cell row has no Test column at all; that is a missing test, not a pass.
+      if (cells.length < HEADERLESS_COLUMNS || !hasTestValue(cells[HEADERLESS_TEST_COLUMN])) {
+        sink.push({
+          severity: "MAJOR",
+          kind: "missing_section",
+          evidence: `${file.path}:${row.line + 1}`,
+          detail: "AC row has no test",
+          fix: "Add a test name or reference.",
+        })
+      }
+    }
+  }
+  if (headerless > 0) {
+    sink.push({
+      severity: "MINOR",
+      kind: "missing_section",
+      evidence: `${file.path}:1`,
+      detail: "AC table lacks header",
+      fix: "Add the header AC | R | Given | When | Then | Test.",
+    })
+  }
+  if (!sawAc) return
+  if (!hasRequirementColumn && !hasHeaderlessR) {
     // Without an R column there is no R→AC mapping: report the structural gap
     // once instead of one false MAJOR per requirement.
     sink.push({
@@ -1040,7 +1238,9 @@ function checkSections(file: ContextFileResult, lines: readonly string[], sink: 
       })
     }
     const requirements = collectRequirements(lines)
-    if (!REQUIREMENTS_HEADING.test(text) && !REQUIREMENT_LINE.test(text) && requirements.size === 0) {
+    // A heading alone is not a requirement set: at least one R line or R table
+    // row must exist, otherwise a `## Requirements` stub would pass.
+    if (requirements.size === 0) {
       sink.push({
         severity: "MAJOR",
         kind: "missing_section",
@@ -1112,6 +1312,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
   }
   const maxLines = options.maxLines ?? 200
   const maxTokens = options.maxTokens ?? 2500
+  const maxWords = options.maxWords ?? 1500
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES
   const maxFindingsPerFile = options.maxFindingsPerFile ?? DEFAULT_MAX_FINDINGS_PER_FILE
@@ -1119,6 +1320,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
   for (const [name, value] of [
     ["maxLines", maxLines],
     ["maxTokens", maxTokens],
+    ["maxWords", maxWords],
     ["maxFileBytes", maxFileBytes],
     ["maxFiles", maxFiles],
     ["maxFindingsPerFile", maxFindingsPerFile],
@@ -1138,9 +1340,17 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     return { ok: false, code: "E_NO_FILES", message: "no AGENTS.md, SPEC.md or CLAUDE.md found in the target" }
   }
 
-  let counter = 0
-  const budget = { remaining: maxTotalFindings, truncated: false }
-  const files: ContextFileResult[] = []
+  interface ScannedFile {
+    readonly path: string
+    readonly kind: ContextKind
+    readonly lines: number
+    readonly words: number
+    readonly chars: number
+    readonly tokens_est: number
+    readonly findings: Omit<ContextFinding, "id">[]
+    readonly truncated: boolean
+  }
+  const scanned: ScannedFile[] = []
   for (const absolute of targets) {
     if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
     let size: number
@@ -1179,7 +1389,11 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     // file was being read must still get E_ABORTED rather than a full report.
     if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
     const { lines, body } = normalizedLines(text)
-    const masked = maskCode(lines)
+    // AC/requirements/sections read the fence mask: inline code keeps its text,
+    // so `AC1.1`, `R1` and `test_export` in backticks still parse. Links,
+    // vague phrases and placeholders read the full mask: a sample is not a rule.
+    const fenceMasked = maskFences(lines)
+    const masked = maskAll(lines)
     const chars = [...body].length
     const words = body.trim() === "" ? 0 : body.trim().split(/\s+/).length
     const file: ContextFileResult = {
@@ -1191,17 +1405,17 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
       tokens_est: estimateTokens(body),
       findings: [],
     }
-    const sink = createSink(maxFindingsPerFile, budget)
-    checkBudget(file, sink, maxLines, maxTokens)
+    const sink = createSink(maxFindingsPerFile)
+    checkBudget(file, sink, maxLines, maxTokens, maxWords)
     checkVague(file, masked, sink)
-    checkDuplicates(file, lines, sink)
-    await checkLinks(file, masked, root, realRoot, absolute, sink)
-    if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+    checkDuplicates(file, masked, sink)
+    const aborted = await checkLinks(file, masked, root, realRoot, absolute, sink, options.signal)
+    if (aborted || options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
     checkPlaceholders(file, lines, masked, sink)
     checkFirstLines(file, lines, sink)
-    checkSections(file, masked, sink)
-    checkAcRows(file, masked, sink)
-    checkAndChains(file, masked, sink)
+    checkSections(file, fenceMasked, sink)
+    checkAcRows(file, fenceMasked, sink)
+    checkAndChains(file, fenceMasked, sink)
     if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
     // Markers are appended directly after the checks: they never displace a kept
     // finding. The MAJOR marker is itself MAJOR, so it is closed with the rest.
@@ -1223,19 +1437,80 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
         fix: "Fix the listed findings first; the rest are shown on the next run.",
       })
     }
+    scanned.push({ ...file, findings: sink.kept, truncated: sink.truncated })
+  }
+
+  // The global cap applies to every finding and prioritizes MAJOR: a pathological
+  // scan (500 files × 101 MAJOR) stays bounded, and a dropped MAJOR is replaced
+  // by one MAJOR marker that is itself in `closing_list`, never hidden.
+  const flat: { readonly fileIndex: number; readonly order: number; readonly finding: Omit<ContextFinding, "id"> }[] =
+    []
+  for (const [fileIndex, file] of scanned.entries()) {
+    for (const [order, finding] of file.findings.entries()) flat.push({ fileIndex, order, finding })
+  }
+  const truncatedFiles = new Set<number>(scanned.flatMap((file, index) => (file.truncated ? [index] : [])))
+  let selected = flat
+  let globalTruncated = false
+  if (flat.length > maxTotalFindings) {
+    globalTruncated = true
+    const byPosition = (
+      left: { readonly fileIndex: number; readonly order: number },
+      right: { readonly fileIndex: number; readonly order: number },
+    ): number => left.fileIndex - right.fileIndex || left.order - right.order
+    const majors = flat.filter((item) => item.finding.severity === "MAJOR").sort(byPosition)
+    const rest = flat.filter((item) => item.finding.severity !== "MAJOR").sort(byPosition)
+    const majorOverflow = majors.length > maxTotalFindings
+    selected = majorOverflow
+      ? majors.slice(0, maxTotalFindings)
+      : [...majors, ...rest.slice(0, maxTotalFindings - majors.length)].sort(byPosition)
+    const markerFile = selected.length > 0 ? selected[selected.length - 1].fileIndex : 0
+    const kept = new Set(selected.map((item) => `${item.fileIndex}:${item.order}`))
+    for (const item of flat) if (!kept.has(`${item.fileIndex}:${item.order}`)) truncatedFiles.add(item.fileIndex)
+    selected = [
+      ...selected,
+      {
+        fileIndex: markerFile,
+        order: Number.MAX_SAFE_INTEGER,
+        finding: {
+          severity: majorOverflow ? "MAJOR" : "INFO",
+          kind: "other",
+          evidence: `${scanned[markerFile]?.path ?? ""}:1`,
+          detail: majorOverflow
+            ? `findings truncated at ${maxTotalFindings}; further MAJOR findings are not listed`
+            : `findings truncated at ${maxTotalFindings} (MAJOR findings are kept)`,
+          fix: "Fix the listed findings first; the rest are shown on the next run.",
+        },
+      },
+    ]
+    truncatedFiles.add(markerFile)
+  }
+
+  let counter = 0
+  const files: ContextFileResult[] = []
+  for (const [fileIndex, file] of scanned.entries()) {
     const findings: ContextFinding[] = []
-    for (const finding of sink.kept) {
+    for (const item of selected) {
+      if (item.fileIndex !== fileIndex) continue
       counter += 1
-      findings.push({ id: `CTX-${String(counter).padStart(3, "0")}`, ...finding })
+      findings.push({ id: `CTX-${String(counter).padStart(3, "0")}`, ...item.finding })
     }
-    files.push({ ...file, findings, ...(sink.truncated ? { truncated: true } : {}) })
+    files.push({
+      path: file.path,
+      kind: file.kind,
+      lines: file.lines,
+      words: file.words,
+      chars: file.chars,
+      tokens_est: file.tokens_est,
+      findings,
+      ...(truncatedFiles.has(fileIndex) ? { truncated: true } : {}),
+    })
   }
 
   const all = files.flatMap((file) => file.findings)
   const major = all.filter((finding) => finding.severity === "MAJOR")
   const minor = all.filter((finding) => finding.severity === "MINOR").length
   const info = all.filter((finding) => finding.severity === "INFO").length
-  const truncated = budget.truncated || files.some((file) => file.truncated === true)
+  const truncated = globalTruncated || truncatedFiles.size > 0
   return {
     schema: "context-lint/v1",
     ok: true,

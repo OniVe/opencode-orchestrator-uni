@@ -42,6 +42,7 @@ describe("audit tool registration", () => {
         path: { type: "string", description: expect.any(String) },
         max_lines: { type: "number", description: expect.any(String) },
         max_tokens: { type: "number", description: expect.any(String) },
+        max_words: { type: "number", description: expect.any(String) },
         max_file_bytes: { type: "number", description: expect.any(String) },
         max_files: { type: "number", description: expect.any(String) },
         max_findings: { type: "number", description: expect.any(String) },
