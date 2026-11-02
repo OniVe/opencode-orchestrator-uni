@@ -3436,7 +3436,7 @@ describe("R7-6 brace grouping", () => {
     const root = await temporary()
     try {
       const lines = ["# SPEC", "", "## Requirements", ""]
-      for (let index = 1; index <= 35_000; index += 1) lines.push(`- R${index} — shall behave ${index}.`)
+      for (let index = 1; index <= 100_000; index += 1) lines.push(`- R${index} — x.`)
       lines.push("", `#${" ".repeat(200_000)}`)
       await writeFile(path.join(root, "SPEC.md"), `${lines.join("\n")}\n`, "utf8")
       const controller = new AbortController()
