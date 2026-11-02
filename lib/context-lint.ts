@@ -21,14 +21,21 @@
  *   never hides MAJOR silently: above the per-file cap the excess is replaced by
  *   one MAJOR `truncated` finding that stays in `closing_list`; `truncated`
  *   reports every capped list;
- * - line-oriented parsers scan every line, however long: the link and placeholder
- *   regexes are linear, so a minified line cannot make matching quadratic and a
- *   long line cannot hide a broken link or placeholder behind a skip;
+ * - line-oriented parsers scan every line, however long: the link, placeholder
+ *   and section-heading regexes are linear (no unbounded `\s*` chain next to a
+ *   lazy `.*?`), so a minified line cannot make matching quadratic and a long
+ *   line cannot hide a broken link or placeholder behind a skip; the section
+ *   checks yield to the event loop every `SECTION_ABORT_LINES` lines, so a
+ *   timer-driven abort wins there too;
  * - code fences, inline code and HTML comments are masked once and every
- *   content check reads the masked lines: a sample is not a rule.
+ *   content check reads the masked lines: a sample is not a rule;
+ * - nothing is dropped silently: an unclosed fence, a link target outside the
+ *   root and a directory below the depth limit each leave an INFO finding, and
+ *   a code span without a closing run is literal text (CommonMark), not a mask
+ *   to the end of the line.
  */
 import { existsSync } from "node:fs"
-import { readdir, readFile, realpath, stat } from "node:fs/promises"
+import { open, readdir, realpath, stat } from "node:fs/promises"
 import path from "node:path"
 
 export type ContextKind = "agents" | "spec" | "claude" | "other"
@@ -179,7 +186,14 @@ const OPEN_QUESTIONS_HEADING = new RegExp(`${HEADING_PREFIX}(?:open questions|о
 
 const COMMANDS_HEADING = new RegExp(`${HEADING_PREFIX}(?:commands?|команды)(?=$|[\\s:.,;—–-])`, "i")
 const TASK_TABLE_HEADER = /\|\s*(?:задача|task)\s*\|/i
-const SHELL_TOOL = /\b(?:npm|bun|pnpm|yarn|make|cargo|pytest|go test)\b/i
+/**
+ * Shell tools a command section may name. `make` is matched separately: prose
+ * "Make sure to be careful" is not a command, only a `make <target>` form is.
+ */
+const SHELL_TOOL = /\b(?:npm|bun|pnpm|yarn|cargo|pytest)\b|\bgo[ \t]+test\b/i
+/** `make` with a target; the stoplist keeps ordinary English prose out. */
+const MAKE_TARGET =
+  /\bmake[ \t]+(?!sure\b|sense\b|it\b|them\b|this\b|that\b|these\b|those\b|a\b|an\b|the\b|no\b|not\b|any\b|both\b|your\b|our\b|their\b|him\b|her\b|me\b|us\b)(?:-{1,2}[\w-]+|[\w][\w./:-]*)/i
 const BOUNDARIES = /(never|никогда|ask first|сначала спроси|do not|не редактир|не коммит)/i
 const VERIFICATION = /(verification|verify|definition of done|определение готовности|готовност|готово|проверк)/i
 const DEFINITION_OF_DONE = /(definition of done|\bdod\b|готовност|готово)/i
@@ -187,9 +201,13 @@ const DEFINITION_OF_DONE = /(definition of done|\bdod\b|готовност|го�
 /**
  * A non-goals heading: `## Non-goals`, `## 2. Goal and non-goals`,
  * `## Non-goals: A; B; C`. The optional group is the inline list after the label.
+ * Every whitespace run is bounded: an unbounded `\s*` next to the lazy `.*?`
+ * made a line of N spaces cost O(N²). `.*?` itself is linear because the tail
+ * after the label is bounded.
  */
 const NON_GOALS_HEADING =
-  /^#{1,6}\s*(?:\d+[.)]\s*)?.*?(?:non-goals?|non goals?|out of scope|не-цели|не цели|не делаем)\s*(?::\s*(.*))?$/i
+  /^#{1,6}[ \t]{0,8}(?:\d+[.)][ \t]{0,8})?.*?(?:non-goals?|non goals?|out of scope|не-цели|не цели|не делаем)(?:[ \t]{0,8}:[ \t]{0,8}(.*)|[ \t]{0,8})$/i
+
 /** A wrapped or inline `Non-goals:` label. */
 const NON_GOALS_INLINE =
   /^\s*(?:[-*+]\s+)?(?:\*\*)?(?:non-goals?|non goals?|out of scope|не-цели|не цели|не делаем)(?:\*\*)?\s*[::]\s*(?:\*\*)?\s*(.*)$/i
@@ -216,6 +234,30 @@ class ScanAborted extends Error {
     super("context lint aborted")
     this.name = "ScanAborted"
   }
+}
+
+/** Thrown by the directory walk when `maxFiles` is exceeded; refusal is early. */
+class FilesLimitExceeded extends Error {
+  constructor() {
+    super("context lint file limit")
+    this.name = "FilesLimitExceeded"
+  }
+}
+
+/** Lines between abort checks and event-loop yields inside a line-oriented check. */
+const SECTION_ABORT_LINES = 2048
+
+/**
+ * Cooperative abort point inside a synchronous per-line check. Called every
+ * `SECTION_ABORT_LINES` lines: the yield lets a timer-driven abort fire, and an
+ * already-aborted signal surfaces as `ScanAborted` (mapped to `E_ABORTED`) so a
+ * section check can never return a full verdict after the caller aborted.
+ */
+async function abortGate(signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) return
+  if (signal.aborted) throw new ScanAborted()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  if (signal.aborted) throw new ScanAborted()
 }
 
 function kindOf(file: string): ContextKind {
@@ -271,6 +313,38 @@ async function canonical(target: string): Promise<string> {
   }
 }
 
+/** Chunk size of a capped read; memory stays bounded by the cap, not the file. */
+const READ_CHUNK_BYTES = 64 * 1024
+
+/**
+ * Read at most `maxBytes + 1` bytes through a FileHandle. `stat` is only the fast
+ * path with the exact size for the message: the authoritative cap is enforced
+ * here, so a file that grows between the `stat` and the read (TOCTOU) is refused
+ * with its observed size instead of being loaded whole. Exported for the cap
+ * test; it is an implementation detail, not part of the tool contract.
+ */
+export async function readCappedFile(
+  file: string,
+  maxBytes: number,
+): Promise<{ readonly text: string } | { readonly bytes: number }> {
+  const handle = await open(file, "r")
+  try {
+    const chunks: Buffer[] = []
+    let total = 0
+    while (total <= maxBytes) {
+      const chunk = Buffer.allocUnsafe(Math.min(READ_CHUNK_BYTES, maxBytes + 1 - total))
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null)
+      if (bytesRead === 0) break
+      total += bytesRead
+      chunks.push(chunk.subarray(0, bytesRead))
+      if (total > maxBytes) return { bytes: total }
+    }
+    return { text: Buffer.concat(chunks).toString("utf8") }
+  } finally {
+    await handle.close()
+  }
+}
+
 /**
  * Normalize a link destination into a local, checkable path.
  * Returns `undefined` for anything that is not a local relative path: URI schemes
@@ -302,22 +376,42 @@ function localLinkTarget(raw: string): string | undefined {
  * root is skipped, so a junction/symlink cannot pull the scan (or a finding)
  * out of the workspace. The cycle guard also uses real paths: a link to an
  * ancestor stops at the visited set instead of recursing forever.
+ *
+ * The walk keeps a shared state instead of returning arrays: the file list is
+ * bounded by `maxFiles` and refuses *early* (the walk stops on the first file
+ * above the limit instead of expanding the whole tree), and every directory cut
+ * by the depth limit is counted, so the caller can report it instead of
+ * dropping files silently.
  */
+interface CollectState {
+  readonly files: string[]
+  readonly maxFiles: number
+  /** Directories below the depth limit that were not scanned. */
+  skippedDepth: number
+}
+
 async function collectFiles(
   start: string,
   realRoot: string,
   signal: AbortSignal | undefined,
+  state: CollectState,
   depth = 0,
   visited = new Set<string>(),
-): Promise<string[]> {
-  if (depth > 3) return []
+): Promise<void> {
+  if (depth > 3) {
+    state.skippedDepth += 1
+    return
+  }
   if (signal?.aborted) throw new ScanAborted()
   const identity = await canonical(start)
-  if (!isInside(realRoot, identity)) return []
-  if (visited.has(identity)) return []
+  if (!isInside(realRoot, identity)) return
+  if (visited.has(identity)) return
   visited.add(identity)
   const entries = await readdir(start, { withFileTypes: true })
-  const files: string[] = []
+  const push = (file: string): void => {
+    state.files.push(file)
+    if (state.files.length > state.maxFiles) throw new FilesLimitExceeded()
+  }
   for (const entry of entries) {
     if (signal?.aborted) throw new ScanAborted()
     const full = path.join(start, entry.name)
@@ -330,22 +424,27 @@ async function collectFiles(
       }
       if (!isInside(realRoot, await canonical(full))) continue
       if (info.isFile()) {
-        if (TARGET_NAME.test(entry.name)) files.push(full)
+        if (TARGET_NAME.test(entry.name)) push(full)
       } else if (info.isDirectory() && !SKIP.has(entry.name)) {
-        files.push(...(await collectFiles(full, realRoot, signal, depth + 1, visited)))
+        await collectFiles(full, realRoot, signal, state, depth + 1, visited)
       }
       continue
     }
     if (entry.isDirectory()) {
       if (SKIP.has(entry.name)) continue
       if (!isInside(realRoot, await canonical(full))) continue
-      files.push(...(await collectFiles(full, realRoot, signal, depth + 1, visited)))
+      await collectFiles(full, realRoot, signal, state, depth + 1, visited)
     } else if (entry.isFile() && TARGET_NAME.test(entry.name)) {
       if (!isInside(realRoot, await canonical(full))) continue
-      files.push(full)
+      push(full)
     }
   }
-  return files
+}
+
+interface TargetBatch {
+  readonly files: string[]
+  /** Directories below the depth limit; reported as an INFO finding. */
+  readonly skippedDepth: number
 }
 
 async function resolveTargets(
@@ -354,7 +453,7 @@ async function resolveTargets(
   maxFiles: number,
   realRoot: string,
   signal: AbortSignal | undefined,
-): Promise<string[] | ContextLintFailure> {
+): Promise<TargetBatch | ContextLintFailure> {
   const rootAbsolute = path.resolve(root)
   const start =
     target === undefined
@@ -388,13 +487,23 @@ async function resolveTargets(
       path: start,
     }
   }
-  if (info.isFile()) return [start]
+  if (info.isFile()) return { files: [start], skippedDepth: 0 }
   if (!info.isDirectory())
     return { ok: false, code: "E_INPUT", message: `target is neither a file nor a directory: ${start}` }
-  let files: string[]
+  const state: CollectState = { files: [], maxFiles, skippedDepth: 0 }
   try {
-    files = await collectFiles(start, realRoot, signal)
+    await collectFiles(start, realRoot, signal, state)
   } catch (error) {
+    if (error instanceof FilesLimitExceeded) {
+      return {
+        ok: false,
+        code: "E_LIMIT_FILES",
+        message: `more than ${maxFiles} files under ${start}; limit ${maxFiles}`,
+        path: start,
+        files: state.files.length,
+        max: maxFiles,
+      }
+    }
     if (error instanceof ScanAborted || signal?.aborted) {
       return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
     }
@@ -404,18 +513,8 @@ async function resolveTargets(
       message: `cannot read ${start}: ${error instanceof Error ? error.message : String(error)}`,
     }
   }
-  files.sort()
-  if (files.length > maxFiles) {
-    return {
-      ok: false,
-      code: "E_LIMIT_FILES",
-      message: `${files.length} files under ${start} exceed the ${maxFiles}-file limit`,
-      path: start,
-      files: files.length,
-      max: maxFiles,
-    }
-  }
-  return files
+  state.files.sort()
+  return { files: state.files, skippedDepth: state.skippedDepth }
 }
 
 /** Length of the backtick run that starts at `index`. */
@@ -467,7 +566,8 @@ const MASK_MARKUP = /<!--|<pre|<code/i
  * keeping the line count and every line length. A fence opened with N markers
  * closes only with at least N markers of the same character; a code span
  * opened with a run of N backticks closes only on a run of exactly N, so
- * ``a, b`` is one span. `options.indentedCode` (default `true`) masks 4-space
+ * ``a, b`` is one span, and a run without a closing match in the same line is
+ * literal text (CommonMark), not a mask to the end of the line. `options.indentedCode` (default `true`) masks 4-space
  * indented code; non-goals counting turns it off to accept its 4-space bullets.
  * A `<pre>…</pre>` span is masked in place, preserving the text before and
  * after it; an unclosed `<pre>` masks the following lines too, but never the
@@ -520,8 +620,36 @@ function maskCode(
       continue
     }
     let out = ""
-    let inlineTicks = 0
     let inCodeTag = false
+    // Inline code spans: a run of N backticks opens a span only when a later run
+    // of exactly N backticks exists on the same line (CommonMark). A run with no
+    // closing match stays literal text, so a stray backtick cannot mask the rest
+    // of the line and hide a link behind it. Runs are indexed per line and looked
+    // up by binary search, so the scan stays O(line length · log runs) instead of
+    // rescanning the line for every unmatched run.
+    const runStarts = new Map<number, number[]>()
+    if (options.inlineCode) {
+      let at = line.indexOf("`")
+      while (at >= 0) {
+        const run = backtickRun(line, at)
+        const list = runStarts.get(run)
+        if (list === undefined) runStarts.set(run, [at])
+        else list.push(at)
+        at = line.indexOf("`", at + run)
+      }
+    }
+    const closingRun = (run: number, after: number): number | undefined => {
+      const list = runStarts.get(run)
+      if (list === undefined) return undefined
+      let low = 0
+      let high = list.length
+      while (low < high) {
+        const middle = (low + high) >> 1
+        if (list[middle] <= after) low = middle + 1
+        else high = middle
+      }
+      return list[low]
+    }
     for (let index = 0; index < line.length; index += 1) {
       const character = line[index]
       if (inPre) {
@@ -556,24 +684,21 @@ function maskCode(
         }
         continue
       }
-      if (inlineTicks > 0) {
-        if (character === "`") {
-          const run = backtickRun(line, index)
-          out += " ".repeat(run)
-          index += run - 1
-          if (run === inlineTicks) inlineTicks = 0
-        } else {
-          out += " "
-        }
-        continue
-      }
       if (character === "`" && options.inlineCode) {
         const run = backtickRun(line, index)
-        out += " ".repeat(run)
-        index += run - 1
-        inlineTicks = run
+        const close = closingRun(run, index + run - 1)
+        if (close === undefined) {
+          // No closing run of this width: literal text, the line stays checked.
+          out += "`".repeat(run)
+          index += run - 1
+          continue
+        }
+        const end = close + run - 1
+        out += " ".repeat(end - index + 1)
+        index = end
         continue
       }
+
       if (line.startsWith("<!--", index)) {
         out += "    "
         index += 3
@@ -737,9 +862,15 @@ function checkBudget(
   }
 }
 
-function checkVague(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
+async function checkVague(
+  file: ContextFileResult,
+  lines: readonly string[],
+  sink: FindingSink,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   const seen = new Map<string, number>()
   for (let index = 0; index < lines.length; index += 1) {
+    if (index % SECTION_ABORT_LINES === 0) await abortGate(signal)
     for (const { term, pattern } of VAGUE) {
       if (pattern.test(lines[index]) && !seen.has(term)) seen.set(term, index + 1)
     }
@@ -766,9 +897,15 @@ function checkVague(file: ContextFileResult, lines: readonly string[], sink: Fin
   }
 }
 
-function checkDuplicates(file: ContextFileResult, masked: readonly string[], sink: FindingSink): void {
+async function checkDuplicates(
+  file: ContextFileResult,
+  masked: readonly string[],
+  sink: FindingSink,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   const seen = new Map<string, number>()
   for (let index = 0; index < masked.length; index += 1) {
+    if (index % SECTION_ABORT_LINES === 0) await abortGate(signal)
     // Code samples repeat on purpose: the mask blanks fences, inline code and
     // comments, so a copy-pasted snippet is not a duplicate rule.
     const line = masked[index].trim()
@@ -807,13 +944,19 @@ async function existingRealPath(target: string): Promise<string | undefined> {
 /** Whitespace test used by the link scanner; `\s` matches CommonMark spaces. */
 const LINK_WHITESPACE = /\s/
 
+/** A UNC (`\\host\share`) or protocol-relative (`//host/x`) destination: never probed. */
+function isNetworkTarget(raw: string): boolean {
+  const target = raw.trim()
+  return target.startsWith("\\\\") || target.startsWith("//")
+}
+
 function skipLinkWhitespace(line: string, index: number): number {
   let at = index
   while (at < line.length && LINK_WHITESPACE.test(line[at])) at += 1
   return at
 }
 
-/** True when the `](` at `open` is escaped by an odd run of backslashes, so it is prose. */
+/** True when the bracket at `open` is escaped by an odd run of backslashes (prose). */
 function isEscapedOpen(line: string, open: number): boolean {
   let backslashes = 0
   while (open - backslashes - 1 >= 0 && line[open - backslashes - 1] === "\\") backslashes += 1
@@ -827,8 +970,9 @@ function isEscapedOpen(line: string, open: number): boolean {
  * locally, and `i` either jumps past the closing `)` or past the rejected
  * `](`. Total work is O(line length): a line of `](` without `)` stops at the
  * end of the first target (break), and closed pairs advance past the `)`.
- * A target is the run up to whitespace or `)` (an escaped `](` is prose),
- * `<…>` strips the angles (literal spaces are percent-encoded, because an
+ * A target is the run up to whitespace or `)` (an escaped `](` is prose, and so
+ * is a candidate whose enclosing `[` is escaped: `\[o1](m1.md)` is literal text
+ * under CommonMark), `<…>` strips the angles (literal spaces are percent-encoded, because an
  * angle destination may contain them), and a `'…'`/`"…"` title may contain
  * `)`, `](` and escaped quotes. An unclosed angle or title rejects only its
  * own candidate and resumes at `open + 2`, so a later valid link on the same
@@ -850,6 +994,12 @@ function* scanLinkTargets(line: string, signal: AbortSignal | undefined): Genera
   // scan to the end, not one per candidate.
   let angleFrom = -1
   let angleNext = -1
+  // Position of the last `[` before the current candidate: an odd backslash run
+  // before it (`\[o1](m1.md)`) makes the bracket literal, so the candidate is
+  // prose. The pointer only moves forward over the line, so the check stays
+  // linear.
+  let bracketFrom = 0
+  let bracketEscaped = false
   if (signal?.aborted) return
   while (index < length) {
     checked += 1
@@ -859,6 +1009,19 @@ function* scanLinkTargets(line: string, signal: AbortSignal | undefined): Genera
     }
     const open = line.indexOf("](", index)
     if (open < 0) break
+    while (bracketFrom < open) {
+      const at = line.indexOf("[", bracketFrom)
+      if (at < 0 || at >= open) {
+        bracketFrom = open
+        break
+      }
+      bracketEscaped = isEscapedOpen(line, at)
+      bracketFrom = at + 1
+    }
+    if (bracketEscaped) {
+      index = open + 2
+      continue
+    }
     if (isEscapedOpen(line, open)) {
       index = open + 2
       continue
@@ -978,7 +1141,22 @@ async function checkLinks(
     let seen: Set<string> | undefined
     for (const raw of scanLinkTargets(line, signal)) {
       const target = localLinkTarget(raw)
-      if (target === undefined) continue
+      if (target === undefined) {
+        // A UNC or protocol-relative destination is never probed (a network path
+        // would block on the SMB timeout); it is reported instead of dropped, so
+        // an unchecked target never reads as a checked one. Ordinary URI schemes
+        // (`https:`, `mailto:`) are out of scope and stay silent.
+        if (isNetworkTarget(raw)) {
+          sink.push({
+            severity: "INFO",
+            kind: "other",
+            evidence: `${file.path}:${index + 1}`,
+            detail: clip(`network path is outside the workspace root and was not checked: "${raw.trim()}"`),
+            fix: "Point the link at a file inside the workspace or remove it.",
+          })
+        }
+        continue
+      }
       if (candidates >= MAX_LINK_CANDIDATES) {
         candidatesTruncated = true
         break
@@ -1001,7 +1179,18 @@ async function checkLinks(
         : path.resolve(path.dirname(absolute), target)
       // Only local, in-root paths reach the filesystem: a path outside the
       // workspace is not ours to check, and a network path would block on SMB.
-      if (!isInside(root, resolved)) continue
+      // Such a link is reported (INFO): silence would be indistinguishable from
+      // "checked and valid".
+      if (!isInside(root, resolved)) {
+        sink.push({
+          severity: "INFO",
+          kind: "other",
+          evidence: `${file.path}:${index + 1}`,
+          detail: clip(`link target is outside the workspace root and was not checked: "${target}"`),
+          fix: "Point the link at a file inside the workspace or remove it.",
+        })
+        continue
+      }
       const parent = path.dirname(resolved)
       let parentReal = parentRealPaths.get(parent)
       if (!parentRealPaths.has(parent)) {
@@ -1025,8 +1214,18 @@ async function checkLinks(
         if (parentRealPaths.size < LINK_CACHE_LIMIT) parentRealPaths.set(parent, parentReal)
       }
       // Unknown or out-of-root parent: do not probe the child (a junction could
-      // otherwise pull `existsSync` outside the workspace).
-      if (parentReal === undefined || !isInside(realRoot, parentReal)) continue
+      // otherwise pull `existsSync` outside the workspace). The skip is reported:
+      // an unverified link must not read as a verified one.
+      if (parentReal === undefined || !isInside(realRoot, parentReal)) {
+        sink.push({
+          severity: "INFO",
+          kind: "other",
+          evidence: `${file.path}:${index + 1}`,
+          detail: clip(`link target is outside the workspace root and was not checked: "${target}"`),
+          fix: "Point the link at a file inside the workspace or remove it.",
+        })
+        continue
+      }
       // The probe itself is cached per resolved path: 20k anchors to one file are
       // one probe; a broken target repeated on many lines is still reported per
       // candidate line below. The cache keeps at most LINK_CACHE_LIMIT entries,
@@ -1045,7 +1244,16 @@ async function checkLinks(
           targetReal = await existingRealPath(resolved)
           if (targetRealPaths.size < LINK_CACHE_LIMIT) targetRealPaths.set(resolved, targetReal)
         }
-        if (targetReal === undefined || !isInside(realRoot, targetReal)) continue
+        if (targetReal === undefined || !isInside(realRoot, targetReal)) {
+          sink.push({
+            severity: "INFO",
+            kind: "other",
+            evidence: `${file.path}:${index + 1}`,
+            detail: clip(`link target could not be resolved inside the workspace and was not checked: "${target}"`),
+            fix: "Point the link at a file inside the workspace or remove it.",
+          })
+          continue
+        }
         continue
       }
       sink.push({
@@ -1064,14 +1272,16 @@ async function checkLinks(
   return { aborted: false, truncated: candidatesTruncated }
 }
 
-function checkPlaceholders(
+async function checkPlaceholders(
   file: ContextFileResult,
   lines: readonly string[],
   masked: readonly string[],
   sink: FindingSink,
-): void {
+  signal: AbortSignal | undefined,
+): Promise<void> {
   let openQuestionsLevel: number | undefined
   for (let index = 0; index < lines.length; index += 1) {
+    if (index % SECTION_ABORT_LINES === 0) await abortGate(signal)
     const raw = lines[index]
     // Masked text loses code and comments but keeps headings: a `## Open
     // questions` inside a fence must not open the allowance.
@@ -1095,6 +1305,40 @@ function checkPlaceholders(
       break
     }
   }
+}
+
+/**
+ * Opening line (1-based) of a fenced block that is never closed, or `undefined`.
+ * An unclosed fence masks the rest of the file (CommonMark: it is code to EOF),
+ * so the checks after it see nothing; the caller reports that as INFO instead of
+ * returning a pass that silently skipped the remainder. The scan mirrors the
+ * mask's fence rules and allocates nothing per line.
+ */
+function unclosedFenceLine(lines: readonly string[]): number | undefined {
+  let fence: { readonly char: string; readonly length: number; readonly line: number } | undefined
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (fence === undefined) {
+      const match = /^\s*(`{3,}|~{3,})/.exec(line)
+      if (match !== null) fence = { char: match[1][0], length: match[1].length, line: index + 1 }
+      continue
+    }
+    const trimmed = line.trim()
+    if (trimmed.length >= fence.length && trimmed === fence.char.repeat(trimmed.length)) fence = undefined
+  }
+  return fence?.line
+}
+
+function checkUnclosedFence(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
+  const line = unclosedFenceLine(lines)
+  if (line === undefined) return
+  sink.push({
+    severity: "INFO",
+    kind: "other",
+    evidence: `${file.path}:${line}`,
+    detail: `unclosed fence at line ${line}; the rest of the file is masked and not checked`,
+    fix: "Close the fence so the following content is checked.",
+  })
 }
 
 function checkFirstLines(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
@@ -1285,8 +1529,12 @@ function countSectionItems(lines: readonly string[], start: number): number {
  * followed by bullets. The count is top-level items, 3–7 by contract; bullets
  * at 0–4 spaces under the label count, deeper indentation and fenced code do not.
  */
-function countNonGoals(lines: readonly string[]): { readonly present: boolean; readonly count: number } {
+async function countNonGoals(
+  lines: readonly string[],
+  signal: AbortSignal | undefined,
+): Promise<{ readonly present: boolean; readonly count: number }> {
   for (let index = 0; index < lines.length; index += 1) {
+    if (index % SECTION_ABORT_LINES === 0) await abortGate(signal)
     const line = lines[index]
     const heading = NON_GOALS_HEADING.exec(line)
     if (heading !== null) {
@@ -1466,15 +1714,22 @@ function acSkipLines(scan: AcScan): Set<number> {
 /**
  * Requirement ids: `R\d+` list lines and R cells of tables outside the AC
  * material. An AC R column maps requirements to criteria; it never declares
- * one, so `## Requirements` with only an AC table is empty.
+ * one, so `## Requirements` with only an AC table is empty. The list pattern
+ * starts at `trimStart()`, so an N-space line costs one pass instead of the old
+ * `^\s*…\s*` backtracking chain (O(N²) on a run of whitespace).
  */
-function collectRequirements(lines: readonly string[], skip: ReadonlySet<number>): Map<string, number> {
+async function collectRequirements(
+  lines: readonly string[],
+  skip: ReadonlySet<number>,
+  signal: AbortSignal | undefined,
+): Promise<Map<string, number>> {
   const found = new Map<string, number>()
   for (let index = 0; index < lines.length; index += 1) {
+    if (index % SECTION_ABORT_LINES === 0) await abortGate(signal)
     const line = lines[index]
     // Backticks around an id are markup: `` `R1` `` still declares R1.
     const plain = line.replace(/`/g, "")
-    const listMatch = /^\s*[-*]?\s*\*{0,2}(R\d+)(?!\d)/.exec(plain)
+    const listMatch = /^(?:[-*][ \t]*)?\*{0,2}(R\d+)(?!\d)/.exec(plain.trimStart())
     if (listMatch !== null) {
       if (!found.has(listMatch[1])) found.set(listMatch[1], index + 1)
       continue
@@ -1492,10 +1747,15 @@ function collectRequirements(lines: readonly string[], skip: ReadonlySet<number>
 const HEADERLESS_TEST_COLUMN = 5
 const HEADERLESS_COLUMNS = 6
 
-function checkAcRows(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
+async function checkAcRows(
+  file: ContextFileResult,
+  lines: readonly string[],
+  sink: FindingSink,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   if (file.kind !== "spec") return
   const scan = scanAcTables(lines)
-  const requirements = collectRequirements(lines, acSkipLines(scan))
+  const requirements = await collectRequirements(lines, acSkipLines(scan), signal)
   const covered = new Set<string>()
   let hasRequirementColumn = false
   let hasHeaderlessR = false
@@ -1606,26 +1866,62 @@ function checkAcRows(file: ContextFileResult, lines: readonly string[], sink: Fi
 }
 
 /**
+ * Lines that may carry a shell command: the body of a fenced/indented code
+ * block, inline code spans, a table whose header names a Task/Задача, and the
+ * body of a Commands/Команды section. Prose outside those regions is not a
+ * command source, so "Make sure to be careful" cannot satisfy the commands
+ * check; `make` additionally needs a target (`MAKE_TARGET`).
+ */
+function commandSources(lines: readonly string[], fenceMasked: readonly string[]): string {
+  const parts: string[] = []
+  let commandsLevel: number | undefined
+  let taskTable = false
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index]
+    const level = headingLevel(raw)
+    if (level !== undefined) {
+      if (COMMANDS_HEADING.test(raw)) commandsLevel = level
+      else if (commandsLevel !== undefined && level <= commandsLevel) commandsLevel = undefined
+    }
+    taskTable = TABLE_ROW.test(raw) ? taskTable || TASK_TABLE_HEADER.test(raw) : false
+    // A fence/`<pre>` line is blanked in `fenceMasked` while the raw line is not.
+    const fenced = raw.trim() !== "" && (fenceMasked[index] ?? "").trim() === ""
+    if (fenced || commandsLevel !== undefined || taskTable) parts.push(raw)
+    if (raw.includes("`")) {
+      for (const match of raw.matchAll(/`+([^`\n]*)`+/g)) parts.push(match[1])
+    }
+  }
+  return parts.join("\n")
+}
+
+function hasCommand(commands: string): boolean {
+  return SHELL_TOOL.test(commands) || MAKE_TARGET.test(commands)
+}
+
+/**
  * Structural section checks. Commands/Boundaries/Verification/Definition of done
  * read the full mask (`masked`): a command or a check that exists only as inline
  * code is a sample, not a rule. Requirements and AC read `fenceMasked`: inline
  * code keeps its text there (`AC1.1`, `R1`). Non-goals read `sectionMasked`,
  * which also keeps 4-space bullets visible: a bullet under the label is an item,
- * not code.
+ * not code. `lines` is the raw text: it is the only place where the body of a
+ * fenced block is still visible for the commands check.
  */
-function checkSections(
+async function checkSections(
   file: ContextFileResult,
+  lines: readonly string[],
   fenceMasked: readonly string[],
   sectionMasked: readonly string[],
   masked: readonly string[],
   sink: FindingSink,
-): void {
+  signal: AbortSignal | undefined,
+): Promise<void> {
   const text = masked.join("\n")
   if (file.kind === "agents" || file.kind === "claude") {
     if (
       !masked.some((line) => COMMANDS_HEADING.test(line)) &&
       !TASK_TABLE_HEADER.test(text) &&
-      !SHELL_TOOL.test(text)
+      !hasCommand(commandSources(lines, fenceMasked))
     ) {
       sink.push({
         severity: "MINOR",
@@ -1655,7 +1951,7 @@ function checkSections(
     }
   }
   if (file.kind === "spec") {
-    const nonGoals = countNonGoals(sectionMasked)
+    const nonGoals = await countNonGoals(sectionMasked, signal)
     if (!nonGoals.present) {
       sink.push({
         severity: "MAJOR",
@@ -1674,7 +1970,7 @@ function checkSections(
       })
     }
     const scan = scanAcTables(fenceMasked)
-    const requirements = collectRequirements(fenceMasked, acSkipLines(scan))
+    const requirements = await collectRequirements(fenceMasked, acSkipLines(scan), signal)
     // A heading alone is not a requirement set: at least one R line or R table
     // row outside the AC material must exist, otherwise a `## Requirements`
     // stub with an AC table R cell would pass.
@@ -1746,11 +2042,19 @@ function topLevelJoin(text: string): boolean {
   return false
 }
 
-function checkAndChains(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
+async function checkAndChains(
+  file: ContextFileResult,
+  lines: readonly string[],
+  sink: FindingSink,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   if (file.kind !== "spec") return
   for (let index = 0; index < lines.length; index += 1) {
+    if (index % SECTION_ABORT_LINES === 0) await abortGate(signal)
     const line = lines[index]
-    if (!/^\s*[-*]?\s*\*{0,2}R\d+/i.test(line)) continue
+    // `trimStart()` + a bounded run: the old `^\s*[-*]?\s*\*{0,2}` chain was
+    // O(N²) on a line of N spaces.
+    if (!/^(?:[-*][ \t]*)?\*{0,2}R\d+/i.test(line.trimStart())) continue
     if (topLevelJoin(line)) {
       sink.push({
         severity: "MINOR",
@@ -1807,8 +2111,8 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
   const root = path.resolve(options.root)
   const realRoot = await canonical(root)
   const targets = await resolveTargets(root, options.target, maxFiles, realRoot, options.signal)
-  if (!Array.isArray(targets)) return targets
-  if (targets.length === 0) {
+  if ("ok" in targets) return targets
+  if (targets.files.length === 0) {
     return { ok: false, code: "E_NO_FILES", message: "no AGENTS.md, SPEC.md or CLAUDE.md found in the target" }
   }
 
@@ -1823,7 +2127,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     readonly truncated: boolean
   }
   const scanned: ScannedFile[] = []
-  for (const absolute of targets) {
+  for (const absolute of targets.files) {
     if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
     let size: number
     try {
@@ -1837,6 +2141,9 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     }
     // Measure before reading: a multi-megabyte file would be parsed line by line
     // and echoed back through findings, which is the failure this cap prevents.
+    // `stat` is a fast path with an exact size for the message; the read below
+    // enforces the same cap on the bytes actually consumed, so a file replaced
+    // between `stat` and the read cannot slip past it (TOCTOU).
     if (size > maxFileBytes) {
       return {
         ok: false,
@@ -1849,7 +2156,18 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     }
     let text: string
     try {
-      text = await readFile(absolute, "utf8")
+      const read = await readCappedFile(absolute, maxFileBytes)
+      if ("bytes" in read) {
+        return {
+          ok: false,
+          code: "E_LIMIT_FILE",
+          message: `${relative(root, absolute)} grew past the ${maxFileBytes}-byte limit while it was read`,
+          path: relative(root, absolute),
+          bytes: read.bytes,
+          max: maxFileBytes,
+        }
+      }
+      text = read.text
     } catch (error) {
       return {
         ok: false,
@@ -1882,21 +2200,31 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     }
     const sink = createSink(maxFindingsPerFile)
     checkBudget(file, sink, maxLines, maxTokens, maxWords)
-    checkVague(file, masked, sink)
-    checkDuplicates(file, masked, sink)
-    const links = await checkLinks(file, masked, root, realRoot, absolute, sink, options.signal)
-    if (links.aborted || options.signal?.aborted) {
-      return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+    let linksTruncated = false
+    try {
+      await checkVague(file, masked, sink, options.signal)
+      await checkDuplicates(file, masked, sink, options.signal)
+      const links = await checkLinks(file, masked, root, realRoot, absolute, sink, options.signal)
+      linksTruncated = links.truncated
+      if (links.aborted || options.signal?.aborted) {
+        return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+      }
+      await checkPlaceholders(file, lines, masked, sink, options.signal)
+      checkFirstLines(file, lines, sink)
+      checkUnclosedFence(file, lines, sink)
+      await checkSections(file, lines, fenceMasked, sectionMasked, masked, sink, options.signal)
+      await checkAcRows(file, fenceMasked, sink, options.signal)
+      await checkAndChains(file, masked, sink, options.signal)
+    } catch (error) {
+      // A section check yields every `SECTION_ABORT_LINES` lines; an abort that
+      // fired during that yield must win over a full verdict.
+      if (error instanceof ScanAborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+      throw error
     }
-    checkPlaceholders(file, lines, masked, sink)
-    checkFirstLines(file, lines, sink)
-    checkSections(file, fenceMasked, sectionMasked, masked, sink)
-    checkAcRows(file, fenceMasked, sink)
-    checkAndChains(file, masked, sink)
     if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
     // Markers are appended directly after the checks: they never displace a kept
     // finding. The MAJOR marker is itself MAJOR, so it is closed with the rest.
-    if (links.truncated) {
+    if (linksTruncated) {
       // The unverified remainder must not let the verdict pass: a capped link
       // list is incomplete, and a deterministic rerun is identical.
       sink.kept.push({
@@ -1928,7 +2256,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     scanned.push({
       ...file,
       findings: sink.kept,
-      truncated: sink.truncated || links.truncated,
+      truncated: sink.truncated || linksTruncated,
     })
   }
 
@@ -1996,6 +2324,30 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
       findings,
       ...(truncatedFiles.has(fileIndex) ? { truncated: true } : {}),
     })
+  }
+
+  // A directory below the depth limit is not scanned; that is reported once as an
+  // INFO finding, because files dropped by the walk must not read as "checked".
+  const first = files[0]
+  if (targets.skippedDepth > 0 && first !== undefined) {
+    counter += 1
+    files[0] = {
+      ...first,
+      findings: [
+        ...first.findings,
+        {
+          id: `CTX-${String(counter).padStart(3, "0")}`,
+          severity: "INFO",
+          kind: "other",
+          evidence: `${first.path}:1`,
+          detail:
+            targets.skippedDepth === 1
+              ? "depth limit 3: 1 directory below the limit was not scanned"
+              : `depth limit 3: ${targets.skippedDepth} directories below the limit were not scanned`,
+          fix: "Pass an explicit path inside the deep directory to check it.",
+        },
+      ],
+    }
   }
 
   const all = files.flatMap((file) => file.findings)

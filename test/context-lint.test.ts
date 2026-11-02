@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { type ContextLintOutcome, lintContext } from "../lib/context-lint"
+import { type ContextLintOutcome, lintContext, readCappedFile } from "../lib/context-lint"
 import { createHarness, runTool } from "./support/harness"
 
 const VALID_AGENTS = [
@@ -2242,6 +2242,7 @@ describe("contract: max_words and CTX-000", () => {
     try {
       const failure = {
         schema: "context-lint/v1",
+        ok: true,
         verdict: "fail",
         closing_list: ["CTX-000"],
         truncated: true,
@@ -2251,6 +2252,7 @@ describe("contract: max_words and CTX-000", () => {
             kind: "other",
             lines: 0,
             words: 0,
+            chars: 0,
             tokens_est: 0,
             findings: [
               {
@@ -3390,6 +3392,348 @@ describe("R7-6 brace grouping", () => {
       expect(nonGoalsDetail(await lintContext({ root, target: "SPEC.md" }))).toBe("2 non-goals; expected 3–7 items")
     } finally {
       await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A1: 20k/40k/80k whitespace runs stay within 3x per doubling", async () => {
+    const root = await temporary()
+    try {
+      const times: number[] = []
+      for (const size of [20_000, 40_000, 80_000]) {
+        await write(root, "SPEC.md", `${" ".repeat(size)}\n`)
+        const started = performance.now()
+        const result = await lintContext({ root, target: "SPEC.md" })
+        times.push(performance.now() - started)
+        expect(result.ok).toBe(true)
+      }
+      for (let index = 1; index < times.length; index += 1) {
+        expect(times[index]!, `${times.map((value) => value.toFixed(1)).join("/")} ms`).toBeLessThanOrEqual(
+          Math.max(25, times[index - 1]! * 3),
+        )
+      }
+      // The quadratic path took ~11.8 s at 80k; the linear one stays orders below.
+      expect(times[2]!).toBeLessThan(1000)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A1: a heading with an 80k space run and no label stays linear", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", `#${" ".repeat(80_000)}\n`)
+      const started = performance.now()
+      const result = await lintContext({ root, target: "SPEC.md" })
+      const elapsed = performance.now() - started
+      expect(result.ok).toBe(true)
+      expect(elapsed, `${elapsed.toFixed(1)} ms`).toBeLessThan(1000)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A1: abort during the section checks returns E_ABORTED, never a verdict", async () => {
+    const root = await temporary()
+    try {
+      const lines = ["# SPEC", "", "## Requirements", ""]
+      for (let index = 1; index <= 35_000; index += 1) lines.push(`- R${index} — shall behave ${index}.`)
+      lines.push("", `#${" ".repeat(200_000)}`)
+      await writeFile(path.join(root, "SPEC.md"), `${lines.join("\n")}\n`, "utf8")
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 10)
+      const result = await lintContext({ root, target: "SPEC.md", signal: controller.signal })
+      clearTimeout(timer)
+      expect(result).toMatchObject({ ok: false, code: "E_ABORTED" })
+      expect("files" in result).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 20_000)
+
+  test("PR audit A2: an escaped `[` is literal, so `\\[o1](m1.md)` is not a broken link", async () => {
+    const root = await temporary()
+    try {
+      const backslash = String.fromCharCode(92)
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n${backslash}[o1](m1.md) and [real](missing-real.md)`)
+      const broken = findingsOf(await lintContext({ root, target: "AGENTS.md" })).filter(
+        (finding) => finding.kind === "broken_link",
+      )
+      expect(broken.map((finding) => finding.detail)).toEqual(['missing path "missing-real.md"'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A2: an even backslash run keeps the link", async () => {
+    const root = await temporary()
+    try {
+      const backslash = String.fromCharCode(92)
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n${backslash}${backslash}[o2](m2.md)`)
+      const broken = findingsOf(await lintContext({ root, target: "AGENTS.md" })).filter(
+        (finding) => finding.kind === "broken_link",
+      )
+      expect(broken.map((finding) => finding.detail)).toEqual(['missing path "m2.md"'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A2: an unclosed inline backtick is literal, so the rest of the line is checked", async () => {
+    const root = await temporary()
+    try {
+      const tick = String.fromCharCode(96)
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\nunclosed ${tick} [real](missing.md)`)
+      const broken = findingsOf(await lintContext({ root, target: "AGENTS.md" })).filter(
+        (finding) => finding.kind === "broken_link",
+      )
+      expect(broken.map((finding) => finding.detail)).toEqual(['missing path "missing.md"'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A2: a closed inline code span still masks its link", async () => {
+    const root = await temporary()
+    try {
+      const tick = String.fromCharCode(96)
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\nsee ${tick}[gone](nope.md)${tick} here`)
+      const broken = findingsOf(await lintContext({ root, target: "AGENTS.md" })).filter(
+        (finding) => finding.kind === "broken_link",
+      )
+      expect(broken).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A2: an unclosed fence is reported as INFO; a closed one is not", async () => {
+    const root = await temporary()
+    try {
+      const fence = String.fromCharCode(96).repeat(3)
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n\n${fence}\n[hidden](missing.md)\n`)
+      const open = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(open.some((finding) => finding.detail.includes("unclosed fence at line"))).toBe(true)
+      expect(open.some((finding) => finding.kind === "broken_link")).toBe(false)
+
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n\n${fence}\n[hidden](missing.md)\n${fence}\n`)
+      const closed = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(closed.some((finding) => finding.detail.includes("unclosed fence"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A2: a link outside the workspace root is an INFO finding, not silence", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\nSee [outside](../missing.md).`)
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      const skipped = findings.filter((finding) => finding.detail.includes("outside the workspace root"))
+      expect(skipped.length).toBe(1)
+      expect(skipped[0]).toMatchObject({ severity: "INFO" })
+      expect(skipped[0]?.detail).toContain("missing.md")
+      expect(findings.some((finding) => finding.kind === "broken_link")).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A2: a UNC or protocol-relative target is INFO, never probed and never silent", async () => {
+    const root = await temporary()
+    try {
+      const backslash = String.fromCharCode(92)
+      const network = `${backslash}${backslash}server${backslash}share${backslash}x.md`
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n[share](${network}) and [cdn](//host/x.js)`)
+      const started = performance.now()
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(performance.now() - started).toBeLessThan(2000)
+      const skipped = findings.filter((finding) =>
+        finding.detail.includes("network path is outside the workspace root"),
+      )
+      expect(skipped.length).toBe(2)
+      for (const finding of skipped) expect(finding.severity).toBe("INFO")
+      expect(findings.some((finding) => finding.kind === "broken_link")).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A2: a directory below depth 3 is reported instead of dropped", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", VALID_AGENTS)
+      await write(root, "a/b/c/d/AGENTS.md", VALID_AGENTS)
+      const result = await lintContext({ root })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.files.length).toBe(1)
+      const depth = findingsOf(result).filter((finding) => finding.detail.includes("depth limit 3"))
+      expect(depth.length).toBe(1)
+      expect(depth[0]).toMatchObject({ severity: "INFO" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A3: prose `Make sure to be careful` does not satisfy the commands check", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        "# AGENTS\n\n## Boundaries\n\n- Never commit secrets.\n\n## Verification\n\nDone = green.\n\nMake sure to be careful.\n",
+      )
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(findings.some((finding) => finding.detail === "no commands section")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A3: a fenced `make test` satisfies the commands check", async () => {
+    const root = await temporary()
+    try {
+      const fence = String.fromCharCode(96).repeat(3)
+      await write(
+        root,
+        "AGENTS.md",
+        `# AGENTS\n\n## Boundaries\n\n- Never commit secrets.\n\n## Verification\n\nDone = green.\n\n${fence}\nmake test\n${fence}\n`,
+      )
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(findings.some((finding) => finding.detail === "no commands section")).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A3: prose `bun test` outside a Commands section is not a command surface", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        "# AGENTS\n\n## Boundaries\n\n- Never commit secrets.\n\n## Verification\n\nDone = green.\n\nYou can run bun test any time.\n",
+      )
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(findings.some((finding) => finding.detail === "no commands section")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A4: the read path refuses maxFileBytes+1 bytes without trusting stat", async () => {
+    const root = await temporary()
+    try {
+      const file = await write(root, "AGENTS.md", "a".repeat(5_000))
+      expect(await readCappedFile(file, 1_000)).toEqual({ bytes: 1_001 })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A4: the read path accepts a file exactly at the cap", async () => {
+    const root = await temporary()
+    try {
+      const body = "a".repeat(1_000)
+      const file = await write(root, "AGENTS.md", body)
+      expect(await readCappedFile(file, 1_000)).toEqual({ text: body })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A7: maxFileBytes is inclusive: equal passes, one byte more is E_LIMIT_FILE", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", "a".repeat(100))
+      expect(await lintContext({ root, target: "AGENTS.md", maxFileBytes: 100 })).toMatchObject({ ok: true })
+      await write(root, "AGENTS.md", "a".repeat(101))
+      expect(await lintContext({ root, target: "AGENTS.md", maxFileBytes: 100 })).toMatchObject({
+        ok: false,
+        code: "E_LIMIT_FILE",
+        bytes: 101,
+        max: 100,
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A7: exactly maxTotalFindings MAJOR add no marker; one more adds it", async () => {
+    const root = await temporary()
+    try {
+      const three = `${VALID_AGENTS}\n<...>\n<...>\n<...>\n`
+      await write(root, "AGENTS.md", three)
+      const exact = await lintContext({ root, target: "AGENTS.md", maxTotalFindings: 3 })
+      expect(exact).toMatchObject({ ok: true, verdict: "fail" })
+      if (!exact.ok) return
+      expect(findingsOf(exact).length).toBe(3)
+      expect(exact.truncated).toBeFalsy()
+
+      await write(root, "AGENTS.md", `${three}<...>\n`)
+      const over = await lintContext({ root, target: "AGENTS.md", maxTotalFindings: 3 })
+      expect(over.ok).toBe(true)
+      if (!over.ok) return
+      expect(findingsOf(over).length).toBe(4)
+      expect(over.truncated).toBe(true)
+      expect(over.closing_list.length).toBe(4)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A7: the token estimate is Cyrillic/3 + the rest/4 for mixed text", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${"я".repeat(30)}${"a".repeat(40)}`)
+      const mixed = await lintContext({ root, target: "AGENTS.md", maxLines: 1_000, maxTokens: 1_000_000 })
+      expect(mixed.ok).toBe(true)
+      if (!mixed.ok) return
+      expect(mixed.files[0]?.chars).toBe(70)
+      expect(mixed.files[0]?.tokens_est).toBe(20) // 30/3 + 40/4
+
+      await write(root, "AGENTS.md", "a".repeat(40))
+      const latin = await lintContext({ root, target: "AGENTS.md", maxLines: 1_000, maxTokens: 1_000_000 })
+      expect(latin.ok && latin.files[0]?.tokens_est).toBe(10)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A7: an escaped `]` `(` pair is prose, not a link", async () => {
+    const root = await temporary()
+    try {
+      const backslash = String.fromCharCode(92)
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n[x]${backslash}(missing.md)`)
+      const broken = findingsOf(await lintContext({ root, target: "AGENTS.md" })).filter(
+        (finding) => finding.kind === "broken_link",
+      )
+      expect(broken).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A8: maxFiles stops the walk at the first file above the limit", async () => {
+    const root = await temporary()
+    try {
+      for (let index = 0; index < 5; index += 1) await write(root, `d${index}/AGENTS.md`, VALID_AGENTS)
+      const result = await lintContext({ root, maxFiles: 1 })
+      expect(result).toMatchObject({ ok: false, code: "E_LIMIT_FILES", files: 2, max: 1 })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A8: the tool description documents depth 3, the root scan and the payload fields", async () => {
+    const harness = await createHarness()
+    try {
+      const description = harness.tools.get("orch_uni_context_lint")?.description ?? ""
+      for (const token of ["depth 3", "eval/", "ok:false", "chars", "Cyrillic/3"]) {
+        expect(description, token).toContain(token)
+      }
+    } finally {
+      harness.dispose()
     }
   })
 

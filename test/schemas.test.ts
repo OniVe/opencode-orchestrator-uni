@@ -9,9 +9,11 @@
  * adding an enum value to a prompt without adding it to the schema fails here.
  */
 import { describe, expect, test } from "bun:test"
-import { readdir, readFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import path from "node:path"
 import { AGENTS_DIRECTORY, SUPPORTED_LOCALES } from "../index"
+import { lintContext } from "../lib/context-lint"
 import { collectSchemaKeywords, type JsonSchemaNode, SUPPORTED_KEYWORDS, validateValue } from "../lib/report-schema"
 import { loadSchemas, SCHEMAS_DIRECTORY } from "../lib/tools"
 import { agentFiles as localeAgentFiles, promptTemplates } from "./support/locales"
@@ -174,3 +176,67 @@ function concretize(template: Record<string, unknown>): Record<string, unknown> 
   }
   return value as Record<string, unknown>
 }
+
+describe("context-lint/v1 describes the whole tool payload", () => {
+  /** A real success payload produced by the library, not a hand-written stub. */
+  async function successPayload(): Promise<Record<string, unknown>> {
+    const root = await mkdtemp(path.join(tmpdir(), "schema-context-lint-"))
+    try {
+      await writeFile(
+        path.join(root, "AGENTS.md"),
+        [
+          "# AGENTS",
+          "",
+          "## Commands",
+          "",
+          "| Task | Command |",
+          "|---|---|",
+          "| Tests | bun test |",
+          "",
+          "<...>",
+        ].join("\n"),
+        "utf8",
+      )
+      const outcome = await lintContext({ root, target: "AGENTS.md" })
+      return outcome as unknown as Record<string, unknown>
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+
+  test("a real success payload validates: ok, chars and the report fields", async () => {
+    const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
+    const schema = schemas.get("context-lint/v1") as JsonSchemaNode
+    const payload = await successPayload()
+    expect(validateValue(payload, schema)).toEqual([])
+    expect(payload.ok).toBe(true)
+    const files = payload.files as { chars?: number }[]
+    expect(typeof files[0]?.chars).toBe("number")
+  })
+
+  test("a real typed failure payload validates", async () => {
+    const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
+    const schema = schemas.get("context-lint/v1") as JsonSchemaNode
+    const root = await mkdtemp(path.join(tmpdir(), "schema-context-lint-"))
+    try {
+      await writeFile(path.join(root, "AGENTS.md"), "a".repeat(101), "utf8")
+      const failure = await lintContext({ root, target: "AGENTS.md", maxFileBytes: 100 })
+      expect(failure.ok).toBe(false)
+      expect(validateValue(failure, schema)).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("both locales' SGR templates carry ok, verdict, closing_list, files, summary and chars", async () => {
+    for (const locale of SUPPORTED_LOCALES) {
+      const markdown = await readFile(path.join(AGENTS_DIRECTORY, locale, "context-lint.md"), "utf8")
+      const template = promptTemplates(markdown).at(-1) as Record<string, unknown>
+      for (const field of ["schema", "ok", "verdict", "closing_list", "files", "summary"]) {
+        expect(Object.hasOwn(template, field), `${locale}: ${field}`).toBe(true)
+      }
+      const files = template.files as Record<string, unknown>[]
+      expect(Object.hasOwn(files[0]!, "chars"), `${locale}: files[].chars`).toBe(true)
+    }
+  })
+})

@@ -660,9 +660,15 @@ export async function registerAuditTools(
       description:
         "Deterministic, read-only audit of AGENTS.md/SPEC.md/CLAUDE.md: line/token/word budget, distinct vague phrases, duplicate lines, " +
         "broken relative links, placeholders, dates in the first three lines, required sections, AC test columns. " +
-        "Returns JSON {schema, ok, verdict, closing_list, files, summary, truncated?}; a per-file cap drops findings and sets " +
-        "truncated=true, max_total_findings keeps MAJOR first and turns the MAJOR overflow into one MAJOR truncated finding in " +
-        "closing_list. Failure is a typed code " +
+        "A directory target is scanned to depth 3 and capped at max_files (the walk stops at the first file above the limit); " +
+        "a scan started at the root also picks up fixture trees such as eval/ (pass an explicit path for the canonical files); " +
+        "undocumented directories below depth 3, unclosed fences and links that resolve outside the workspace root are reported " +
+        "as INFO findings and never checked silently. Commands count only inside code, a Task table or a Commands section; " +
+        "tokens are estimated as Cyrillic/3 + the rest/4. " +
+        "Returns JSON {schema, ok, verdict, closing_list, files, summary, truncated?}; each file carries lines, words, chars " +
+        "and tokens_est. A per-file cap drops findings and sets truncated=true, max_total_findings keeps MAJOR first and turns " +
+        "the MAJOR overflow into one MAJOR truncated finding in closing_list. A file target is capped by max_file_bytes, " +
+        "also while it is read. A failure is JSON {ok:false, code, message, path?, bytes?, files?, max?} with a typed code " +
         "(E_INPUT|E_NOT_FOUND|E_NO_FILES|E_IO|E_ABORTED|E_LIMIT_FILE|E_LIMIT_FILES|E_OUT_OF_ROOT).",
       input: CONTEXT_LINT_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },

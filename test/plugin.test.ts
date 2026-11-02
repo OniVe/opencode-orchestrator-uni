@@ -40,7 +40,11 @@ interface CommandDraft {
 
 function createHarness(
   options?: unknown,
-  faults: { readonly failingCommands?: boolean; readonly failingDispose?: boolean } = {},
+  faults: {
+    readonly failingCommands?: boolean
+    readonly failingDispose?: boolean
+    readonly noCommandApi?: boolean
+  } = {},
 ) {
   const agents = new Map<string, AgentDraft>()
   const references = new Map<string, unknown>()
@@ -174,8 +178,12 @@ function createHarness(
   }
 }
 
-async function runSetup(options?: unknown, faults: { failingCommands?: boolean; failingDispose?: boolean } = {}) {
+async function runSetup(
+  options?: unknown,
+  faults: { failingCommands?: boolean; failingDispose?: boolean; noCommandApi?: boolean } = {},
+) {
   const harness = createHarness(options, faults)
+  if (faults.noCommandApi === true) delete (harness.ctx as unknown as { command?: unknown }).command
   const warnings: string[] = []
   const original = console.warn
   console.warn = (...args: unknown[]) => {
@@ -462,6 +470,15 @@ describe("opencode-orchestrator-uni", () => {
     const harness = createHarness({ locale: "ru" }, { failingCommands: true })
     await expect(plugin.setup(harness.ctx)).rejects.toThrow("command transform failed")
     expect(harness.aborted).toBe(true)
+  })
+
+  test("a host without the command API still registers agents and tools", async () => {
+    // PR audit A5: `ctx.command` is optional in a host build; a missing optional
+    // API must not take the whole kit down.
+    const { agents, tools, warnings } = await runSetup({ locale: "ru" }, { noCommandApi: true })
+    expect(agents.size).toBe(9)
+    expect(tools.has("orch_uni_context_lint")).toBe(true)
+    expect(warnings.some((line) => line.includes("command API"))).toBe(true)
   })
 
   test("a failing command dispose still aborts the tools subscription", async () => {
