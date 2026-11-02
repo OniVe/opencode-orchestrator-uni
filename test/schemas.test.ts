@@ -14,12 +14,22 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { AGENTS_DIRECTORY, SUPPORTED_LOCALES } from "../index"
 import { lintContext } from "../lib/context-lint"
-import { collectSchemaKeywords, type JsonSchemaNode, SUPPORTED_KEYWORDS, validateValue } from "../lib/report-schema"
+import {
+  checkReport,
+  collectSchemaKeywords,
+  type JsonSchemaNode,
+  SUPPORTED_KEYWORDS,
+  validateValue,
+} from "../lib/report-schema"
 import { loadSchemas, SCHEMAS_DIRECTORY } from "../lib/tools"
 import { agentFiles as localeAgentFiles, promptTemplates } from "./support/locales"
 
-/** `name.vN.json` → `name/vN` (the ids shipped with the kit). */
-const EXPECTED_SCHEMAS = [
+/**
+ * `name.vN.json` → `name/vN` (the ids shipped with the kit). `REPORT_SCHEMAS` are
+ * the ids produced by an agent's SGR template; `context-lint-failure/v1` is the
+ * typed failure envelope of the `orch_uni_context_lint` tool and is never a report.
+ */
+const REPORT_SCHEMAS = [
   "context-lint/v1",
   "factcheck/v1",
   "empiric/v1",
@@ -29,6 +39,8 @@ const EXPECTED_SCHEMAS = [
   "redteam/v1",
   "fix-runner/v1",
 ]
+const FAILURE_SCHEMAS = ["context-lint-failure/v1"]
+const EXPECTED_SCHEMAS = [...REPORT_SCHEMAS, ...FAILURE_SCHEMAS]
 
 const ENUM_PLACEHOLDER = /[A-Za-z][A-Za-z_]*(\s*\|\s*[A-Za-z_]+)+/
 
@@ -78,7 +90,7 @@ async function agentFiles(): Promise<string[]> {
 }
 
 describe("shipped report schemas", () => {
-  test("the eight kit schemas are shipped and no others", async () => {
+  test("the nine kit schemas are shipped and no others", async () => {
     const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
     expect([...schemas.keys()].sort()).toEqual([...EXPECTED_SCHEMAS].sort())
     const files = (await readdir(SCHEMAS_DIRECTORY)).filter((name) => name.endsWith(".json"))
@@ -127,14 +139,16 @@ describe("agent prompts and schemas agree", () => {
     return templates
   }
 
-  test("each locale's report-producing agents are exactly the shipped schemas", async () => {
+  test("each locale's report-producing agents are exactly the report schemas", async () => {
     const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
     const templates = await templatesByAgent()
     for (const locale of SUPPORTED_LOCALES) {
       const produced = [...templates.entries()]
         .filter(([file]) => file.startsWith(`${locale}/`))
         .map(([, template]) => template.schema as string)
-      expect(produced.sort(), `${locale}: produced schemas`).toEqual([...EXPECTED_SCHEMAS].sort())
+      // The failure envelope has no producer among the agents: it is the typed
+      // output of the tool, not an SGR report.
+      expect(produced.sort(), `${locale}: produced schemas`).toEqual([...REPORT_SCHEMAS].sort())
       for (const [file, template] of templates) {
         if (!file.startsWith(`${locale}/`)) continue
         expect(schemas.has(template.schema as string), `${file} → ${String(template.schema)}`).toBe(true)
@@ -177,7 +191,7 @@ function concretize(template: Record<string, unknown>): Record<string, unknown> 
   return value as Record<string, unknown>
 }
 
-describe("context-lint/v1 describes the whole tool payload", () => {
+describe("context-lint/v1 is the report contract, context-lint-failure/v1 the failure one", () => {
   /** A real success payload produced by the library, not a hand-written stub. */
   async function successPayload(): Promise<Record<string, unknown>> {
     const root = await mkdtemp(path.join(tmpdir(), "schema-context-lint-"))
@@ -204,6 +218,19 @@ describe("context-lint/v1 describes the whole tool payload", () => {
     }
   }
 
+  /** The failure payload the tool emits: the library outcome plus its schema id. */
+  async function failurePayload(): Promise<Record<string, unknown>> {
+    const root = await mkdtemp(path.join(tmpdir(), "schema-context-lint-"))
+    try {
+      await writeFile(path.join(root, "AGENTS.md"), "a".repeat(101), "utf8")
+      const failure = await lintContext({ root, target: "AGENTS.md", maxFileBytes: 100 })
+      expect(failure.ok).toBe(false)
+      return { schema: "context-lint-failure/v1", ...failure } as unknown as Record<string, unknown>
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+
   test("a real success payload validates: ok, chars and the report fields", async () => {
     const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
     const schema = schemas.get("context-lint/v1") as JsonSchemaNode
@@ -214,18 +241,66 @@ describe("context-lint/v1 describes the whole tool payload", () => {
     expect(typeof files[0]?.chars).toBe("number")
   })
 
-  test("a real typed failure payload validates", async () => {
+  test("a real failure payload validates only against its own schema", async () => {
     const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
-    const schema = schemas.get("context-lint/v1") as JsonSchemaNode
-    const root = await mkdtemp(path.join(tmpdir(), "schema-context-lint-"))
-    try {
-      await writeFile(path.join(root, "AGENTS.md"), "a".repeat(101), "utf8")
-      const failure = await lintContext({ root, target: "AGENTS.md", maxFileBytes: 100 })
-      expect(failure.ok).toBe(false)
-      expect(validateValue(failure, schema)).toEqual([])
-    } finally {
-      await rm(root, { recursive: true, force: true })
+    const report = schemas.get("context-lint/v1") as JsonSchemaNode
+    const failureSchema = schemas.get("context-lint-failure/v1") as JsonSchemaNode
+    const failure = await failurePayload()
+    expect(validateValue(failure, failureSchema)).toEqual([])
+    // A failure is not a report: it must never pass as one, and vice versa.
+    expect(validateValue(failure, report).length).toBeGreaterThan(0)
+    const success = await successPayload()
+    expect(validateValue(success, failureSchema).length).toBeGreaterThan(0)
+  })
+
+  test("truncated and partial payloads are E_INVALID reports", async () => {
+    const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
+    const report = schemas.get("context-lint/v1") as JsonSchemaNode
+    const okOnly = validateValue({ schema: "context-lint/v1", ok: true }, report)
+    expect(okOnly.length).toBeGreaterThan(0)
+    const okFalseOnly = validateValue({ schema: "context-lint/v1", ok: false }, report)
+    expect(okFalseOnly.length).toBeGreaterThan(0)
+    const withoutVerdict = validateValue(
+      {
+        schema: "context-lint/v1",
+        ok: true,
+        closing_list: [],
+        files: [],
+        summary: "",
+      },
+      report,
+    )
+    expect(withoutVerdict.map((error) => error.path)).toContain("$.verdict")
+    const numericFiles = validateValue(
+      { schema: "context-lint/v1", ok: true, verdict: "fail", closing_list: [], files: 42, summary: "" },
+      report,
+    )
+    expect(numericFiles.map((error) => error.path)).toContain("$.files")
+  })
+
+  test("checkReport returns E_INVALID for a partial or mistyped report", async () => {
+    const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
+    const asReport = (payload: unknown): string => ["Report.", "```json", JSON.stringify(payload), "```"].join("\n")
+    const partial = [
+      { schema: "context-lint/v1", ok: true },
+      { schema: "context-lint/v1", ok: false },
+      { schema: "context-lint/v1", ok: true, closing_list: [], files: [], summary: "" },
+      { schema: "context-lint/v1", ok: true, verdict: "fail", closing_list: [], files: 42, summary: "" },
+    ]
+    for (const payload of partial) {
+      const result = checkReport(asReport(payload), { schemas })
+      expect(result, JSON.stringify(payload)).toMatchObject({ valid: false, code: "E_INVALID" })
     }
+  })
+
+  test("a failure payload is valid by its own id and rejected as a report", async () => {
+    const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
+    const failure = await failurePayload()
+    const text = ["Report.", "```json", JSON.stringify(failure), "```"].join("\n")
+    const own = checkReport(text, { schemas })
+    expect(own).toMatchObject({ valid: true, schema: "context-lint-failure/v1" })
+    const asReport = checkReport(text, { schemas, expectedSchema: "context-lint/v1" })
+    expect(asReport).toMatchObject({ valid: false, code: "E_SCHEMA_MISMATCH" })
   })
 
   test("both locales' SGR templates carry ok, verdict, closing_list, files, summary and chars", async () => {

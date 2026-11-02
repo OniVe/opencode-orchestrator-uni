@@ -151,6 +151,8 @@ const DEFAULT_MAX_FINDINGS_PER_FILE = 100
 const DEFAULT_MAX_TOTAL_FINDINGS = 1000
 /** Upper bound of a `detail` field that echoes source text. */
 const MAX_DETAIL_LENGTH = 120
+/** Skipped-link INFO findings per scan; the rest is one counter finding. */
+const MAX_SKIPPED_LINK_FINDINGS = 10
 /**
  * Link candidates collected from one file before the list is truncated; above
  * the cap the file is reported incomplete (MAJOR marker) instead of failing on
@@ -388,6 +390,8 @@ interface CollectState {
   readonly maxFiles: number
   /** Directories below the depth limit that were not scanned. */
   skippedDepth: number
+  /** Entries whose real path resolves outside the root (junction/symlink). */
+  readonly skippedLinks: string[]
 }
 
 async function collectFiles(
@@ -415,6 +419,13 @@ async function collectFiles(
   for (const entry of entries) {
     if (signal?.aborted) throw new ScanAborted()
     const full = path.join(start, entry.name)
+    const skipOutside = async (candidate: string): Promise<boolean> => {
+      if (isInside(realRoot, await canonical(candidate))) return false
+      // A junction/symlink that resolves outside the root is never scanned; the
+      // skip is recorded so the caller can report it instead of dropping it.
+      state.skippedLinks.push(candidate)
+      return true
+    }
     if (entry.isSymbolicLink()) {
       let info: Awaited<ReturnType<typeof stat>>
       try {
@@ -422,7 +433,7 @@ async function collectFiles(
       } catch {
         continue // dangling link
       }
-      if (!isInside(realRoot, await canonical(full))) continue
+      if (await skipOutside(full)) continue
       if (info.isFile()) {
         if (TARGET_NAME.test(entry.name)) push(full)
       } else if (info.isDirectory() && !SKIP.has(entry.name)) {
@@ -432,10 +443,10 @@ async function collectFiles(
     }
     if (entry.isDirectory()) {
       if (SKIP.has(entry.name)) continue
-      if (!isInside(realRoot, await canonical(full))) continue
+      if (await skipOutside(full)) continue
       await collectFiles(full, realRoot, signal, state, depth + 1, visited)
     } else if (entry.isFile() && TARGET_NAME.test(entry.name)) {
-      if (!isInside(realRoot, await canonical(full))) continue
+      if (await skipOutside(full)) continue
       push(full)
     }
   }
@@ -445,6 +456,8 @@ interface TargetBatch {
   readonly files: string[]
   /** Directories below the depth limit; reported as an INFO finding. */
   readonly skippedDepth: number
+  /** In-root entries whose real path resolves outside the root; reported as INFO. */
+  readonly skippedLinks: readonly string[]
 }
 
 async function resolveTargets(
@@ -487,10 +500,10 @@ async function resolveTargets(
       path: start,
     }
   }
-  if (info.isFile()) return { files: [start], skippedDepth: 0 }
+  if (info.isFile()) return { files: [start], skippedDepth: 0, skippedLinks: [] }
   if (!info.isDirectory())
     return { ok: false, code: "E_INPUT", message: `target is neither a file nor a directory: ${start}` }
-  const state: CollectState = { files: [], maxFiles, skippedDepth: 0 }
+  const state: CollectState = { files: [], maxFiles, skippedDepth: 0, skippedLinks: [] }
   try {
     await collectFiles(start, realRoot, signal, state)
   } catch (error) {
@@ -514,7 +527,8 @@ async function resolveTargets(
     }
   }
   state.files.sort()
-  return { files: state.files, skippedDepth: state.skippedDepth }
+  state.skippedLinks.sort()
+  return { files: state.files, skippedDepth: state.skippedDepth, skippedLinks: state.skippedLinks }
 }
 
 /** Length of the backtick run that starts at `index`. */
@@ -561,29 +575,55 @@ function htmlCloseTagEnd(text: string, index: number, name: string): number | un
 const MASK_MARKUP = /<!--|<pre|<code/i
 
 /**
+ * Result of one mask pass: the masked lines plus the 1-based line where a state
+ * that swallows the rest of the file is still open at EOF. One parser reports the
+ * masking state, so a marker inside a fence/comment/`<pre>` is never mistaken for
+ * an unclosed one.
+ */
+interface MaskedLines {
+  readonly masked: string[]
+  /** A fenced block still open at EOF. */
+  readonly unclosedFenceLine?: number
+  /** A `<pre>` span still open at EOF. */
+  readonly unclosedPreLine?: number
+  /** An HTML comment still open at EOF. */
+  readonly unclosedCommentLine?: number
+}
+
+interface MaskOptions {
+  readonly inlineCode: boolean
+  readonly indentedCode?: boolean
+  /** Mask HTML comments (default `true`); the commands check reads code with comments visible. */
+  readonly comments?: boolean
+}
+
+/**
  * Replace code blocks, `<pre>`/`<code>` spans, indented code and (when
  * `options.inlineCode` is set) inline code and HTML comments with spaces,
  * keeping the line count and every line length. A fence opened with N markers
  * closes only with at least N markers of the same character; a code span
  * opened with a run of N backticks closes only on a run of exactly N, so
  * ``a, b`` is one span, and a run without a closing match in the same line is
- * literal text (CommonMark), not a mask to the end of the line. `options.indentedCode` (default `true`) masks 4-space
- * indented code; non-goals counting turns it off to accept its 4-space bullets.
+ * literal text (CommonMark), not a mask to the end of the line.
+ * `options.indentedCode` (default `true`) masks 4-space indented code;
+ * non-goals counting turns it off to accept its 4-space bullets.
  * A `<pre>…</pre>` span is masked in place, preserving the text before and
  * after it; an unclosed `<pre>` masks the following lines too, but never the
- * current line prefix.
+ * current line prefix. The same pass reports which of those states is still open
+ * at EOF, so the caller can flag the masked remainder instead of passing it.
  */
-function maskCode(
-  lines: readonly string[],
-  options: { readonly inlineCode: boolean; readonly indentedCode?: boolean },
-): string[] {
+function maskCode(lines: readonly string[], options: MaskOptions): MaskedLines {
   const masked: string[] = []
-  let fence: { readonly char: string; readonly length: number } | undefined
+  let fence: { readonly char: string; readonly length: number; readonly line: number } | undefined
   let inComment = false
+  let commentFrom: number | undefined
   let inPre = false
+  let preFrom: number | undefined
   let inIndented = false
   let previousBlank = true
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex]
+    const lineNumber = lineIndex + 1
     const blank = line.trim() === ""
     if (fence !== undefined) {
       const close = new RegExp(`^\\s*${fence.char}{${fence.length},}\\s*$`)
@@ -604,7 +644,7 @@ function maskCode(
       if (!indented && !blank) inIndented = false
       const open = /^\s*(`{3,}|~{3,})/.exec(line)
       if (open !== null) {
-        fence = { char: open[1][0], length: open[1].length }
+        fence = { char: open[1][0], length: open[1].length, line: lineNumber }
         masked.push(" ".repeat(line.length))
         previousBlank = false
         continue
@@ -658,6 +698,7 @@ function maskCode(
           out += " ".repeat(end - index + 1)
           index = end
           inPre = false
+          preFrom = undefined
         } else {
           out += " "
         }
@@ -668,6 +709,7 @@ function maskCode(
           out += "   "
           index += 2
           inComment = false
+          commentFrom = undefined
         } else {
           out += " "
         }
@@ -699,10 +741,11 @@ function maskCode(
         continue
       }
 
-      if (line.startsWith("<!--", index)) {
+      if (options.comments !== false && line.startsWith("<!--", index)) {
         out += "    "
         index += 3
         inComment = true
+        commentFrom ??= lineNumber
         continue
       }
       if (options.inlineCode) {
@@ -719,6 +762,7 @@ function maskCode(
         out += " ".repeat(preEnd - index + 1)
         index = preEnd
         inPre = true
+        preFrom ??= lineNumber
         continue
       }
       out += character
@@ -726,16 +770,21 @@ function maskCode(
     masked.push(out)
     previousBlank = inPre ? false : blank
   }
-  return masked
+  return {
+    masked,
+    ...(fence === undefined ? {} : { unclosedFenceLine: fence.line }),
+    ...(preFrom === undefined ? {} : { unclosedPreLine: preFrom }),
+    ...(commentFrom === undefined ? {} : { unclosedCommentLine: commentFrom }),
+  }
 }
 
 /** Fences, `<pre>`, comments and indented code only: AC/R cells keep their text. */
-function maskFences(lines: readonly string[]): string[] {
+function maskFences(lines: readonly string[]): MaskedLines {
   return maskCode(lines, { inlineCode: false })
 }
 
 /** Fences plus inline code and comments: links, vague phrases and placeholders. */
-function maskAll(lines: readonly string[]): string[] {
+function maskAll(lines: readonly string[]): MaskedLines {
   return maskCode(lines, { inlineCode: true })
 }
 
@@ -744,7 +793,7 @@ function maskAll(lines: readonly string[]): string[] {
  * bullet under a non-goals label is counted as an item. Inline code keeps its
  * text, like `maskFences`.
  */
-function maskSectionBlocks(lines: readonly string[]): string[] {
+function maskSectionBlocks(lines: readonly string[]): MaskedLines {
   return maskCode(lines, { inlineCode: false, indentedCode: false })
 }
 
@@ -1186,7 +1235,7 @@ async function checkLinks(
           severity: "INFO",
           kind: "other",
           evidence: `${file.path}:${index + 1}`,
-          detail: clip(`link target is outside the workspace root and was not checked: "${target}"`),
+          detail: clip(`link target is outside the workspace root and was not checked: "${raw.trim()}"`),
           fix: "Point the link at a file inside the workspace or remove it.",
         })
         continue
@@ -1221,7 +1270,7 @@ async function checkLinks(
           severity: "INFO",
           kind: "other",
           evidence: `${file.path}:${index + 1}`,
-          detail: clip(`link target is outside the workspace root and was not checked: "${target}"`),
+          detail: clip(`link target is outside the workspace root and was not checked: "${raw.trim()}"`),
           fix: "Point the link at a file inside the workspace or remove it.",
         })
         continue
@@ -1249,7 +1298,7 @@ async function checkLinks(
             severity: "INFO",
             kind: "other",
             evidence: `${file.path}:${index + 1}`,
-            detail: clip(`link target could not be resolved inside the workspace and was not checked: "${target}"`),
+            detail: clip(`link target could not be resolved inside the workspace and was not checked: "${raw.trim()}"`),
             fix: "Point the link at a file inside the workspace or remove it.",
           })
           continue
@@ -1308,37 +1357,28 @@ async function checkPlaceholders(
 }
 
 /**
- * Opening line (1-based) of a fenced block that is never closed, or `undefined`.
- * An unclosed fence masks the rest of the file (CommonMark: it is code to EOF),
- * so the checks after it see nothing; the caller reports that as INFO instead of
- * returning a pass that silently skipped the remainder. The scan mirrors the
- * mask's fence rules and allocates nothing per line.
+ * Report every region the mask swallowed to the end of the file. The state comes
+ * from the same `maskCode` pass that produced the masked lines, so a fence marker
+ * inside a comment, `<pre>` or indented code is never mistaken for an unclosed
+ * fence. INFO keeps the verdict unchanged (CommonMark says it is code) while
+ * making the unchecked remainder visible.
  */
-function unclosedFenceLine(lines: readonly string[]): number | undefined {
-  let fence: { readonly char: string; readonly length: number; readonly line: number } | undefined
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]
-    if (fence === undefined) {
-      const match = /^\s*(`{3,}|~{3,})/.exec(line)
-      if (match !== null) fence = { char: match[1][0], length: match[1].length, line: index + 1 }
-      continue
-    }
-    const trimmed = line.trim()
-    if (trimmed.length >= fence.length && trimmed === fence.char.repeat(trimmed.length)) fence = undefined
+function checkMaskedRegions(file: ContextFileResult, mask: MaskedLines, sink: FindingSink): void {
+  const unclosed: readonly (readonly [string, number | undefined])[] = [
+    ["fence", mask.unclosedFenceLine],
+    ["<pre>", mask.unclosedPreLine],
+    ["HTML comment", mask.unclosedCommentLine],
+  ]
+  for (const [marker, line] of unclosed) {
+    if (line === undefined) continue
+    sink.push({
+      severity: "INFO",
+      kind: "other",
+      evidence: `${file.path}:${line}`,
+      detail: `unclosed ${marker} at line ${line}; the rest of the file is masked and not checked`,
+      fix: `Close the ${marker} so the following content is checked.`,
+    })
   }
-  return fence?.line
-}
-
-function checkUnclosedFence(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
-  const line = unclosedFenceLine(lines)
-  if (line === undefined) return
-  sink.push({
-    severity: "INFO",
-    kind: "other",
-    evidence: `${file.path}:${line}`,
-    detail: `unclosed fence at line ${line}; the rest of the file is masked and not checked`,
-    fix: "Close the fence so the following content is checked.",
-  })
 }
 
 function checkFirstLines(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
@@ -1870,10 +1910,15 @@ async function checkAcRows(
  * block, inline code spans, a table whose header names a Task/Задача, and the
  * body of a Commands/Команды section. Prose outside those regions is not a
  * command source, so "Make sure to be careful" cannot satisfy the commands
- * check; `make` additionally needs a target (`MAKE_TARGET`).
+ * check; `make` additionally needs a target (`MAKE_TARGET`). An HTML comment is
+ * not code: `<!-- npm install -->` must not pass the check, so a line that is
+ * blank in the comment-aware mask but not in the code mask is skipped.
  */
 function commandSources(lines: readonly string[], fenceMasked: readonly string[]): string {
   const parts: string[] = []
+  // Fences, `<pre>` and indented code only: a comment line is not blanked here,
+  // so a commented command is not mistaken for a code block.
+  const code = maskCode(lines, { inlineCode: false, comments: false }).masked
   let commandsLevel: number | undefined
   let taskTable = false
   for (let index = 0; index < lines.length; index += 1) {
@@ -1884,8 +1929,12 @@ function commandSources(lines: readonly string[], fenceMasked: readonly string[]
       else if (commandsLevel !== undefined && level <= commandsLevel) commandsLevel = undefined
     }
     taskTable = TABLE_ROW.test(raw) ? taskTable || TASK_TABLE_HEADER.test(raw) : false
-    // A fence/`<pre>` line is blanked in `fenceMasked` while the raw line is not.
-    const fenced = raw.trim() !== "" && (fenceMasked[index] ?? "").trim() === ""
+    const fenced = raw.trim() !== "" && (code[index] ?? "").trim() === ""
+    // A line that is blank in the comment-aware mask but not in the code mask is
+    // comment content: `<!-- npm install -->` and a backticked command inside a
+    // multi-line comment are not commands.
+    const commented = !fenced && raw.trim() !== "" && (fenceMasked[index] ?? "").trim() === ""
+    if (commented) continue
     if (fenced || commandsLevel !== undefined || taskTable) parts.push(raw)
     if (raw.includes("`")) {
       for (const match of raw.matchAll(/`+([^`\n]*)`+/g)) parts.push(match[1])
@@ -2184,9 +2233,12 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     // Links, vague phrases, placeholders and the structural section checks read
     // the full mask: a command or a check that exists only as inline code is a
     // sample, not a rule.
-    const fenceMasked = maskFences(lines)
-    const masked = maskAll(lines)
-    const sectionMasked = maskSectionBlocks(lines)
+    const fenceMask = maskFences(lines)
+    const fullMask = maskAll(lines)
+    const sectionMask = maskSectionBlocks(lines)
+    const fenceMasked = fenceMask.masked
+    const masked = fullMask.masked
+    const sectionMasked = sectionMask.masked
     const chars = codePointLength(body)
     const words = body.trim() === "" ? 0 : body.trim().split(/\s+/).length
     const file: ContextFileResult = {
@@ -2211,7 +2263,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
       }
       await checkPlaceholders(file, lines, masked, sink, options.signal)
       checkFirstLines(file, lines, sink)
-      checkUnclosedFence(file, lines, sink)
+      checkMaskedRegions(file, fullMask, sink)
       await checkSections(file, lines, fenceMasked, sectionMasked, masked, sink, options.signal)
       await checkAcRows(file, fenceMasked, sink, options.signal)
       await checkAndChains(file, masked, sink, options.signal)
@@ -2326,28 +2378,51 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     })
   }
 
-  // A directory below the depth limit is not scanned; that is reported once as an
-  // INFO finding, because files dropped by the walk must not read as "checked".
+  // A directory below the depth limit, or an entry whose junction/symlink
+  // resolves outside the root, is not scanned; both are reported as INFO findings
+  // (bounded), because files dropped by the walk must not read as "checked".
   const first = files[0]
-  if (targets.skippedDepth > 0 && first !== undefined) {
-    counter += 1
-    files[0] = {
-      ...first,
-      findings: [
-        ...first.findings,
-        {
-          id: `CTX-${String(counter).padStart(3, "0")}`,
-          severity: "INFO",
-          kind: "other",
-          evidence: `${first.path}:1`,
-          detail:
-            targets.skippedDepth === 1
-              ? "depth limit 3: 1 directory below the limit was not scanned"
-              : `depth limit 3: ${targets.skippedDepth} directories below the limit were not scanned`,
-          fix: "Pass an explicit path inside the deep directory to check it.",
-        },
-      ],
+  if (first !== undefined && (targets.skippedDepth > 0 || targets.skippedLinks.length > 0)) {
+    const extra: ContextFinding[] = []
+    const nextId = (): string => {
+      counter += 1
+      return `CTX-${String(counter).padStart(3, "0")}`
     }
+    if (targets.skippedDepth > 0) {
+      extra.push({
+        id: nextId(),
+        severity: "INFO",
+        kind: "other",
+        evidence: `${first.path}:1`,
+        detail:
+          targets.skippedDepth === 1
+            ? "depth limit 3: 1 directory below the limit was not scanned"
+            : `depth limit 3: ${targets.skippedDepth} directories below the limit were not scanned`,
+        fix: "Pass an explicit path inside the deep directory to check it.",
+      })
+    }
+    const reported = targets.skippedLinks.slice(0, MAX_SKIPPED_LINK_FINDINGS)
+    for (const link of reported) {
+      extra.push({
+        id: nextId(),
+        severity: "INFO",
+        kind: "other",
+        evidence: `${first.path}:1`,
+        detail: clip(`link resolves outside the workspace root and was skipped: "${relative(root, link)}"`),
+        fix: "Keep the link inside the workspace or remove it.",
+      })
+    }
+    if (targets.skippedLinks.length > reported.length) {
+      extra.push({
+        id: nextId(),
+        severity: "INFO",
+        kind: "other",
+        evidence: `${first.path}:1`,
+        detail: `${targets.skippedLinks.length - reported.length} more links resolve outside the workspace root and were skipped`,
+        fix: "Keep the links inside the workspace or remove them.",
+      })
+    }
+    files[0] = { ...first, findings: [...first.findings, ...extra] }
   }
 
   const all = files.flatMap((file) => file.findings)

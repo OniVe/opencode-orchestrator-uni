@@ -2,7 +2,7 @@
   "id": "context-lint/v1",
   "schema": {
     "type": "object",
-    "required": ["ok"],
+    "required": ["schema", "verdict", "closing_list", "files", "summary"],
     "properties": {
       "schema": { "type": "string", "const": "context-lint/v1" },
       "ok": { "type": "boolean" },
@@ -10,10 +10,10 @@
       "closing_list": { "type": "array", "items": { "type": "string" } },
       "truncated": { "type": "boolean" },
       "files": {
-        "type": ["array", "number"],
+        "type": "array",
         "items": {
           "type": "object",
-          "required": ["path", "kind", "lines", "words", "chars", "tokens_est", "findings"],
+          "required": ["path", "kind", "lines", "words", "tokens_est", "findings"],
           "properties": {
             "path": { "type": "string" },
             "kind": { "type": "string", "enum": ["agents", "spec", "claude", "other"] },
@@ -52,12 +52,7 @@
           }
         }
       },
-      "summary": { "type": "string" },
-      "code": { "type": "string" },
-      "message": { "type": "string" },
-      "path": { "type": "string" },
-      "bytes": { "type": "number" },
-      "max": { "type": "number" }
+      "summary": { "type": "string" }
     }
   }
 }

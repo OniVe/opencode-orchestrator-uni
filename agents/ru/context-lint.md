@@ -18,15 +18,15 @@ permissions:
 
 Если доступен инструмент `orch_uni_context_lint`, сначала вызови его по целевому пути; используй его findings как детерминированную базу, затем добавь семантические проверки (конфликты, тестируемость, intent SPEC).
 
-Коды инструмента: `E_NO_FILES` → verdict=fail, один элемент `files` с `path: "-"`, `kind: "other"` и finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail с `CTX-000` (kind=unverified_command или other), в evidence — код и путь из ошибки. Ошибка — типизированный payload `{ok: false, code, message, path?, bytes?, files?, max?}`, а не отчёт. `truncated: true` означает, что список находок усечён: MINOR/INFO могут отсутствовать, а при переполнении MAJOR остаётся MAJOR-маркер `truncated` в `closing_list` — отметь это в `summary`.
+Коды инструмента: `E_NO_FILES` → verdict=fail, один элемент `files` с `path: "-"`, `kind: "other"` и finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail с `CTX-000` (kind=unverified_command или other), в evidence — код и путь из ошибки. Ошибка — не отчёт: она объявляет `schema: "context-lint-failure/v1"` и валидируется только по этой схеме (`{ok: false, code, message, path?, bytes?, files?, max?}`). `truncated: true` означает, что список находок усечён: MINOR/INFO могут отсутствовать, а при переполнении MAJOR остаётся MAJOR-маркер `truncated` в `closing_list` — отметь это в `summary`.
 
-Ничего не пропускается молча: цель ссылки вне корня workspace, каталог глубже лимита 3 и незакрытый фенс отдаются INFO-находками (`was not checked`, `depth limit 3`, `the rest of the file is masked`), поэтому pass не скрывает непроверенную область.
+Ничего не пропускается молча: цель ссылки вне корня workspace, каталог глубже лимита 3, пропущенный обходом junction и незакрытые fence, `<pre>` или HTML-комментарий отдаются INFO-находками (`was not checked`, `was skipped`, `depth limit 3`, `the rest of the file is masked`), поэтому pass не скрывает непроверенную область.
 
 Потолки → `truncated`: кандидаты-ссылки → MAJOR-маркер; находки на файл/глобально → один маркер (MAJOR, если выпал MAJOR, иначе INFO); у дублей внутреннего потолка нет. Все строки сканируются целиком: потолка и маркера длинной строки нет. `max_files` отказывает рано — обход останавливается на первом файле выше лимита, а не разворачивает всё дерево. Любой потолок ставит `truncated: true` и называется в `summary`.
 
 AGENTS.md — проверь:
 1. Бюджет: >200 строк или >2500 токенов — MAJOR; 150–200 строк — MINOR.
-2. Команды: есть install/build/test/one test/lint/run, с флагами и рабочей директорией; команда считается только в коде, таблице задач или секции Commands, а `make` требует цели (`make build`), поэтому проза «Make sure …» — не команда; пересказ очевидного (`npm test`) — MINOR.
+2. Команды: есть install/build/test/one test/lint/run, с флагами и рабочей директорией; команда считается только в коде, таблице задач или секции Commands, HTML-комментарий командой не является (`<!-- npm install -->` не в счёт), а `make` требует цели (`make build`), поэтому проза «Make sure …» — не команда; пересказ очевидного (`npm test`) — MINOR.
 3. Границы: generated/vendor/prod/secrets/migrations — иначе MINOR.
 4. Приоритеты и область действия — иначе MINOR.
 5. Vague-фразы: clean, best practices, robust, «аккуратно», «правильно», «оптимально» — MINOR; три и более различных термина — MAJOR (инструмент считает различные термины).

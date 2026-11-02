@@ -119,10 +119,12 @@ invariant that is `violated` without a counterexample, an uncovered mandatory
 `lines_checked` line, `meta`'s `verdict` diverging from its `gate`, and
 `redteam`'s `closing_list`/`verdict` invariants.
 
-The eight schemas ship as `schemas/*.json` and are derived **strictly** from the SGR
+The schemas ship as `schemas/*.json` and are derived **strictly** from the SGR
 sections of `agents/*.md`, which stay the source of truth: the test suite parses every
 agent's SGR template and fails when a prompt field or enum value is not accepted by its
-schema. Schemas set `additionalProperties` permissively — agents may add fields of their
+schema. `context-lint-failure/v1` is the typed failure envelope of
+`orch_uni_context_lint` — it has no agent template and is never a report. Schemas set
+`additionalProperties` permissively — agents may add fields of their
 own (`verdict_label`, `check`, …).
 
 ### `orch_uni_context_lint`
@@ -184,13 +186,15 @@ per-level figures in [`docs/`](./docs) are authoring guidance, not separate tool
 documented ceiling instead.
 Typed failures: `E_INPUT`, `E_NOT_FOUND`, `E_NO_FILES`, `E_IO`, `E_ABORTED`,
 `E_LIMIT_FILE`, `E_LIMIT_FILES`, `E_OUT_OF_ROOT`.
-A failure is a typed payload `{ok:false, code, message, path?, bytes?, files?, max?}`; a report is
-`{schema, ok, verdict, closing_list, files, summary, truncated?}` and every file carries `lines`,
+A failure is a typed payload `{schema:"context-lint-failure/v1", ok:false, code, message, path?, bytes?, files?, max?}`
+that validates only against `context-lint-failure/v1`; a report is
+`{schema:"context-lint/v1", ok, verdict, closing_list, files, summary, truncated?}` and every file carries `lines`,
 `words`, `chars` and `tokens_est` (tokens are estimated as Cyrillic/3 + the rest/4). A directory
 target is scanned to depth 3, and `max_files` refuses early: the walk stops at the first file above
-the limit. Nothing is dropped silently: a directory below the depth limit, an unclosed fence and a
-link target that resolves outside the workspace root are INFO findings, so a `pass` never hides an
-unchecked region. Commands count only inside code, a Task table or a Commands section, and `make`
+the limit. Nothing is dropped silently: a directory below the depth limit, a link or junction that
+resolves outside the workspace root, and an unclosed fence, `<pre>` or HTML comment are INFO
+findings, so a `pass` never hides an unchecked region. Commands count only inside code, a Task table
+or a Commands section, an HTML comment such as `<!-- npm install -->` is not a command, and `make`
 needs a target, so prose such as "Make sure …" is not a command. A scan started at the root also
 picks up fixture trees such as `eval/`; pass an explicit path for the canonical files.
 
