@@ -278,3 +278,27 @@ describe("package identity", () => {
     expect(violations).toEqual([])
   })
 })
+
+// R6-5: both READMEs state the same shipped test count and the same file count,
+// so a round that adds tests cannot update one locale and forget the other.
+describe("README test count", () => {
+  test("both READMEs agree on the shipped test count and 9 files", async () => {
+    const guards = [
+      { name: "README.md", pattern: /the shipped suite \((\d+) tests in (\d+) files/ },
+      { name: "README.ru.md", pattern: /поставляемый набор \((\d+) тест(?:ов|а)? в (\d+) файлах/ },
+    ]
+    const counts: { readonly name: string; readonly tests: number; readonly files: number }[] = []
+    for (const { name, pattern } of guards) {
+      const readme = await readFile(path.join(KIT_ROOT, name), "utf8")
+      const match = pattern.exec(readme)
+      expect(match, `${name} declares the shipped test count`).not.toBeNull()
+      counts.push({ name, tests: Number(match?.[1]), files: Number(match?.[2]) })
+    }
+    const english = counts[0]
+    const russian = counts[1]
+    expect(english.tests).toBeGreaterThan(0)
+    expect(english.tests).toBe(russian.tests)
+    expect(english.files).toBe(9)
+    expect(russian.files).toBe(9)
+  })
+})
