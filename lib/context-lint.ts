@@ -845,10 +845,12 @@ function scanLinkTargets(
         index = open + 2
         continue
       }
-      // A later `](` before this `>` means the `>` belongs to a later link:
-      // the current angle is unclosed and must not swallow that link.
-      const nextOpen = line.indexOf("](", cursor + 1)
-      if (nextOpen >= 0 && nextOpen < angleNext) {
+      // An unescaped `<` inside the angle destination makes it malformed
+      // (CommonMark forbids `<` there). A later link's `<...>` produces one;
+      // a literal `](` in a valid destination does not. Recover at the next
+      // `](` instead of swallowing the later link.
+      const nestedOpen = line.indexOf("<", cursor + 1)
+      if (nestedOpen >= 0 && nestedOpen < angleNext) {
         index = open + 2
         continue
       }
