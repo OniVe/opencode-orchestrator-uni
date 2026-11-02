@@ -2,7 +2,7 @@
   "id": "context-lint-failure/v1",
   "schema": {
     "type": "object",
-    "required": ["ok", "code", "message"],
+    "required": ["schema", "ok", "code", "message"],
     "properties": {
       "schema": { "type": "string", "const": "context-lint-failure/v1" },
       "ok": { "type": "boolean", "const": false },

@@ -103,6 +103,8 @@ export type ContextLintCode =
   | "E_OUT_OF_ROOT"
 
 export interface ContextLintFailure {
+  /** Schema id of this payload, so a failure is self-describing like a report. */
+  readonly schema: "context-lint-failure/v1"
   readonly ok: false
   readonly code: ContextLintCode
   readonly message: string
@@ -427,6 +429,11 @@ async function collectFiles(
       return true
     }
     if (entry.isSymbolicLink()) {
+      // A junction/symlink with a skipped name (`node_modules`, `dist`, `vendor`, …)
+      // is excluded by name, exactly like a real directory of that name: it is not
+      // reported as an out-of-root link, because the name already says it is not a
+      // workspace source (on Windows/pnpm `node_modules` is a junction by default).
+      if (SKIP.has(entry.name)) continue
       let info: Awaited<ReturnType<typeof stat>>
       try {
         info = await stat(full)
@@ -478,6 +485,7 @@ async function resolveTargets(
   if (target !== undefined && !isInside(rootAbsolute, start)) {
     return {
       ok: false,
+      schema: "context-lint-failure/v1",
       code: "E_OUT_OF_ROOT",
       message: `target is outside the workspace root: ${start}`,
       path: start,
@@ -487,7 +495,7 @@ async function resolveTargets(
   try {
     info = await stat(start)
   } catch {
-    return { ok: false, code: "E_NOT_FOUND", message: `target not found: ${start}` }
+    return { ok: false, schema: "context-lint-failure/v1", code: "E_NOT_FOUND", message: `target not found: ${start}` }
   }
   // Authoritative containment: a symlink/junction may lexically look in-root and
   // still resolve outside it.
@@ -495,6 +503,7 @@ async function resolveTargets(
   if (!isInside(realRoot, resolvedStart)) {
     return {
       ok: false,
+      schema: "context-lint-failure/v1",
       code: "E_OUT_OF_ROOT",
       message: `target resolves outside the workspace root: ${start} -> ${resolvedStart}`,
       path: start,
@@ -502,7 +511,12 @@ async function resolveTargets(
   }
   if (info.isFile()) return { files: [start], skippedDepth: 0, skippedLinks: [] }
   if (!info.isDirectory())
-    return { ok: false, code: "E_INPUT", message: `target is neither a file nor a directory: ${start}` }
+    return {
+      ok: false,
+      schema: "context-lint-failure/v1",
+      code: "E_INPUT",
+      message: `target is neither a file nor a directory: ${start}`,
+    }
   const state: CollectState = { files: [], maxFiles, skippedDepth: 0, skippedLinks: [] }
   try {
     await collectFiles(start, realRoot, signal, state)
@@ -510,6 +524,7 @@ async function resolveTargets(
     if (error instanceof FilesLimitExceeded) {
       return {
         ok: false,
+        schema: "context-lint-failure/v1",
         code: "E_LIMIT_FILES",
         message: `more than ${maxFiles} files under ${start}; limit ${maxFiles}`,
         path: start,
@@ -518,10 +533,11 @@ async function resolveTargets(
       }
     }
     if (error instanceof ScanAborted || signal?.aborted) {
-      return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+      return { ok: false, schema: "context-lint-failure/v1", code: "E_ABORTED", message: "context lint aborted" }
     }
     return {
       ok: false,
+      schema: "context-lint-failure/v1",
       code: "E_IO",
       message: `cannot read ${start}: ${error instanceof Error ? error.message : String(error)}`,
     }
@@ -2129,11 +2145,16 @@ function normalizedLines(text: string): { readonly lines: string[]; readonly bod
  */
 export async function lintContext(options: ContextLintOptions): Promise<ContextLintOutcome> {
   if (typeof options !== "object" || options === null || typeof options.root !== "string") {
-    return { ok: false, code: "E_INPUT", message: "root must be a string" }
+    return { ok: false, schema: "context-lint-failure/v1", code: "E_INPUT", message: "root must be a string" }
   }
   if (options.target !== undefined && (typeof options.target !== "string" || options.target.trim() === "")) {
     // The tool rejects `path: ""` as E_INPUT; the library keeps the same contract.
-    return { ok: false, code: "E_INPUT", message: "target must be a non-empty string" }
+    return {
+      ok: false,
+      schema: "context-lint-failure/v1",
+      code: "E_INPUT",
+      message: "target must be a non-empty string",
+    }
   }
   const maxLines = options.maxLines ?? 200
   const maxTokens = options.maxTokens ?? 2500
@@ -2152,17 +2173,28 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     ["maxTotalFindings", maxTotalFindings],
   ] as const) {
     if (!Number.isFinite(value) || value <= 0) {
-      return { ok: false, code: "E_INPUT", message: `${name} must be a positive number` }
+      return {
+        ok: false,
+        schema: "context-lint-failure/v1",
+        code: "E_INPUT",
+        message: `${name} must be a positive number`,
+      }
     }
   }
-  if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+  if (options.signal?.aborted)
+    return { ok: false, schema: "context-lint-failure/v1", code: "E_ABORTED", message: "context lint aborted" }
 
   const root = path.resolve(options.root)
   const realRoot = await canonical(root)
   const targets = await resolveTargets(root, options.target, maxFiles, realRoot, options.signal)
   if ("ok" in targets) return targets
   if (targets.files.length === 0) {
-    return { ok: false, code: "E_NO_FILES", message: "no AGENTS.md, SPEC.md or CLAUDE.md found in the target" }
+    return {
+      ok: false,
+      schema: "context-lint-failure/v1",
+      code: "E_NO_FILES",
+      message: "no AGENTS.md, SPEC.md or CLAUDE.md found in the target",
+    }
   }
 
   interface ScannedFile {
@@ -2177,13 +2209,15 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
   }
   const scanned: ScannedFile[] = []
   for (const absolute of targets.files) {
-    if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+    if (options.signal?.aborted)
+      return { ok: false, schema: "context-lint-failure/v1", code: "E_ABORTED", message: "context lint aborted" }
     let size: number
     try {
       size = (await stat(absolute)).size
     } catch (error) {
       return {
         ok: false,
+        schema: "context-lint-failure/v1",
         code: "E_IO",
         message: `cannot read ${absolute}: ${error instanceof Error ? error.message : String(error)}`,
       }
@@ -2196,6 +2230,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     if (size > maxFileBytes) {
       return {
         ok: false,
+        schema: "context-lint-failure/v1",
         code: "E_LIMIT_FILE",
         message: `${relative(root, absolute)} is ${size} bytes; limit ${maxFileBytes}`,
         path: relative(root, absolute),
@@ -2209,6 +2244,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
       if ("bytes" in read) {
         return {
           ok: false,
+          schema: "context-lint-failure/v1",
           code: "E_LIMIT_FILE",
           message: `${relative(root, absolute)} grew past the ${maxFileBytes}-byte limit while it was read`,
           path: relative(root, absolute),
@@ -2220,13 +2256,15 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     } catch (error) {
       return {
         ok: false,
+        schema: "context-lint-failure/v1",
         code: "E_IO",
         message: `cannot read ${absolute}: ${error instanceof Error ? error.message : String(error)}`,
       }
     }
     // The read itself is not abortable here; a caller that aborted while a 2 MB
     // file was being read must still get E_ABORTED rather than a full report.
-    if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+    if (options.signal?.aborted)
+      return { ok: false, schema: "context-lint-failure/v1", code: "E_ABORTED", message: "context lint aborted" }
     const { lines, body } = normalizedLines(text)
     // Requirements, AC ids and non-goals read the fence mask: inline code keeps
     // its text, so `AC1.1`, `R1` and `test_export` in backticks still parse.
@@ -2259,7 +2297,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
       const links = await checkLinks(file, masked, root, realRoot, absolute, sink, options.signal)
       linksTruncated = links.truncated
       if (links.aborted || options.signal?.aborted) {
-        return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+        return { ok: false, schema: "context-lint-failure/v1", code: "E_ABORTED", message: "context lint aborted" }
       }
       await checkPlaceholders(file, lines, masked, sink, options.signal)
       checkFirstLines(file, lines, sink)
@@ -2270,10 +2308,12 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     } catch (error) {
       // A section check yields every `SECTION_ABORT_LINES` lines; an abort that
       // fired during that yield must win over a full verdict.
-      if (error instanceof ScanAborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+      if (error instanceof ScanAborted)
+        return { ok: false, schema: "context-lint-failure/v1", code: "E_ABORTED", message: "context lint aborted" }
       throw error
     }
-    if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
+    if (options.signal?.aborted)
+      return { ok: false, schema: "context-lint-failure/v1", code: "E_ABORTED", message: "context lint aborted" }
     // Markers are appended directly after the checks: they never displace a kept
     // finding. The MAJOR marker is itself MAJOR, so it is closed with the rest.
     if (linksTruncated) {
