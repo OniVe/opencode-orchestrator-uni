@@ -1620,6 +1620,129 @@ describe("R3-B link loop bounds", () => {
   })
 })
 
+// R8-1/R8-2/R8-3: the link scanner is a forward state machine (linear, no
+// stack, title-aware) and HTML close tags tolerate whitespace before `>`.
+describe("R8 link scanner and HTML close tags", () => {
+  const brokenLinks = (result: ContextLintOutcome): string[] =>
+    findingsOf(result)
+      .filter((finding) => finding.kind === "broken_link")
+      .map((finding) => finding.detail)
+
+  test("closed `](`+`)` lines at 5k/10k/20k/40k stay under 200 ms each", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "docs/keep.md", "# keep")
+      for (const size of [5_000, 10_000, 20_000, 40_000]) {
+        await write(root, "AGENTS.md", `${VALID_AGENTS}\n${"](".repeat(size)}${")".repeat(size)}\n`)
+        const started = performance.now()
+        const result = await lintContext({ root, target: "AGENTS.md", maxLines: 200_000, maxTokens: 5_000_000 })
+        const elapsed = performance.now() - started
+        expect(result.ok).toBe(true)
+        expect(elapsed).toBeLessThan(200)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("40k unclosed `](` and an 80k `<` line stay under 200 ms", async () => {
+    const root = await temporary()
+    try {
+      for (const line of ["](".repeat(40_000), "<".repeat(80_000)]) {
+        await write(root, "AGENTS.md", `${VALID_AGENTS}\n${line}\n`)
+        const started = performance.now()
+        const result = await lintContext({ root, target: "AGENTS.md", maxLines: 200_000, maxTokens: 5_000_000 })
+        const elapsed = performance.now() - started
+        expect(result.ok).toBe(true)
+        expect(elapsed).toBeLessThan(200)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("titles hide `)` and `](`; escaped quotes and angle destinations parse", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "docs/keep.md", "# keep")
+      await write(
+        root,
+        "AGENTS.md",
+        [
+          VALID_AGENTS,
+          "[a](missing.md 'a)b')",
+          '[b](missing.md "a)b")',
+          "[c](missing.md 'a](b')",
+          "[d](docs/keep.md 'a](b) c')",
+          '[e](docs/keep.md "it\\"s) ok")',
+          "[f](<docs/keep.md>)",
+          "[g](<docs/missing-angle.md>)",
+        ].join("\n"),
+      )
+      const result = await lintContext({ root, target: "AGENTS.md" })
+      const broken = brokenLinks(result)
+      expect(broken.filter((detail) => detail.includes('"missing.md"')).length).toBe(3)
+      expect(broken.filter((detail) => detail.includes("docs/keep.md")).length).toBe(0)
+      expect(broken.filter((detail) => detail.includes("missing-angle.md")).length).toBe(1)
+      expect(broken.length).toBe(4)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("an already-aborted signal is E_ABORTED before scanning", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n[x](docs/missing.md)\n`)
+      const controller = new AbortController()
+      controller.abort()
+      const result = await lintContext({ root, target: "AGENTS.md", signal: controller.signal })
+      expect(result).toMatchObject({ ok: false, code: "E_ABORTED" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("`</code >` and `</pre >` close on whitespace; the exact close still works", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        [
+          VALID_AGENTS,
+          "See <code>x</code > [code](missing-code.md).",
+          "See <pre>x</pre > [pre](missing-pre.md).",
+          "See <CODE>x</CODE\t> [upper](missing-upper.md).",
+          "See <code>x</code> [exact](missing-exact.md).",
+        ].join("\n"),
+      )
+      const result = await lintContext({ root, target: "AGENTS.md" })
+      const broken = brokenLinks(result)
+      for (const target of ["missing-code.md", "missing-pre.md", "missing-upper.md", "missing-exact.md"]) {
+        expect(broken.some((detail) => detail.includes(target))).toBe(true)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("non-goals: a whitespace-closed `<code >` span is content, so `a, b` is one item", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        ["# SPEC", "", "## Goal", "", "x", "", "Non-goals: <code>a, b</code >, c", ""].join("\n"),
+      )
+      const result = await lintContext({ root, target: "SPEC.md" })
+      expect(findingsOf(result).some((finding) => finding.detail === "2 non-goals; expected 3–7 items")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // R3-C: one global cap over every finding, MAJOR first, overflow marked and closed.
 describe("R3-C global finding cap", () => {
   test("500 files with 101 MAJOR each stay bounded and keep a MAJOR marker in closing_list", async () => {
@@ -2838,14 +2961,26 @@ describe("N36 cap markers are additional and honest", () => {
       const findings = result.files[0]?.findings ?? []
       const linkMarker = findings.find((finding) => finding.detail.startsWith("link candidates truncated"))
       const findingsMarker = findings.find((finding) => finding.detail.startsWith("findings truncated at 2 MAJOR"))
+      expect(result.verdict).toBe("fail")
+      expect(result.files[0]?.truncated).toBe(true)
       expect(linkMarker?.severity).toBe("MAJOR")
+      expect(linkMarker?.evidence).toBe("AGENTS.md:1")
       expect(findingsMarker?.severity).toBe("MAJOR")
       // Two kept broken links plus two markers: markers do not consume the
       // `max_findings` budget and are not counted as findings.
       expect(findings.filter((finding) => finding.kind === "broken_link").length).toBe(2)
       expect(findings.length).toBe(4)
+      const markers = findings.filter(
+        (finding) =>
+          finding.detail.startsWith("link candidates truncated") || finding.detail.startsWith("findings truncated"),
+      )
+      expect(markers.length).toBe(2)
       expect(result.closing_list).toContain(linkMarker?.id ?? "")
       expect(result.closing_list).toContain(findingsMarker?.id ?? "")
+      expect(result.closing_list.length).toBe(4)
+      expect(result.closing_list).toEqual(
+        findings.filter((finding) => finding.severity === "MAJOR").map((finding) => finding.id),
+      )
       expect(result.truncated).toBe(true)
       expect(findingsMarker?.fix).toContain("same prefix")
       for (const marker of [linkMarker, findingsMarker]) expect(marker?.fix).not.toContain("next run")

@@ -145,8 +145,9 @@ junction that resolves outside the root is skipped, and such a target is refused
 never a rule: structural checks (commands, boundaries, verification) read the full mask,
 while requirements, AC ids and non-goals read the fence mask. Link checks are capped per
 file at 50 000 candidates and yield to timers, so an abort wins; 2001 links are checked
-normally, and a capped candidate list is an incomplete result (`truncated: true` plus a
-MAJOR `link candidates truncated` marker in `closing_list`), so it can never pass. Broken
+normally, 50 000 valid links still pass, and the 50 001st candidate makes the list
+incomplete (`truncated: true` plus a MAJOR `link candidates truncated` marker in
+`closing_list`), so a capped run can never pass. Broken
 links have no separate per-file cap: the finding caps bound the output and report the
 overflow. A line is scanned however long it is: the link scanner and the placeholder regex
 are linear, so a 4100-character line is checked like any other and a broken link or
@@ -380,7 +381,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (276 tests in 9 files, up from
+`npm test` scans only `./test/` — the shipped suite (282 tests in 9 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`
