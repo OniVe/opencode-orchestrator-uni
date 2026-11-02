@@ -1749,6 +1749,82 @@ describe("R8 link scanner and HTML close tags", () => {
   })
 })
 
+// N52/N54: an unclosed angle or title rejects only its own candidate — a later
+// link on the same line is still checked — and an angle destination may carry
+// raw spaces, which are percent-encoded before the existence probe.
+describe("N52/N54 unclosed link recovery and raw-space angle targets", () => {
+  const brokenLinks = (result: ContextLintOutcome): string[] =>
+    findingsOf(result)
+      .filter((finding) => finding.kind === "broken_link")
+      .map((finding) => finding.detail)
+
+  test("unclosed angle and title recover, so later valid links are checked", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        [
+          VALID_AGENTS,
+          "[v](<missing.md [w](missing2.md)",
+          "[v](missing.md 'open [w](missing2.md)",
+          "[a](<gone.md [b](missing3.md) [c](missing4.md)",
+        ].join("\n"),
+      )
+      const broken = brokenLinks(await lintContext({ root, target: "AGENTS.md" }))
+      expect(broken.filter((detail) => detail.includes("missing2.md")).length).toBe(2)
+      expect(broken.filter((detail) => detail.includes("missing3.md")).length).toBe(1)
+      expect(broken.filter((detail) => detail.includes("missing4.md")).length).toBe(1)
+      expect(broken.filter((detail) => detail.includes("gone.md")).length).toBe(0)
+      expect(broken.length).toBe(4)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("angle target with a raw space is broken; existing and %20 targets pass", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "docs/my file.md", "# spaced")
+      await write(
+        root,
+        "AGENTS.md",
+        [
+          VALID_AGENTS,
+          "[v](<missing file.md>)",
+          "[ok](<docs/my file.md>)",
+          "[pad](< docs/my file.md >)",
+          "[enc](docs/my%20file.md)",
+          "[angle](<docs/my%20file.md>)",
+        ].join("\n"),
+      )
+      const broken = brokenLinks(await lintContext({ root, target: "AGENTS.md" }))
+      expect(broken).toEqual(['missing path "missing file.md"'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("40k unclosed angle candidates plus a valid tail stay linear", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        [VALID_AGENTS, `${"[x](<docs/keep.md ".repeat(40_000)}[ok](missing-tail.md)`].join("\n"),
+      )
+      const started = performance.now()
+      const result = await lintContext({ root, target: "AGENTS.md", maxLines: 200_000, maxTokens: 5_000_000 })
+      const elapsed = performance.now() - started
+      expect(result.ok).toBe(true)
+      expect(elapsed, `40k unclosed angle in ${elapsed} ms`).toBeLessThan(2_000)
+      expect(brokenLinks(result)).toEqual(['missing path "missing-tail.md"'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 20_000)
+})
+
 // R3-C: one global cap over every finding, MAJOR first, overflow marked and closed.
 describe("R3-C global finding cap", () => {
   test("500 files with 101 MAJOR each stay bounded and keep a MAJOR marker in closing_list", async () => {

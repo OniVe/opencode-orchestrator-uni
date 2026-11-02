@@ -795,8 +795,13 @@ function isEscapedOpen(line: string, open: number): boolean {
  * `](`. Total work is O(line length): a line of `](` without `)` stops at the
  * end of the first target (break), and closed pairs advance past the `)`.
  * A target is the run up to whitespace or `)` (an escaped `](` is prose),
- * `<…>` strips the angles, and a `'…'`/`"…"` title may contain `)`, `](` and
- * escaped quotes. Unclosed angles, titles or targets are not links.
+ * `<…>` strips the angles (literal spaces are percent-encoded, because an
+ * angle destination may contain them), and a `'…'`/`"…"` title may contain
+ * `)`, `](` and escaped quotes. An unclosed angle or title rejects only its
+ * own candidate and resumes at `open + 2`, so a later valid link on the same
+ * line is still checked; only a non-angle target with no `)` left stops the
+ * scan (no later link can close). The next `>` is cached, so a run of
+ * `](<` without `>` stays linear instead of rescanning to the end.
  * Aborts are checked at the start, at the end and every
  * `LINK_SCAN_ABORT_INTERVAL` candidates.
  */
@@ -808,6 +813,12 @@ function scanLinkTargets(
   const length = line.length
   let index = 0
   let checked = 0
+  // Cached position of the first `>` at or after `angleFrom` (-1: none left).
+  // Candidate cursors only grow, so a found close stays valid until it is
+  // passed and a missing close stays missing; a run of unclosed `](<` costs one
+  // scan to the end, not one per candidate.
+  let angleFrom = -1
+  let angleNext = -1
   if (signal?.aborted) return { targets, aborted: true }
   while (index < length) {
     checked += 1
@@ -824,10 +835,25 @@ function scanLinkTargets(
     let cursor = open + 2
     let target: string
     if (line[cursor] === "<") {
-      const close = line.indexOf(">", cursor + 1)
-      if (close < 0) break
-      target = line.slice(cursor + 1, close)
-      cursor = close + 1
+      if (angleFrom < 0 || (angleNext >= 0 && angleNext < cursor)) {
+        angleFrom = cursor
+        angleNext = line.indexOf(">", cursor + 1)
+      }
+      if (angleNext < 0) {
+        // Unclosed angle: this candidate is not a link, but the rest of the
+        // line may still hold one.
+        index = open + 2
+        continue
+      }
+      // An angle destination may contain raw spaces; encode them so the target
+      // survives `localLinkTarget`'s whitespace rejection and decodes back.
+      // Padding stays trimmed like the non-angle path (the target is trimmed
+      // before the whitespace check there too).
+      target = line
+        .slice(cursor + 1, angleNext)
+        .trim()
+        .replace(/ /g, "%20")
+      cursor = angleNext + 1
     } else {
       const start = cursor
       while (cursor < length && !LINK_WHITESPACE.test(line[cursor]) && line[cursor] !== ")") cursor += 1
@@ -840,7 +866,11 @@ function scanLinkTargets(
     if (after < length && (quote === "'" || quote === '"')) {
       let at = after + 1
       while (at < length && line[at] !== quote) at += line[at] === "\\" ? 2 : 1
-      if (at >= length) break
+      if (at >= length) {
+        // Unclosed title: reject this candidate only; later `](` may be valid.
+        index = open + 2
+        continue
+      }
       after = skipLinkWhitespace(line, at + 1)
     }
     if (after < length && line[after] === ")") {
@@ -861,7 +891,9 @@ function scanLinkTargets(
  *   cannot trigger quadratic backtracking;
  * - at most `MAX_LINK_CANDIDATES` candidates are collected per file; exceeding
  *   the cap returns `truncated: true` and the caller adds one MAJOR marker (the
- *   unverified remainder must never let the verdict pass);
+ *   unverified remainder must never let the verdict pass); the file itself is
+ *   capped at 2 MB, so memory stays bounded by 50k candidate records plus the
+ *   path caches even for pathological link lists (accepted, not streamed);
  * - every `LINK_CHECK_YIELD` candidates the signal is checked and the event
  *   loop is yielded to, so a timer-driven abort can win;
  * - the parent's real path is resolved (and cached) before `existsSync`; an

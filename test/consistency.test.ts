@@ -296,7 +296,7 @@ describe("agent prompt caps match the tool", () => {
 // R6-5/R7-7: both READMEs state the same shipped test count and the same file
 // count, and the English count equals the pinned constant, so a round that adds
 // tests cannot leave both locales stale at the same old number.
-const SHIPPED_TEST_COUNT = 282
+const SHIPPED_TEST_COUNT = 285
 describe("README test count", () => {
   test("both READMEs agree on the shipped test count and 9 files", async () => {
     const guards = [
