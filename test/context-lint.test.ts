@@ -1667,6 +1667,24 @@ describe("R8 link scanner and HTML close tags", () => {
     }
   })
 
+  test("an unclosed angle does not swallow a later angle link", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "docs/keep.md", "# keep")
+      for (const first of ["missing.md", "docs/keep.md"]) {
+        await write(root, "AGENTS.md", `${VALID_AGENTS}\n[v](<${first} [w](<missing2.md>)\n`)
+        const result = await lintContext({ root, target: "AGENTS.md" })
+        expect(result.ok).toBe(true)
+        const broken = result.ok
+          ? result.files[0]?.findings.filter((finding) => finding.kind === "broken_link").map((finding) => finding.detail)
+          : []
+        expect(broken, first).toContain('missing path "missing2.md"')
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("titles hide `)` and `](`; escaped quotes and angle destinations parse", async () => {
     const root = await temporary()
     try {

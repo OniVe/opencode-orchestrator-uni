@@ -845,6 +845,13 @@ function scanLinkTargets(
         index = open + 2
         continue
       }
+      // A later `](` before this `>` means the `>` belongs to a later link:
+      // the current angle is unclosed and must not swallow that link.
+      const nextOpen = line.indexOf("](", cursor + 1)
+      if (nextOpen >= 0 && nextOpen < angleNext) {
+        index = open + 2
+        continue
+      }
       // An angle destination may contain raw spaces; encode them so the target
       // survives `localLinkTarget`'s whitespace rejection and decodes back.
       // Padding stays trimmed like the non-angle path (the target is trimmed
