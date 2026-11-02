@@ -154,6 +154,13 @@ const MAX_LINK_CANDIDATES = 50_000
 const LINK_CHECK_YIELD = 100
 /** Source characters between abort checks inside the linear link scanner. */
 const LINK_SCAN_ABORT_INTERVAL = 1_000
+/**
+ * Upper bound of every link-check cache (parent real paths, target real paths,
+ * probed paths). A pathological file can mention 50k distinct parents/targets;
+ * capping keeps the caches small without changing which links are reported
+ * (a cache miss only costs one extra `realpath`/`existsSync`).
+ */
+const LINK_CACHE_LIMIT = 5_000
 
 const SKIP = new Set(["node_modules", ".git", ".ae", "dist", "build", "target", "vendor"])
 const TARGET_NAME = /^(AGENTS|SPEC|CLAUDE)\.md$/i
@@ -802,14 +809,12 @@ function isEscapedOpen(line: string, open: number): boolean {
  * line is still checked; only a non-angle target with no `)` left stops the
  * scan (no later link can close). The next `>` is cached, so a run of
  * `](<` without `>` stays linear instead of rescanning to the end.
- * Aborts are checked at the start, at the end and every
- * `LINK_SCAN_ABORT_INTERVAL` candidates.
+ * Yields one target at a time instead of collecting a `targets[]` array, so a
+ * single line never materializes every link it contains. Aborts are checked at
+ * the start, at the end and every `LINK_SCAN_ABORT_INTERVAL` candidates; on an
+ * abort the generator stops yielding and the caller sees `signal.aborted`.
  */
-function scanLinkTargets(
-  line: string,
-  signal: AbortSignal | undefined,
-): { readonly targets: readonly string[]; readonly aborted: boolean } {
-  const targets: string[] = []
+function* scanLinkTargets(line: string, signal: AbortSignal | undefined): Generator<string> {
   const length = line.length
   let index = 0
   let checked = 0
@@ -819,11 +824,11 @@ function scanLinkTargets(
   // scan to the end, not one per candidate.
   let angleFrom = -1
   let angleNext = -1
-  if (signal?.aborted) return { targets, aborted: true }
+  if (signal?.aborted) return
   while (index < length) {
     checked += 1
     if (checked >= LINK_SCAN_ABORT_INTERVAL) {
-      if (signal?.aborted) return { targets, aborted: true }
+      if (signal?.aborted) return
       checked = 0
     }
     const open = line.indexOf("](", index)
@@ -883,14 +888,13 @@ function scanLinkTargets(
       after = skipLinkWhitespace(line, at + 1)
     }
     if (after < length && line[after] === ")") {
-      targets.push(target)
+      yield target
       index = after + 1
     } else {
       index = open + 2
     }
   }
-  if (signal?.aborted) return { targets, aborted: true }
-  return { targets, aborted: false }
+  if (signal?.aborted) return
 }
 
 /**
@@ -898,18 +902,24 @@ function scanLinkTargets(
  * - the parser is a single forward state machine with no stack and no
  *   per-candidate scan to the end of the line, so `](` without a closing `)`
  *   cannot trigger quadratic backtracking;
- * - at most `MAX_LINK_CANDIDATES` candidates are collected per file; exceeding
- *   the cap returns `truncated: true` and the caller adds one MAJOR marker (the
- *   unverified remainder must never let the verdict pass); the file itself is
- *   capped at 2 MB, so memory stays bounded by 50k candidate records plus the
- *   path caches even for pathological link lists (accepted, not streamed);
+ * - targets are consumed one at a time from the generator and resolved inline:
+ *   no `candidates[]` array and no per-candidate record survive, so memory does
+ *   not grow with the number of links. At most `MAX_LINK_CANDIDATES` candidates
+ *   are counted per file; exceeding the cap returns `truncated: true` and the
+ *   caller adds one MAJOR marker (the unverified remainder must never let the
+ *   verdict pass); the file itself is capped at 2 MB, so even a pathological
+ *   50k-link list keeps only the current line's dedupe set plus the bounded
+ *   path caches;
  * - every `LINK_CHECK_YIELD` candidates the signal is checked and the event
- *   loop is yielded to, so a timer-driven abort can win;
+ *   loop is yielded to, and `signal.aborted` is checked per line before and
+ *   after the generator, so a timer-driven abort wins inside a long line too;
  * - the parent's real path is resolved (and cached) before `existsSync`; an
  *   unknown or out-of-root parent is skipped, so a junction pointing outside
  *   the root is never probed and never reported as a broken link; the real path
  *   of an existing target is cached as well, so 20k anchors to one file cost
- *   one `realpath`;
+ *   one `realpath`. Every cache keeps at most `LINK_CACHE_LIMIT` entries, so a
+ *   hostile list of 50k distinct parents/targets cannot grow them without
+ *   bound (a miss costs one extra probe, never a wrong finding);
  * There is no per-file cap on reported broken links: the finding sink and the
  * global cap replace overflow with a MAJOR marker instead of dropping MAJORs.
  */
@@ -922,97 +932,108 @@ async function checkLinks(
   sink: FindingSink,
   signal: AbortSignal | undefined,
 ): Promise<{ readonly aborted: boolean; readonly truncated: boolean }> {
-  const candidates: { readonly target: string; readonly line: number }[] = []
-  let candidatesTruncated = false
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]
-    const scanned = scanLinkTargets(line, signal)
-    if (scanned.aborted) return { aborted: true, truncated: candidatesTruncated }
-    for (const raw of scanned.targets) {
-      const target = localLinkTarget(raw)
-      if (target === undefined) continue
-      if (candidates.length >= MAX_LINK_CANDIDATES) {
-        candidatesTruncated = true
-        break
-      }
-      candidates.push({ target, line: index + 1 })
-    }
-    if (candidatesTruncated) break
-  }
   const parentRealPaths = new Map<string, string | undefined>()
   const targetRealPaths = new Map<string, string | undefined>()
   const probed = new Map<string, boolean>()
-  const seen = new Set<string>()
-  for (let index = 0; index < candidates.length; index += 1) {
-    if (index % LINK_CHECK_YIELD === 0) {
-      if (signal?.aborted) return { aborted: true, truncated: candidatesTruncated }
-      // A macrotask boundary lets setTimeout-driven abort timers fire; microtasks
-      // alone would starve them.
-      await new Promise<void>((resolve) => setImmediate(resolve))
-      if (signal?.aborted) return { aborted: true, truncated: candidatesTruncated }
-    }
-    const { target, line } = candidates[index]
-    const key = `${line}:${target}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    const resolved = target.startsWith("/")
-      ? path.join(root, target.slice(1))
-      : path.resolve(path.dirname(absolute), target)
-    // Only local, in-root paths reach the filesystem: a path outside the
-    // workspace is not ours to check, and a network path would block on SMB.
-    if (!isInside(root, resolved)) continue
-    const parent = path.dirname(resolved)
-    let parentReal = parentRealPaths.get(parent)
-    if (!parentRealPaths.has(parent)) {
-      parentReal = await existingRealPath(parent)
-      if (parentReal === undefined) {
-        // A missing suffix cannot contain a junction: resolve the nearest
-        // existing ancestor instead and probe only if it is still in-root.
-        let ancestor = parent
-        while (true) {
-          const up = path.dirname(ancestor)
-          if (up === ancestor) break
-          ancestor = up
-          if (!isInside(root, ancestor)) break
-          const real = await existingRealPath(ancestor)
-          if (real !== undefined) {
-            parentReal = real
-            break
+  let candidates = 0
+  let sinceYield = 0
+  let candidatesTruncated = false
+  for (let index = 0; index < lines.length; index += 1) {
+    // N56: a timer abort must win at least between lines even if the current
+    // line is short.
+    if (signal?.aborted) return { aborted: true, truncated: candidatesTruncated }
+    const line = lines[index]
+    // Fast path: without `](` the scanner yields nothing, so most prose lines
+    // never allocate a generator or a dedupe set.
+    if (!line.includes("](")) continue
+    // Dedupe is per line (`line:target` before): a repeated target on one line
+    // is checked once, and the set dies with the line. Created on first use so
+    // a link-free line allocates nothing.
+    let seen: Set<string> | undefined
+    for (const raw of scanLinkTargets(line, signal)) {
+      const target = localLinkTarget(raw)
+      if (target === undefined) continue
+      if (candidates >= MAX_LINK_CANDIDATES) {
+        candidatesTruncated = true
+        break
+      }
+      candidates += 1
+      sinceYield += 1
+      if (sinceYield >= LINK_CHECK_YIELD) {
+        sinceYield = 0
+        if (signal?.aborted) return { aborted: true, truncated: candidatesTruncated }
+        // A macrotask boundary lets setTimeout-driven abort timers fire; microtasks
+        // alone would starve them.
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        if (signal?.aborted) return { aborted: true, truncated: candidatesTruncated }
+      }
+      if (seen?.has(target)) continue
+      seen ??= new Set<string>()
+      seen.add(target)
+      const resolved = target.startsWith("/")
+        ? path.join(root, target.slice(1))
+        : path.resolve(path.dirname(absolute), target)
+      // Only local, in-root paths reach the filesystem: a path outside the
+      // workspace is not ours to check, and a network path would block on SMB.
+      if (!isInside(root, resolved)) continue
+      const parent = path.dirname(resolved)
+      let parentReal = parentRealPaths.get(parent)
+      if (!parentRealPaths.has(parent)) {
+        parentReal = await existingRealPath(parent)
+        if (parentReal === undefined) {
+          // A missing suffix cannot contain a junction: resolve the nearest
+          // existing ancestor instead and probe only if it is still in-root.
+          let ancestor = parent
+          while (true) {
+            const up = path.dirname(ancestor)
+            if (up === ancestor) break
+            ancestor = up
+            if (!isInside(root, ancestor)) break
+            const real = await existingRealPath(ancestor)
+            if (real !== undefined) {
+              parentReal = real
+              break
+            }
           }
         }
+        if (parentRealPaths.size < LINK_CACHE_LIMIT) parentRealPaths.set(parent, parentReal)
       }
-      parentRealPaths.set(parent, parentReal)
-    }
-    // Unknown or out-of-root parent: do not probe the child (a junction could
-    // otherwise pull `existsSync` outside the workspace).
-    if (parentReal === undefined || !isInside(realRoot, parentReal)) continue
-    // The probe itself is cached per resolved path: 20k anchors to one file are
-    // one probe; a broken target repeated on many lines is still reported per
-    // candidate line below.
-    let exists = probed.get(resolved)
-    if (exists === undefined) {
-      exists = existsSync(resolved)
-      probed.set(resolved, exists)
-    }
-    if (exists) {
-      // An existing symlink/junction inside the root can still resolve outside
-      // it; such a target is not ours to check either. The real path is cached:
-      // a list of 20k anchors to one file must not cost 20k `realpath` calls.
-      let targetReal = targetRealPaths.get(resolved)
-      if (!targetRealPaths.has(resolved)) {
-        targetReal = await existingRealPath(resolved)
-        targetRealPaths.set(resolved, targetReal)
+      // Unknown or out-of-root parent: do not probe the child (a junction could
+      // otherwise pull `existsSync` outside the workspace).
+      if (parentReal === undefined || !isInside(realRoot, parentReal)) continue
+      // The probe itself is cached per resolved path: 20k anchors to one file are
+      // one probe; a broken target repeated on many lines is still reported per
+      // candidate line below. The cache keeps at most LINK_CACHE_LIMIT entries,
+      // so 50k distinct broken targets are not retained.
+      let exists = probed.get(resolved)
+      if (exists === undefined) {
+        exists = existsSync(resolved)
+        if (probed.size < LINK_CACHE_LIMIT) probed.set(resolved, exists)
       }
-      if (targetReal === undefined || !isInside(realRoot, targetReal)) continue
-      continue
+      if (exists) {
+        // An existing symlink/junction inside the root can still resolve outside
+        // it; such a target is not ours to check either. The real path is cached:
+        // a list of 20k anchors to one file must not cost 20k `realpath` calls.
+        let targetReal = targetRealPaths.get(resolved)
+        if (!targetRealPaths.has(resolved)) {
+          targetReal = await existingRealPath(resolved)
+          if (targetRealPaths.size < LINK_CACHE_LIMIT) targetRealPaths.set(resolved, targetReal)
+        }
+        if (targetReal === undefined || !isInside(realRoot, targetReal)) continue
+        continue
+      }
+      sink.push({
+        severity: "MAJOR",
+        kind: "broken_link",
+        evidence: `${file.path}:${index + 1}`,
+        detail: clip(`missing path "${target}"`),
+        fix: "Fix the link or remove it.",
+      })
     }
-    sink.push({
-      severity: "MAJOR",
-      kind: "broken_link",
-      evidence: `${file.path}:${line}`,
-      detail: clip(`missing path "${target}"`),
-      fix: "Fix the link or remove it.",
-    })
+    // The generator stops on its own abort check (every
+    // LINK_SCAN_ABORT_INTERVAL characters); surface that as an abort here.
+    if (signal?.aborted) return { aborted: true, truncated: candidatesTruncated }
+    if (candidatesTruncated) break
   }
   return { aborted: false, truncated: candidatesTruncated }
 }

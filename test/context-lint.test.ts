@@ -1546,7 +1546,9 @@ describe("R3-B link loop bounds", () => {
       const started = Date.now()
       const result = await lintContext({ root, target: "AGENTS.md", maxLines: 100_000, maxTokens: 1_000_000 })
       const elapsed = Date.now() - started
-      expect(elapsed).toBeLessThan(5000)
+      // N54: measured ~1.4-1.5 s standalone (bun 1.4.2, Windows) for 20k distinct
+      // broken targets after the streaming rewrite; 3000 ms keeps a ~2x margin.
+      expect(elapsed).toBeLessThan(3000)
       expect(result.ok).toBe(true)
       if (!result.ok) return
       // Exactly 20k candidates fit under the cap: the list is complete, so the
@@ -2409,6 +2411,59 @@ describe("R4-2/R6-2 link candidate cap", () => {
       await rm(root, { recursive: true, force: true })
     }
   }, 30_000)
+})
+
+// N53/N56: link targets are streamed from the scanner one at a time (no
+// candidate array) and the signal is checked per line and inside a long line,
+// so one huge line is capped deterministically and a timer abort wins.
+describe("N53/N56 streamed link checks", () => {
+  const linkMarker = (result: ContextLintOutcome): string | undefined =>
+    result.ok
+      ? result.files
+          .flatMap((file) => file.findings)
+          .find((finding) => finding.detail.startsWith("link candidates truncated"))?.detail
+      : undefined
+
+  test("50 000 links on one line pass; the 50 001st truncates the list", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "docs/keep.md", "# keep")
+      for (const [count, truncated] of [
+        [50_000, false],
+        [50_001, true],
+      ] as const) {
+        const links = Array.from({ length: count }, (_, index) => `[v](docs/keep.md#${index})`).join(" ")
+        await write(root, "AGENTS.md", `${VALID_AGENTS}\n${links}\n`)
+        const result = await lintContext({ root, target: "AGENTS.md", maxLines: 100_000, maxTokens: 2_000_000 })
+        expect(result.ok, `${count} links on one line`).toBe(true)
+        if (!result.ok) return
+        expect(result.verdict, `${count} links on one line`).toBe(truncated ? "fail" : "pass")
+        expect(linkMarker(result) !== undefined, `${count} links on one line`).toBe(truncated)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  test("abort(100 ms) on 20k short links is E_ABORTED in about the pre-link time", async () => {
+    const root = await temporary()
+    try {
+      const links = Array.from({ length: 20_000 }, (_, index) => `[x](d${index}.md)`)
+      await write(root, "AGENTS.md", [VALID_AGENTS, ...links].join("\n"))
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 100)
+      const started = performance.now()
+      const result = await lintContext({ root, target: "AGENTS.md", signal: controller.signal })
+      const elapsed = performance.now() - started
+      clearTimeout(timer)
+      expect(result).toMatchObject({ ok: false, code: "E_ABORTED" })
+      // Measured ~300 ms standalone (100 ms timer + the pre-link mask/checks
+      // that run before checkLinks); 1000 ms only fails a real regression.
+      expect(elapsed, `abort(100 ms) returned in ${Math.round(elapsed)} ms`).toBeLessThan(1000)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 20_000)
 })
 
 // R4-3/R4-5: AC tables need Given/When/Then + Test; R ids never come from AC R cells.

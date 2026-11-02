@@ -143,8 +143,11 @@ columns. Links and explicit targets are confined by their **real** path: a symli
 junction that resolves outside the root is skipped, and such a target is refused
 (`E_OUT_OF_ROOT`). Code fences, inline code and HTML comments are masked, so a sample is
 never a rule: structural checks (commands, boundaries, verification) read the full mask,
-while requirements, AC ids and non-goals read the fence mask. Link checks are capped per
-file at 50 000 candidates and yield to timers, so an abort wins; 2001 links are checked
+while requirements, AC ids and non-goals read the fence mask. Link targets are
+streamed from the line scanner one at a time (no candidate array), so memory does
+not grow with the number of links; checks are capped per file at 50 000
+candidates, the signal is checked per line and every 100 candidates, and the
+link caches keep at most 5 000 entries, so an abort wins; 2001 links are checked
 normally, 50 000 valid links still pass, and the 50 001st candidate makes the list
 incomplete (`truncated: true` plus a MAJOR `link candidates truncated` marker in
 `closing_list`), so a capped run can never pass. Broken
@@ -152,7 +155,12 @@ links have no separate per-file cap: the finding caps bound the output and repor
 overflow. A line is scanned however long it is: the link scanner and the placeholder regex
 are linear, so a 4100-character line is checked like any other and a broken link or
 placeholder on it is the real finding, not a marker. Duplicate lines have no inner cap.
-UNC/network targets are never probed.
+UNC/network targets are never probed. Measured (bun 1.4.2, Windows, fresh
+process): 50 001 broken links with `max_findings: 2` → ~2.1 s and ~320–340 MB
+peak RSS; the peak is dominated by the ordinary per-line pipeline, not by links
+(a 2 MB line with no links already peaks at ~520 MB, and 50k plain lines at
+~250 MB), while the link path retains no per-link records at all. A 2 MB single
+line stays capped at 50 000 candidates instead of materializing every link.
 Limits: ≤ 2 MB per file, ≤ 500 files per scan. `max_findings` (per file) is N per
 severity: up to N MAJOR and N MINOR/INFO are kept, and any excess is replaced by one
 marker (MAJOR when a MAJOR was dropped, otherwise INFO); a MAJOR marker stays in
