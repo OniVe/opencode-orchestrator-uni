@@ -20,7 +20,7 @@ permissions:
 
 Коды инструмента: `E_NO_FILES` → verdict=fail, один элемент `files` с `path: "-"`, `kind: "other"` и finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail с `CTX-000` (kind=unverified_command или other), в evidence — код и путь из ошибки. `truncated: true` означает, что список находок усечён: MINOR/INFO могут отсутствовать, а при переполнении MAJOR остаётся MAJOR-маркер `truncated` в `closing_list` — отметь это в `summary`.
 
-Потолки → `truncated`: кандидаты-ссылки → MAJOR-маркер; пропущенная длинная строка (>4000 символов) → MAJOR-маркер; находки на файл/глобально → один маркер (MAJOR, если выпал MAJOR, иначе INFO); у дублей внутреннего потолка нет. Любой потолок ставит `truncated: true` и называется в `summary`.
+Потолки → `truncated`: кандидаты-ссылки → MAJOR-маркер; находки на файл/глобально → один маркер (MAJOR, если выпал MAJOR, иначе INFO); у дублей внутреннего потолка нет. Все строки сканируются целиком: потолка и маркера длинной строки нет. Любой потолок ставит `truncated: true` и называется в `summary`.
 
 AGENTS.md — проверь:
 1. Бюджет: >200 строк или >2500 токенов — MAJOR; 150–200 строк — MINOR.

@@ -20,7 +20,7 @@ When the `orch_uni_context_lint` tool is available, run it on the target path fi
 
 Tool codes: `E_NO_FILES` → verdict=fail with one `files` entry with `path: "-"`, `kind: "other"` and finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail with `CTX-000` (kind=unverified_command or other), the code and path from the error in evidence. `truncated: true` means the finding list was capped: MINOR/INFO may be missing, and when MAJOR overflow a MAJOR `truncated` marker stays in `closing_list` — say so in `summary`.
 
-Caps → `truncated`: link candidates → MAJOR marker; a skipped long line (>4000 characters) → MAJOR marker; per-file/global findings → one marker (MAJOR if a MAJOR was dropped, else INFO); duplicate lines have no inner cap. Every cap sets `truncated: true` and is named in `summary`.
+Caps → `truncated`: link candidates → MAJOR marker; per-file/global findings → one marker (MAJOR if a MAJOR was dropped, else INFO); duplicate lines have no inner cap. Every line is scanned in full: there is no long-line cap or marker. Every cap sets `truncated: true` and is named in `summary`.
 
 AGENTS.md — check:
 1. Budget: >200 lines or >2500 tokens — MAJOR; 150–200 lines — MINOR.

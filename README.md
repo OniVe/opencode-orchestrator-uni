@@ -144,12 +144,12 @@ junction that resolves outside the root is skipped, and such a target is refused
 (`E_OUT_OF_ROOT`). Code fences, inline code and HTML comments are masked, so a sample is
 never a rule: structural checks (commands, boundaries, verification) read the full mask,
 while requirements, AC ids and non-goals read the fence mask. Link checks are capped per
-file at 20 000 candidates and yield to timers, so an abort wins; 2001 links are checked
+file at 50 000 candidates and yield to timers, so an abort wins; 2001 links are checked
 normally, and a capped candidate list is an incomplete result (`truncated: true` plus a
 MAJOR `link candidates truncated` marker in `closing_list`), so it can never pass. Broken
 links have no separate per-file cap: the finding caps bound the output and report the
-overflow. A line is scanned however long it is: the link and placeholder regexes are
-linear, so a 4100-character line is checked like any other and a broken link or
+overflow. A line is scanned however long it is: the link scanner and the placeholder regex
+are linear, so a 4100-character line is checked like any other and a broken link or
 placeholder on it is the real finding, not a marker. Duplicate lines have no inner cap.
 UNC/network targets are never probed.
 Limits: ≤ 2 MB per file, ≤ 500 files per scan. `max_findings` (per file) is N per
@@ -380,7 +380,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (263 tests in 9 files, up from
+`npm test` scans only `./test/` — the shipped suite (276 tests in 9 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`

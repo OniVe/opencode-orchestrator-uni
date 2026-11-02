@@ -1533,7 +1533,7 @@ describe("R3-A backtick AC cells", () => {
 
 // N44: link candidates are capped; probes are bounded by candidates.
 describe("R3-B link loop bounds", () => {
-  test("20k links finish and every candidate is checked under the 20k cap", async () => {
+  test("20k links finish and every candidate is checked under the candidate cap", async () => {
     const root = await temporary()
     try {
       await write(root, "docs/keep.md", "# keep")
@@ -2120,11 +2120,28 @@ describe("R4-2/R6-2 link candidate cap", () => {
     }
   })
 
-  test("20 001 valid links are capped and documented: MAJOR marker with file:1 evidence", async () => {
+  test("20 001 valid links pass under the 50k cap", async () => {
     const root = await temporary()
     try {
       await write(root, "docs/keep.md", "# keep")
       const links = Array.from({ length: 20_001 }, (_, index) => `[v](docs/keep.md#${index})`)
+      await write(root, "AGENTS.md", [VALID_AGENTS, ...links].join("\n"))
+      const result = await lint(root)
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.verdict).toBe("pass")
+      expect(result.truncated).toBeFalsy()
+      expect(marker(result)).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 20_000)
+
+  test("50 001 valid links are capped and documented: MAJOR marker with file:1 evidence", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "docs/keep.md", "# keep")
+      const links = Array.from({ length: 50_001 }, (_, index) => `[v](docs/keep.md#${index})`)
       await write(root, "AGENTS.md", [VALID_AGENTS, ...links].join("\n"))
       const result = await lint(root)
       expect(result.ok).toBe(true)
@@ -2134,14 +2151,14 @@ describe("R4-2/R6-2 link candidate cap", () => {
       const found = marker(result)
       expect(found?.severity).toBe("MAJOR")
       expect(found?.evidence).toBe("AGENTS.md:1")
-      expect(found?.detail).toContain("20000")
+      expect(found?.detail).toContain("50000")
       expect(result.closing_list).toContain(found?.id ?? "")
       // A deterministic rerun is identical: the marker must not promise a rerun.
       expect(found?.detail).not.toContain("next run")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 })
 
 // R4-3/R4-5: AC tables need Given/When/Then + Test; R ids never come from AC R cells.
@@ -2804,10 +2821,10 @@ describe("N32 defective AC table requirements", () => {
 // N36/R6-8: cap markers are additional to `max_findings`; both may appear in a
 // run, and neither promises a different result on a deterministic rerun.
 describe("N36 cap markers are additional and honest", () => {
-  test("20 001 broken links with maxFindings=2 show both markers: 2 kept + 2 markers", async () => {
+  test("50 001 broken links with maxFindings=2 show both markers: 2 kept + 2 markers", async () => {
     const root = await temporary()
     try {
-      const links = Array.from({ length: 20_001 }, (_, index) => `[x](docs/missing-${index}.md)`)
+      const links = Array.from({ length: 50_001 }, () => "[x](docs/missing.md)")
       await write(root, "AGENTS.md", [VALID_AGENTS, ...links].join("\n"))
       const result = await lintContext({
         root,
@@ -2835,7 +2852,7 @@ describe("N36 cap markers are additional and honest", () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  }, 20_000)
+  }, 30_000)
 })
 
 // N33/R6-3: a paragraph is one non-goal item; 4-space bullets under the label
@@ -2873,6 +2890,202 @@ describe("N33 paragraph and 4-space documentation", () => {
     try {
       await write(root, "SPEC.md", ["# SPEC", "", "**Non-goals:**", ""].join("\n"))
       expect(countDetail(await lintContext({ root, target: "SPEC.md" }))).toBe("0 non-goals; expected 3–7 items")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+/** A SPEC whose only variable is the inline non-goals list. */
+function specWithNonGoals(label: string): string {
+  return [
+    "# SPEC",
+    "",
+    "## Goal",
+    "",
+    label,
+    "",
+    "## Requirements",
+    "",
+    "- **R1** — WHEN x, THE SYSTEM SHALL y.",
+    "",
+    "## Acceptance criteria",
+    "",
+    "| AC | R | Given | When | Then | Test |",
+    "|---|---|---|---|---|---|",
+    "| AC1.1 | R1 | g | w | t | `test_x` |",
+  ].join("\n")
+}
+
+const nonGoalsDetail = (result: ContextLintOutcome): string | undefined =>
+  findingsOf(result).find((finding) => finding.detail.includes("non-goals"))?.detail
+
+// R7-1: the link scanner is a single linear pass, so a long run of `](` without
+// a closing `)` cannot backtrack quadratically.
+describe("R7-1 linear link scanner", () => {
+  const timed = async (tail: string): Promise<{ elapsed: number; result: ContextLintOutcome }> => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", [VALID_AGENTS, "", tail].join("\n"))
+      const started = Date.now()
+      const result = await lintContext({ root, target: "AGENTS.md", maxLines: 100_000, maxTokens: 2_000_000 })
+      return { elapsed: Date.now() - started, result }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+
+  test("10k/20k/40k `](` without `)` each finish under 200 ms", async () => {
+    for (const count of [10_000, 20_000, 40_000]) {
+      const { elapsed, result } = await timed("](".repeat(count))
+      expect(result.ok, `${count} candidates: lint completed`).toBe(true)
+      expect(elapsed, `${count} \`](\` in ${elapsed} ms`).toBeLessThan(200)
+    }
+  }, 20_000)
+
+  test("40k `](` with a single closing `)` finishes under 200 ms", async () => {
+    const { elapsed, result } = await timed(`${"](".repeat(40_000)})`)
+    expect(result.ok).toBe(true)
+    expect(elapsed, `40k \`](\` + \`)\` in ${elapsed} ms`).toBeLessThan(200)
+  }, 20_000)
+
+  test("80k `<` finishes under 200 ms", async () => {
+    const { elapsed, result } = await timed("<".repeat(80_000))
+    expect(result.ok).toBe(true)
+    expect(elapsed, `80k \`<\` in ${elapsed} ms`).toBeLessThan(200)
+  }, 20_000)
+})
+
+// R7-2: `<pre>` masks its own span only; the text before and after it stays
+// visible to every check, and an unclosed `<pre>` masks following lines only.
+describe("R7-2 pre span", () => {
+  test("a broken link and a placeholder before and after an inline <pre> are MAJOR", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        `${VALID_AGENTS}\n[a](missing-a.md) <...> <pre>x</pre>\n<pre>x</pre> [b](missing-b.md) <...>`,
+      )
+      const result = await lintContext({ root, target: "AGENTS.md" })
+      const broken = findingsOf(result).filter((finding) => finding.kind === "broken_link")
+      expect(broken.map((finding) => finding.detail).sort()).toEqual([
+        'missing path "missing-a.md"',
+        'missing path "missing-b.md"',
+      ])
+      expect(findingsOf(result).filter((finding) => finding.detail === 'placeholder "<...>"').length).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("an R line with an inline <pre> still counts as a requirement", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        [
+          "# SPEC",
+          "",
+          "## Goal",
+          "",
+          "**Non-goals:** a, b, c",
+          "",
+          "## Requirements",
+          "",
+          "- **R1** — WHEN x, THE SYSTEM SHALL y.",
+          "- **R2** — WHEN q, THE SYSTEM SHALL z <pre>code</pre>.",
+          "",
+          "## Acceptance criteria",
+          "",
+          "| AC | R | Given | When | Then | Test |",
+          "|---|---|---|---|---|---|",
+          "| AC1.1 | R1 | g | w | t | `test_x` |",
+        ].join("\n"),
+      )
+      const result = await lintContext({ root, target: "SPEC.md" })
+      expect(findingsOf(result).some((finding) => finding.detail === "no numbered requirements")).toBe(false)
+      expect(findingsOf(result).some((finding) => finding.detail === "R2 has no acceptance criterion")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("non-goals around an inline <pre> count the surrounding text", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", specWithNonGoals("**Non-goals:** alpha, beta, gamma <pre>a, b</pre>"))
+      expect(nonGoalsDetail(await lintContext({ root, target: "SPEC.md" }))).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("an unclosed <pre> masks following lines only, not the current prefix", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n[a](missing-a.md) <pre>open\n[b](missing-b.md) after`)
+      const result = await lintContext({ root, target: "AGENTS.md" })
+      const broken = findingsOf(result).filter((finding) => finding.kind === "broken_link")
+      expect(broken.length).toBe(1)
+      expect(broken[0]?.detail).toContain("missing-a.md")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// R7-3: an HTML `<code …>` open tag with attributes is a code span.
+describe("R7-3 code tag attributes", () => {
+  test("<code class=x>a, b</code>, c is two items (MAJOR)", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", specWithNonGoals("**Non-goals:** <code class=x>a, b</code>, c"))
+      expect(nonGoalsDetail(await lintContext({ root, target: "SPEC.md" }))).toBe("2 non-goals; expected 3–7 items")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("<code id=y>a, b</code>, c is two items (MAJOR)", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", specWithNonGoals("**Non-goals:** <code id=y>a, b</code>, c"))
+      expect(nonGoalsDetail(await lintContext({ root, target: "SPEC.md" }))).toBe("2 non-goals; expected 3–7 items")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// R7-6: balanced braces group inline list items and hide an inner `and`.
+describe("R7-6 brace grouping", () => {
+  test("{a, b}, c is two items (MAJOR)", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "SPEC.md", specWithNonGoals("**Non-goals:** {a, b}, c"))
+      expect(nonGoalsDetail(await lintContext({ root, target: "SPEC.md" }))).toBe("2 non-goals; expected 3–7 items")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("{A and B} in an R line is not a top-level and-chain", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "SPEC.md",
+        specWithNonGoals("**Non-goals:** a, b, c").replace(
+          "- **R1** — WHEN x, THE SYSTEM SHALL y.",
+          "- **R1** — WHEN {A and B}, THE SYSTEM SHALL work.",
+        ),
+      )
+      const result = await lintContext({ root, target: "SPEC.md" })
+      expect(findingsOf(result).some((finding) => finding.detail === "requirement joins multiple behaviors")).toBe(
+        false,
+      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }
