@@ -2,22 +2,24 @@
   "id": "context-lint/v1",
   "schema": {
     "type": "object",
-    "required": ["schema", "verdict", "closing_list", "files", "summary"],
+    "required": ["ok"],
     "properties": {
       "schema": { "type": "string", "const": "context-lint/v1" },
+      "ok": { "type": "boolean" },
       "verdict": { "type": "string", "enum": ["pass", "fail"] },
       "closing_list": { "type": "array", "items": { "type": "string" } },
       "truncated": { "type": "boolean" },
       "files": {
-        "type": "array",
+        "type": ["array", "number"],
         "items": {
           "type": "object",
-          "required": ["path", "kind", "lines", "words", "tokens_est", "findings"],
+          "required": ["path", "kind", "lines", "words", "chars", "tokens_est", "findings"],
           "properties": {
             "path": { "type": "string" },
             "kind": { "type": "string", "enum": ["agents", "spec", "claude", "other"] },
             "lines": { "type": "number" },
             "words": { "type": "number" },
+            "chars": { "type": "number" },
             "tokens_est": { "type": "number" },
             "truncated": { "type": "boolean" },
             "findings": {
@@ -50,7 +52,12 @@
           }
         }
       },
-      "summary": { "type": "string" }
+      "summary": { "type": "string" },
+      "code": { "type": "string" },
+      "message": { "type": "string" },
+      "path": { "type": "string" },
+      "bytes": { "type": "number" },
+      "max": { "type": "number" }
     }
   }
 }

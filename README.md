@@ -184,6 +184,15 @@ per-level figures in [`docs/`](./docs) are authoring guidance, not separate tool
 documented ceiling instead.
 Typed failures: `E_INPUT`, `E_NOT_FOUND`, `E_NO_FILES`, `E_IO`, `E_ABORTED`,
 `E_LIMIT_FILE`, `E_LIMIT_FILES`, `E_OUT_OF_ROOT`.
+A failure is a typed payload `{ok:false, code, message, path?, bytes?, files?, max?}`; a report is
+`{schema, ok, verdict, closing_list, files, summary, truncated?}` and every file carries `lines`,
+`words`, `chars` and `tokens_est` (tokens are estimated as Cyrillic/3 + the rest/4). A directory
+target is scanned to depth 3, and `max_files` refuses early: the walk stops at the first file above
+the limit. Nothing is dropped silently: a directory below the depth limit, an unclosed fence and a
+link target that resolves outside the workspace root are INFO findings, so a `pass` never hides an
+unchecked region. Commands count only inside code, a Task table or a Commands section, and `make`
+needs a target, so prose such as "Make sure …" is not a command. A scan started at the root also
+picks up fixture trees such as `eval/`; pass an explicit path for the canonical files.
 
 ### `orch_uni_snapshot`
 

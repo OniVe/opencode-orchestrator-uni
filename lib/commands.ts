@@ -86,14 +86,22 @@ function specPrompt(locale: CommandLocale, brief: string): string {
 
 /** Register `/agents-md` and `/spec`; the cleanup disposes the transform registration. */
 export async function registerKitCommands(ctx: Plugin.Context, locale: CommandLocale): Promise<Plugin.Cleanup> {
+  // The command API is optional in a host build. A missing `list` was already
+  // tolerated; a missing `transform` used to throw out of `setup` and take every
+  // agent and tool with it, so it degrades to a warning plus a no-op cleanup.
+  const command = (ctx as Partial<Plugin.Context>).command
+  if (command === undefined || typeof command.transform !== "function") {
+    console.warn("orch-uni: this host has no command API; /agents-md and /spec are not registered")
+    return async () => {}
+  }
   let existing = new Set<string>()
   try {
-    const listed = await ctx.command.list()
-    existing = new Set(listed.data.map((command) => command.name))
+    const listed = await command.list()
+    existing = new Set(listed.data.map((item) => item.name))
   } catch {
     // No listing API: register; the host resolves a collision on its side.
   }
-  const registration = await ctx.command.transform((editor) => {
+  const registration = await command.transform((editor) => {
     if (!existing.has("agents-md")) {
       editor.add({
         name: "agents-md",
