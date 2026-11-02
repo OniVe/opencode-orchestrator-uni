@@ -422,6 +422,22 @@ function htmlOpenTagEnd(text: string, index: number, name: string): number | und
 }
 
 /**
+ * End index (inclusive) of an HTML close tag `</name …>` starting at `index`,
+ * or `undefined` when this position is not that tag. Matching is
+ * case-insensitive and only whitespace may separate the name from `>`, so
+ * `</code >` and `</PRE\t>` close their span while `</codes>` does not.
+ */
+function htmlCloseTagEnd(text: string, index: number, name: string): number | undefined {
+  if (text.slice(index, index + name.length + 2).toLowerCase() !== `</${name}`) return undefined
+  const next = text[index + name.length + 2]
+  if (next !== undefined && next !== ">" && !/\s/.test(next)) return undefined
+  const close = text.indexOf(">", index + name.length + 2)
+  if (close < 0) return undefined
+  if (text.slice(index + name.length + 2, close).trim() !== "") return undefined
+  return close
+}
+
+/**
  * Replace code blocks, `<pre>`/`<code>` spans, indented code and (when
  * `options.inlineCode` is set) inline code and HTML comments with spaces,
  * keeping the line count and every line length. A fence opened with N markers
@@ -476,9 +492,10 @@ function maskCode(
     for (let index = 0; index < line.length; index += 1) {
       const character = line[index]
       if (inPre) {
-        if (line.slice(index, index + 6).toLowerCase() === "</pre>") {
-          out += "      "
-          index += 5
+        const end = htmlCloseTagEnd(line, index, "pre")
+        if (end !== undefined) {
+          out += " ".repeat(end - index + 1)
+          index = end
           inPre = false
         } else {
           out += " "
@@ -496,9 +513,10 @@ function maskCode(
         continue
       }
       if (inCodeTag) {
-        if (line.slice(index, index + 7).toLowerCase() === "</code>") {
-          out += "       "
-          index += 6
+        const end = htmlCloseTagEnd(line, index, "code")
+        if (end !== undefined) {
+          out += " ".repeat(end - index + 1)
+          index = end
           inCodeTag = false
         } else {
           out += " "
@@ -753,69 +771,94 @@ async function existingRealPath(target: string): Promise<string | undefined> {
   }
 }
 
-/**
- * Target of a `](…)` candidate: the first non-space run, optionally followed by
- * a quoted title. Anything else (an empty target or an unquoted tail) is not a
- * link, matching the former `\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)` contract.
- */
-function linkTargetOf(raw: string): string | undefined {
-  const text = raw.replace(/^\s+/, "")
-  if (text === "") return undefined
-  const space = text.search(/\s/)
-  const target = space === -1 ? text : text.slice(0, space)
-  if (target === "") return undefined
-  const rest = space === -1 ? "" : text.slice(space).trim()
-  if (rest !== "" && !/^["'][^"']*["']$/.test(rest)) return undefined
-  return target
+/** Whitespace test used by the link scanner; `\s` matches CommonMark spaces. */
+const LINK_WHITESPACE = /\s/
+
+function skipLinkWhitespace(line: string, index: number): number {
+  let at = index
+  while (at < line.length && LINK_WHITESPACE.test(line[at])) at += 1
+  return at
+}
+
+/** True when the `](` at `open` is escaped by an odd run of backslashes, so it is prose. */
+function isEscapedOpen(line: string, open: number): boolean {
+  let backslashes = 0
+  while (open - backslashes - 1 >= 0 && line[open - backslashes - 1] === "\\") backslashes += 1
+  return backslashes % 2 === 1
 }
 
 /**
- * Targets of every `](target)` on one line, in one linear pass: `](` pushes a
- * pending start, `)` pops the last pending start and emits its target, an
- * unmatched `)` or an unclosed `](` is ignored. A backslash escapes the next
- * character, so `\]\(x\)` is prose and `[a](b\)c)` keeps its escaped `)`.
- * The scanner never backtracks, so a line of `](` without `)` is O(n), not
- * O(n²). Nested `](…](…)` pairs are consumed innermost-first by the stack.
- * Aborts are checked every `LINK_SCAN_ABORT_INTERVAL` characters.
+ * Targets of every `](target)` on one line in a single forward pass, with no
+ * stack and no per-candidate scan to the end of the line: `indexOf("](")`
+ * locates the next open, the target and the optional title are consumed
+ * locally, and `i` either jumps past the closing `)` or past the rejected
+ * `](`. Total work is O(line length): a line of `](` without `)` stops at the
+ * end of the first target (break), and closed pairs advance past the `)`.
+ * A target is the run up to whitespace or `)` (an escaped `](` is prose),
+ * `<…>` strips the angles, and a `'…'`/`"…"` title may contain `)`, `](` and
+ * escaped quotes. Unclosed angles, titles or targets are not links.
+ * Aborts are checked at the start, at the end and every
+ * `LINK_SCAN_ABORT_INTERVAL` candidates.
  */
 function scanLinkTargets(
   line: string,
   signal: AbortSignal | undefined,
 ): { readonly targets: readonly string[]; readonly aborted: boolean } {
   const targets: string[] = []
-  const pending: number[] = []
+  const length = line.length
+  let index = 0
   let checked = 0
-  for (let index = 0; index < line.length; index += 1) {
+  if (signal?.aborted) return { targets, aborted: true }
+  while (index < length) {
     checked += 1
     if (checked >= LINK_SCAN_ABORT_INTERVAL) {
       if (signal?.aborted) return { targets, aborted: true }
       checked = 0
     }
-    const character = line[index]
-    if (character === "\\") {
-      index += 1
+    const open = line.indexOf("](", index)
+    if (open < 0) break
+    if (isEscapedOpen(line, open)) {
+      index = open + 2
       continue
     }
-    if (character === "]" && line[index + 1] === "(") {
-      pending.push(index + 2)
-      index += 1
-      continue
+    let cursor = open + 2
+    let target: string
+    if (line[cursor] === "<") {
+      const close = line.indexOf(">", cursor + 1)
+      if (close < 0) break
+      target = line.slice(cursor + 1, close)
+      cursor = close + 1
+    } else {
+      const start = cursor
+      while (cursor < length && !LINK_WHITESPACE.test(line[cursor]) && line[cursor] !== ")") cursor += 1
+      // No `)` can follow the end of the line: stop instead of rescanning.
+      if (cursor >= length) break
+      target = line.slice(start, cursor)
     }
-    if (character === ")") {
-      const start = pending.pop()
-      if (start !== undefined) {
-        const target = linkTargetOf(line.slice(start, index))
-        if (target !== undefined) targets.push(target)
-      }
+    let after = skipLinkWhitespace(line, cursor)
+    const quote = line[after]
+    if (after < length && (quote === "'" || quote === '"')) {
+      let at = after + 1
+      while (at < length && line[at] !== quote) at += line[at] === "\\" ? 2 : 1
+      if (at >= length) break
+      after = skipLinkWhitespace(line, at + 1)
+    }
+    if (after < length && line[after] === ")") {
+      targets.push(target)
+      index = after + 1
+    } else {
+      index = open + 2
     }
   }
+  if (signal?.aborted) return { targets, aborted: true }
   return { targets, aborted: false }
 }
 
 /**
  * Check local relative links. Cost and containment are bounded:
- * - the parser is a single-pass stack scanner (linear in the line length), so
- *   `](` without a closing `)` cannot trigger quadratic backtracking;
+ * - the parser is a single forward state machine with no stack and no
+ *   per-candidate scan to the end of the line, so `](` without a closing `)`
+ *   cannot trigger quadratic backtracking;
  * - at most `MAX_LINK_CANDIDATES` candidates are collected per file; exceeding
  *   the cap returns `truncated: true` and the caller adds one MAJOR marker (the
  *   unverified remainder must never let the verdict pass);
@@ -996,9 +1039,10 @@ function splitTopLevelItems(text: string): string[] {
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index]
     if (inPre) {
-      if (text.slice(index, index + 6).toLowerCase() === "</pre>") {
-        current += text.slice(index, index + 6)
-        index += 5
+      const end = htmlCloseTagEnd(text, index, "pre")
+      if (end !== undefined) {
+        current += text.slice(index, end + 1)
+        index = end
         inPre = false
       } else {
         current += character
@@ -1006,9 +1050,10 @@ function splitTopLevelItems(text: string): string[] {
       continue
     }
     if (inCodeTag) {
-      if (text.slice(index, index + 7).toLowerCase() === "</code>") {
-        current += text.slice(index, index + 7)
-        index += 6
+      const end = htmlCloseTagEnd(text, index, "code")
+      if (end !== undefined) {
+        current += text.slice(index, end + 1)
+        index = end
         inCodeTag = false
       } else {
         current += character
