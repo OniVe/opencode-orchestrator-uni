@@ -1,0 +1,29 @@
+{
+  "id": "context-lint-failure/v1",
+  "schema": {
+    "type": "object",
+    "required": ["ok", "code", "message"],
+    "properties": {
+      "schema": { "type": "string", "const": "context-lint-failure/v1" },
+      "ok": { "type": "boolean", "const": false },
+      "code": {
+        "type": "string",
+        "enum": [
+          "E_INPUT",
+          "E_NOT_FOUND",
+          "E_NO_FILES",
+          "E_IO",
+          "E_ABORTED",
+          "E_LIMIT_FILE",
+          "E_LIMIT_FILES",
+          "E_OUT_OF_ROOT"
+        ]
+      },
+      "message": { "type": "string" },
+      "path": { "type": "string" },
+      "bytes": { "type": "number" },
+      "files": { "type": "number" },
+      "max": { "type": "number" }
+    }
+  }
+}

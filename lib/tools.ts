@@ -481,9 +481,13 @@ export async function registerAuditTools(
     input: unknown,
     toolContext: { readonly signal?: AbortSignal } | undefined,
   ): Promise<{ content: string }> => {
+    // A failure is not a report: it carries the `context-lint-failure/v1` id so it
+    // validates against that schema and never passes as a `context-lint/v1` report.
+    const lintFailure = (code: string, message: string, extra: Record<string, unknown> = {}) =>
+      failure(code, message, { schema: "context-lint-failure/v1", ...extra })
     const record = input === undefined ? {} : asRecord(input)
     if (record === undefined)
-      return failure(
+      return lintFailure(
         "E_INPUT",
         "input must be an object ({path?, max_lines?, max_tokens?, max_words?, max_file_bytes?, max_files?, max_findings?, max_total_findings?})",
       )
@@ -498,7 +502,7 @@ export async function registerAuditTools(
       max_total_findings,
     } = record
     if (target !== undefined && (typeof target !== "string" || target === "")) {
-      return failure("E_INPUT", '"path" must be a non-empty string')
+      return lintFailure("E_INPUT", '"path" must be a non-empty string')
     }
     for (const [key, value] of [
       ["max_lines", max_lines],
@@ -510,7 +514,7 @@ export async function registerAuditTools(
       ["max_total_findings", max_total_findings],
     ] as const) {
       if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value <= 0)) {
-        return failure("E_INPUT", `"${key}" must be a positive number`)
+        return lintFailure("E_INPUT", `"${key}" must be a positive number`)
       }
     }
     // The host may call an executor without a context (`execute(input, {})`), and
@@ -518,7 +522,7 @@ export async function registerAuditTools(
     // of throwing on `undefined.signal`.
     const controller = new AbortController()
     const signal = toolContext?.signal ?? controller.signal
-    if (signal.aborted) return failure("E_ABORTED", "context lint aborted")
+    if (signal.aborted) return lintFailure("E_ABORTED", "context lint aborted")
     const outcome = await lintContext({
       root: directory,
       ...(target === undefined ? {} : { target: target as string }),
@@ -537,7 +541,7 @@ export async function registerAuditTools(
       if (outcome.bytes !== undefined) extra.bytes = outcome.bytes
       if (outcome.files !== undefined) extra.files = outcome.files
       if (outcome.max !== undefined) extra.max = outcome.max
-      return failure(outcome.code, outcome.message, extra)
+      return lintFailure(outcome.code, outcome.message, extra)
     }
     return json(outcome)
   }
@@ -668,7 +672,8 @@ export async function registerAuditTools(
         "Returns JSON {schema, ok, verdict, closing_list, files, summary, truncated?}; each file carries lines, words, chars " +
         "and tokens_est. A per-file cap drops findings and sets truncated=true, max_total_findings keeps MAJOR first and turns " +
         "the MAJOR overflow into one MAJOR truncated finding in closing_list. A file target is capped by max_file_bytes, " +
-        "also while it is read. A failure is JSON {ok:false, code, message, path?, bytes?, files?, max?} with a typed code " +
+        'also while it is read. A failure is JSON {schema:"context-lint-failure/v1", ok:false, code, message, path?, bytes?, ' +
+        "files?, max?} with a typed code " +
         "(E_INPUT|E_NOT_FOUND|E_NO_FILES|E_IO|E_ABORTED|E_LIMIT_FILE|E_LIMIT_FILES|E_OUT_OF_ROOT).",
       input: CONTEXT_LINT_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },

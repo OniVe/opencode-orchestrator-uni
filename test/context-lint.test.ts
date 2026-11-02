@@ -3435,20 +3435,29 @@ describe("R7-6 brace grouping", () => {
   test("PR audit A1: abort during the section checks returns E_ABORTED, never a verdict", async () => {
     const root = await temporary()
     try {
+      // ~6 MB / 400k requirement lines: the scan takes >400 ms, so a 50 or 100 ms
+      // timer deterministically lands inside the section checks instead of racing
+      // the end of a faster run.
       const lines = ["# SPEC", "", "## Requirements", ""]
-      for (let index = 1; index <= 100_000; index += 1) lines.push(`- R${index} — x.`)
-      lines.push("", `#${" ".repeat(200_000)}`)
+      for (let index = 1; index <= 400_000; index += 1) lines.push(`- R${index} — x.`)
       await writeFile(path.join(root, "SPEC.md"), `${lines.join("\n")}\n`, "utf8")
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 10)
-      const result = await lintContext({ root, target: "SPEC.md", signal: controller.signal })
-      clearTimeout(timer)
-      expect(result).toMatchObject({ ok: false, code: "E_ABORTED" })
-      expect("files" in result).toBe(false)
+      for (const after of [50, 100]) {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), after)
+        const result = await lintContext({
+          root,
+          target: "SPEC.md",
+          maxFileBytes: 10_000_000,
+          signal: controller.signal,
+        })
+        clearTimeout(timer)
+        expect(result, `abort(${after} ms)`).toMatchObject({ ok: false, code: "E_ABORTED" })
+        expect("files" in result).toBe(false)
+      }
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  }, 20_000)
+  }, 30_000)
 
   test("PR audit A2: an escaped `[` is literal, so `\\[o1](m1.md)` is not a broken link", async () => {
     const root = await temporary()
@@ -3752,6 +3761,163 @@ describe("R7-6 brace grouping", () => {
       expect(findingsOf(result).some((finding) => finding.detail === "requirement joins multiple behaviors")).toBe(
         false,
       )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// PR #1 audit, round 2 (A10–A13): mask diagnostics, one mask parser, comments.
+describe("R2 mask diagnostics", () => {
+  const fence = String.fromCharCode(96).repeat(3)
+
+  test("PR audit A10: an unclosed <pre> leaves an INFO marker", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n\n<pre>\n<...> TODO\n[b](missing.md)\n`)
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      const marker = findings.filter((finding) => finding.detail.includes("unclosed <pre> at line"))
+      expect(marker.length).toBe(1)
+      expect(marker[0]).toMatchObject({ severity: "INFO" })
+      expect(marker[0]?.detail).toContain("the rest of the file is masked and not checked")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A10: an unclosed HTML comment leaves an INFO marker", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n\n<!--\n<...> TODO\n[b](missing.md)\n`)
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      const marker = findings.filter((finding) => finding.detail.includes("unclosed HTML comment at line"))
+      expect(marker.length).toBe(1)
+      expect(marker[0]).toMatchObject({ severity: "INFO" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A11: a fence marker inside a comment, <pre> or indented code is not an unclosed fence", async () => {
+    const root = await temporary()
+    try {
+      const bodies = [`<!--\n${fence}\n-->`, `<pre>\n${fence}\n</pre>`, `text\n\n    ${fence}\n    code\n\ntext`]
+      for (const body of bodies) {
+        await write(root, "AGENTS.md", `${VALID_AGENTS}\n\n${body}\n`)
+        const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+        expect(
+          findings.some((finding) => finding.detail.includes("unclosed fence")),
+          body,
+        ).toBe(false)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A11: a really unclosed fence is still reported", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n\n${fence}\n[hidden](missing.md)\n`)
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(findings.some((finding) => finding.detail.includes("unclosed fence at line"))).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A12: a commented command is not a command", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        "# AGENTS\n\n## Boundaries\n\n- Never commit secrets.\n\n## Verification\n\nDone = green.\n\n<!-- npm install -->\n",
+      )
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(findings.some((finding) => finding.detail === "no commands section")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A12: a fenced command after a comment still counts", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        `# AGENTS\n\n## Boundaries\n\n- Never commit secrets.\n\n## Verification\n\nDone = green.\n\n<!-- npm install -->\n\n${fence}\nbun test\n${fence}\n`,
+      )
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(findings.some((finding) => finding.detail === "no commands section")).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A13: a junction outside the root is an INFO skip, not silence", async () => {
+    const root = await temporary()
+    const outside = await temporary()
+    try {
+      await write(root, "AGENTS.md", VALID_AGENTS)
+      if (!(await directoryLink(outside, path.join(root, "junc")))) return
+      const result = await lintContext({ root })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const skipped = findingsOf(result).filter((finding) => finding.detail.includes("was skipped"))
+      expect(skipped.length).toBe(1)
+      expect(skipped[0]).toMatchObject({ severity: "INFO" })
+      expect(skipped[0]?.detail).toContain("junc")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A13: an out-of-root INFO keeps the raw, percent-encoded target", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n[enc](%2e%2e/%2e%2e/outside.md)`)
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      const skipped = findings.filter((finding) => finding.detail.includes("outside the workspace root"))
+      expect(skipped.length).toBe(1)
+      expect(skipped[0]?.detail).toContain("%2e%2e/%2e%2e/outside.md")
+      expect(skipped[0]?.detail).not.toContain('"../../outside.md"')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A9: the tool failure payload declares its own schema id", async () => {
+    const harness = await createHarness()
+    try {
+      await writeFile(path.join(harness.directory, "AGENTS.md"), "a".repeat(200), "utf8")
+      const failure = await runTool(harness, "orch_uni_context_lint", { path: "AGENTS.md", max_file_bytes: 100 })
+      expect(failure).toMatchObject({ schema: "context-lint-failure/v1", ok: false, code: "E_LIMIT_FILE" })
+      const text = ["Report.", "```json", JSON.stringify(failure), "```"].join("\n")
+      const validated = await runTool(harness, "orch_uni_validate_report", { text })
+      expect(validated).toMatchObject({ valid: true, schema: "context-lint-failure/v1" })
+      const asReport = await runTool(harness, "orch_uni_validate_report", {
+        text,
+        schema: "context-lint/v1",
+      })
+      expect(asReport).toMatchObject({ valid: false, code: "E_SCHEMA_MISMATCH" })
+    } finally {
+      harness.dispose()
+    }
+  })
+
+  test("PR audit A12: a command inside a multi-line comment does not count", async () => {
+    const root = await temporary()
+    try {
+      await write(
+        root,
+        "AGENTS.md",
+        `# AGENTS\n\n## Boundaries\n\n- Never commit secrets.\n\n## Verification\n\nDone = green.\n\n<!--\n${String.fromCharCode(96)}npm install${String.fromCharCode(96)}\n-->\n`,
+      )
+      const findings = findingsOf(await lintContext({ root, target: "AGENTS.md" }))
+      expect(findings.some((finding) => finding.detail === "no commands section")).toBe(true)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
