@@ -193,7 +193,12 @@ that validates only against `context-lint-failure/v1`; a report is
 target is scanned to depth 3, and `max_files` refuses early: the walk stops at the first file above
 the limit. Nothing is dropped silently: a directory below the depth limit, a link or junction that
 resolves outside the workspace root, and an unclosed fence, `<pre>` or HTML comment are INFO
-findings, so a `pass` never hides an unchecked region. Commands count only inside code, a Task table
+findings, so a `pass` never hides an unchecked region. An unclosed `<code>` is a
+line-local mask: it hides the rest of its line and is not reported (only fence,
+`<pre>` and HTML comments span lines and get an INFO marker). An abort is observed
+between files, every 2048 lines of a line-oriented check and at each gate, so the
+worst-case latency is one mask pass over a file capped by `max_file_bytes` (tens of
+milliseconds per 2 MB), not the whole scan. Commands count only inside code, a Task table
 or a Commands section, an HTML comment such as `<!-- npm install -->` is not a command, and `make`
 needs a target, so prose such as "Make sure …" is not a command. A scan started at the root also
 picks up fixture trees such as `eval/`; pass an explicit path for the canonical files.

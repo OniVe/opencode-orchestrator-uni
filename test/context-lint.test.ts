@@ -3923,3 +3923,37 @@ describe("R2 mask diagnostics", () => {
     }
   })
 })
+
+// PR #1 audit, round 3 (A14/A15): skipped names and the failure schema id.
+describe("R3 follow-ups", () => {
+  test("PR audit A14: a junction with a skipped name is silent, another name is INFO", async () => {
+    const root = await temporary()
+    const outside = await temporary()
+    try {
+      await write(root, "AGENTS.md", VALID_AGENTS)
+      if (!(await directoryLink(outside, path.join(root, "node_modules")))) return
+      if (!(await directoryLink(outside, path.join(root, "vendorx")))) return
+      const result = await lintContext({ root })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const skipped = findingsOf(result).filter((finding) => finding.detail.includes("was skipped"))
+      expect(skipped.length).toBe(1)
+      expect(skipped[0]?.detail).toContain("vendorx")
+      expect(findingsOf(result).some((finding) => finding.detail.includes("node_modules"))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
+  test("PR audit A15: the library failure payload carries the failure schema id", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", "a".repeat(200))
+      const failure = await lintContext({ root, target: "AGENTS.md", maxFileBytes: 100 })
+      expect(failure).toMatchObject({ ok: false, schema: "context-lint-failure/v1", code: "E_LIMIT_FILE" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

@@ -218,14 +218,14 @@ describe("context-lint/v1 is the report contract, context-lint-failure/v1 the fa
     }
   }
 
-  /** The failure payload the tool emits: the library outcome plus its schema id. */
+  /** The failure payload the library emits, with its own schema id. */
   async function failurePayload(): Promise<Record<string, unknown>> {
     const root = await mkdtemp(path.join(tmpdir(), "schema-context-lint-"))
     try {
       await writeFile(path.join(root, "AGENTS.md"), "a".repeat(101), "utf8")
       const failure = await lintContext({ root, target: "AGENTS.md", maxFileBytes: 100 })
       expect(failure.ok).toBe(false)
-      return { schema: "context-lint-failure/v1", ...failure } as unknown as Record<string, unknown>
+      return failure as unknown as Record<string, unknown>
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -301,6 +301,13 @@ describe("context-lint/v1 is the report contract, context-lint-failure/v1 the fa
     expect(own).toMatchObject({ valid: true, schema: "context-lint-failure/v1" })
     const asReport = checkReport(text, { schemas, expectedSchema: "context-lint/v1" })
     expect(asReport).toMatchObject({ valid: false, code: "E_SCHEMA_MISMATCH" })
+  })
+
+  test("a failure payload without its schema id is invalid", async () => {
+    const schemas = await loadSchemas(SCHEMAS_DIRECTORY)
+    const failureSchema = schemas.get("context-lint-failure/v1") as JsonSchemaNode
+    const withoutId = validateValue({ ok: false, code: "E_LIMIT_FILE", message: "too big" }, failureSchema)
+    expect(withoutId.map((error) => error.path)).toContain("$.schema")
   })
 
   test("both locales' SGR templates carry ok, verdict, closing_list, files, summary and chars", async () => {
