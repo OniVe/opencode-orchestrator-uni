@@ -526,7 +526,7 @@ describe("limits", () => {
   test("500 files hit the default total cap and the last MAJOR is retained", async () => {
     const root = await temporary()
     try {
-      const line = "- rule: " + "q".repeat(50)
+      const line = `- rule: ${"q".repeat(50)}`
       const body = ["## Commands", "bun test", ...Array.from({ length: 4 }, () => line)].join("\n")
       for (let index = 0; index < 500; index += 1) {
         await write(root, `d${index}/AGENTS.md`, index === 499 ? `${body}\n<...>\n` : body)
@@ -1433,7 +1433,7 @@ describe("contract", () => {
       )
       await writeFile(
         path.join(harness.directory, "AGENTS.md"),
-        `${VALID_AGENTS}\n${Array.from({ length: 3 }, () => "- rule: " + "v".repeat(50)).join("\n")}\n`,
+        `${VALID_AGENTS}\n${Array.from({ length: 3 }, () => `- rule: ${"v".repeat(50)}`).join("\n")}\n`,
         "utf8",
       )
       const capped = await runTool(harness, "orch_uni_context_lint", { path: "AGENTS.md", max_findings: 1 })
@@ -1676,7 +1676,9 @@ describe("R8 link scanner and HTML close tags", () => {
         const result = await lintContext({ root, target: "AGENTS.md" })
         expect(result.ok).toBe(true)
         const broken = result.ok
-          ? result.files[0]?.findings.filter((finding) => finding.kind === "broken_link").map((finding) => finding.detail)
+          ? result.files[0]?.findings
+              .filter((finding) => finding.kind === "broken_link")
+              .map((finding) => finding.detail)
           : []
         expect(broken, first).toContain('missing path "missing2.md"')
       }
@@ -2880,7 +2882,7 @@ describe("R6-1 long lines are parsed", () => {
   test("a 4100-char line with a placeholder is a placeholder MAJOR", async () => {
     const root = await temporary()
     try {
-      await write(root, "AGENTS.md", [VALID_AGENTS, "q".repeat(4100 - "<...>".length) + "<...>"].join("\n"))
+      await write(root, "AGENTS.md", [VALID_AGENTS, `${"q".repeat(4100 - "<...>".length)}<...>`].join("\n"))
       const result = await lint(root)
       expect(result.ok).toBe(true)
       if (!result.ok) return
