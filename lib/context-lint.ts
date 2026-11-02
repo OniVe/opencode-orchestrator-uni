@@ -237,9 +237,19 @@ function clip(value: string): string {
 }
 
 function estimateTokens(text: string): number {
-  const chars = [...text].length
+  const chars = codePointLength(text)
   const cyrillic = (text.match(/[\u0400-\u04FF]/g) ?? []).length
   return Math.round(cyrillic / 3 + (chars - cyrillic) / 4)
+}
+
+/**
+ * Number of Unicode code points, counted without materializing `[...text]`
+ * (a 2 MB line would otherwise allocate one array entry per character).
+ */
+function codePointLength(text: string): number {
+  let length = 0
+  for (const _ of text) length += 1
+  return length
 }
 
 /** `..` or `../x` is outside; `..foo` is a normal in-root name. */
@@ -445,6 +455,13 @@ function htmlCloseTagEnd(text: string, index: number, name: string): number | un
 }
 
 /**
+ * Markup that makes `maskCode` rewrite a line: a backtick, an HTML comment or a
+ * `<pre>`/`<code>` open tag (any letter case; a false positive such as
+ * `<prefix` only costs the slow path). A line without it masks to itself.
+ */
+const MASK_MARKUP = /<!--|<pre|<code/i
+
+/**
  * Replace code blocks, `<pre>`/`<code>` spans, indented code and (when
  * `options.inlineCode` is set) inline code and HTML comments with spaces,
  * keeping the line count and every line length. A fence opened with N markers
@@ -492,6 +509,15 @@ function maskCode(
         previousBlank = false
         continue
       }
+    }
+    // Fast path: outside a fence/comment/`<pre>` span, a line with no backtick
+    // and no `<pre>`/`<code>`/`<!--` masks to itself. Reuse the original string
+    // (no per-character rebuild, no copy); the state above was already updated
+    // and `previousBlank` is set exactly as the slow path would.
+    if (!inComment && !inPre && !line.includes("`") && !MASK_MARKUP.test(line)) {
+      masked.push(line)
+      previousBlank = blank
+      continue
     }
     let out = ""
     let inlineTicks = 0
@@ -1843,7 +1869,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     const fenceMasked = maskFences(lines)
     const masked = maskAll(lines)
     const sectionMasked = maskSectionBlocks(lines)
-    const chars = [...body].length
+    const chars = codePointLength(body)
     const words = body.trim() === "" ? 0 : body.trim().split(/\s+/).length
     const file: ContextFileResult = {
       path: relative(root, absolute),

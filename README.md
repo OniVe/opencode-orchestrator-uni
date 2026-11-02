@@ -156,11 +156,12 @@ overflow. A line is scanned however long it is: the link scanner and the placeho
 are linear, so a 4100-character line is checked like any other and a broken link or
 placeholder on it is the real finding, not a marker. Duplicate lines have no inner cap.
 UNC/network targets are never probed. Measured (bun 1.4.2, Windows, fresh
-process): 50 001 broken links with `max_findings: 2` → ~2.1 s and ~320–340 MB
-peak RSS; the peak is dominated by the ordinary per-line pipeline, not by links
-(a 2 MB line with no links already peaks at ~520 MB, and 50k plain lines at
-~250 MB), while the link path retains no per-link records at all. A 2 MB single
-line stays capped at 50 000 candidates instead of materializing every link.
+process): 50 001 broken links with `max_findings: 2` → ~1.4 s and ~67 MB peak
+RSS; 50k plain lines → ~0.14 s / ~65 MB; a 2 MB single line with links →
+~3.1 s / ~116 MB (~41 MB without links). Masking reuses a line as-is when it
+has no backtick and no `<pre>`/`<code>`/`<!--`, so it never copies a line
+character by character, and a 2 MB single line stays capped at 50 000
+candidates instead of materializing every link.
 Limits: ≤ 2 MB per file, ≤ 500 files per scan. `max_findings` (per file) is N per
 severity: up to N MAJOR and N MINOR/INFO are kept, and any excess is replaced by one
 marker (MAJOR when a MAJOR was dropped, otherwise INFO); a MAJOR marker stays in
@@ -389,7 +390,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (287 tests in 9 files, up from
+`npm test` scans only `./test/` — the shipped suite (289 tests in 9 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`
