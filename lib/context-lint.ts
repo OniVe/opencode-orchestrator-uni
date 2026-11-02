@@ -21,10 +21,9 @@
  *   never hides MAJOR silently: above the per-file cap the excess is replaced by
  *   one MAJOR `truncated` finding that stays in `closing_list`; `truncated`
  *   reports every capped list;
- * - line-oriented parsers skip lines longer than `MAX_LINE_LENGTH`, so a minified
- *   bundle pasted into a file cannot make matching quadratic; a skipped line might
- *   hide a broken link or placeholder, so it is reported with one MAJOR marker
- *   that stays in `closing_list` and sets `truncated: true`;
+ * - line-oriented parsers scan every line, however long: the link and placeholder
+ *   regexes are linear, so a minified line cannot make matching quadratic and a
+ *   long line cannot hide a broken link or placeholder behind a skip;
  * - code fences, inline code and HTML comments are masked once and every
  *   content check reads the masked lines: a sample is not a rule.
  */
@@ -143,12 +142,14 @@ const DEFAULT_MAX_FILE_BYTES = 2_000_000
 const DEFAULT_MAX_FILES = 500
 const DEFAULT_MAX_FINDINGS_PER_FILE = 100
 const DEFAULT_MAX_TOTAL_FINDINGS = 1000
-/** Lines longer than this are skipped by the link and placeholder parsers. */
-const MAX_LINE_LENGTH = 4000
 /** Upper bound of a `detail` field that echoes source text. */
 const MAX_DETAIL_LENGTH = 120
-/** Link candidates collected from one file before the list is truncated. */
-const MAX_LINK_CANDIDATES = 2000
+/**
+ * Link candidates collected from one file before the list is truncated; above
+ * the cap the file is reported incomplete (MAJOR marker) instead of failing on
+ * a merely large link list.
+ */
+const MAX_LINK_CANDIDATES = 20_000
 /** Candidates between abort checks and a macrotask yield. */
 const LINK_CHECK_YIELD = 100
 
@@ -400,13 +401,26 @@ async function resolveTargets(
   return files
 }
 
+/** Length of the backtick run that starts at `index`. */
+function backtickRun(text: string, index: number): number {
+  let run = 1
+  while (text[index + run] === "`") run += 1
+  return run
+}
+
 /**
- * Replace code blocks, `<pre>` blocks, indented code and (when
+ * Replace code blocks, `<pre>`/`<code>` spans, indented code and (when
  * `options.inlineCode` is set) inline code and HTML comments with spaces,
  * keeping the line count and every line length. A fence opened with N markers
- * closes only with at least N markers of the same character.
+ * closes only with at least N markers of the same character; a code span
+ * opened with a run of N backticks closes only on a run of exactly N, so
+ * ``a, b`` is one span. `options.indentedCode` (default `true`) masks 4-space
+ * indented code; non-goals counting turns it off to accept its 4-space bullets.
  */
-function maskCode(lines: readonly string[], options: { readonly inlineCode: boolean }): string[] {
+function maskCode(
+  lines: readonly string[],
+  options: { readonly inlineCode: boolean; readonly indentedCode?: boolean },
+): string[] {
   const masked: string[] = []
   let fence: { readonly char: string; readonly length: number } | undefined
   let inComment = false
@@ -430,7 +444,7 @@ function maskCode(lines: readonly string[], options: { readonly inlineCode: bool
     }
     if (!inComment) {
       // CommonMark indented code: four spaces (or a tab) after a blank line.
-      const indented = /^(?: {4,}|\t)/.test(line)
+      const indented = options.indentedCode !== false && /^(?: {4,}|\t)/.test(line)
       if (indented && (inIndented || previousBlank)) {
         inIndented = true
         masked.push(" ".repeat(line.length))
@@ -454,7 +468,8 @@ function maskCode(lines: readonly string[], options: { readonly inlineCode: bool
       }
     }
     let out = ""
-    let inline = false
+    let inlineTicks = 0
+    let inCodeTag = false
     for (let index = 0; index < line.length; index += 1) {
       const character = line[index]
       if (inComment) {
@@ -467,20 +482,44 @@ function maskCode(lines: readonly string[], options: { readonly inlineCode: bool
         }
         continue
       }
-      if (inline) {
-        out += " "
-        if (character === "`") inline = false
+      if (inCodeTag) {
+        if (line.slice(index, index + 7).toLowerCase() === "</code>") {
+          out += "       "
+          index += 6
+          inCodeTag = false
+        } else {
+          out += " "
+        }
+        continue
+      }
+      if (inlineTicks > 0) {
+        if (character === "`") {
+          const run = backtickRun(line, index)
+          out += " ".repeat(run)
+          index += run - 1
+          if (run === inlineTicks) inlineTicks = 0
+        } else {
+          out += " "
+        }
         continue
       }
       if (character === "`" && options.inlineCode) {
-        out += " "
-        inline = true
+        const run = backtickRun(line, index)
+        out += " ".repeat(run)
+        index += run - 1
+        inlineTicks = run
         continue
       }
       if (line.startsWith("<!--", index)) {
         out += "    "
         index += 3
         inComment = true
+        continue
+      }
+      if (options.inlineCode && line.slice(index, index + 6).toLowerCase() === "<code>") {
+        out += "      "
+        index += 5
+        inCodeTag = true
         continue
       }
       out += character
@@ -499,6 +538,15 @@ function maskFences(lines: readonly string[]): string[] {
 /** Fences plus inline code and comments: links, vague phrases and placeholders. */
 function maskAll(lines: readonly string[]): string[] {
   return maskCode(lines, { inlineCode: true })
+}
+
+/**
+ * Fences, `<pre>` and comments only: indented code stays visible, so a 4-space
+ * bullet under a non-goals label is counted as an item. Inline code keeps its
+ * text, like `maskFences`.
+ */
+function maskSectionBlocks(lines: readonly string[]): string[] {
+  return maskCode(lines, { inlineCode: false, indentedCode: false })
 }
 
 /** Heading level of a line, or `undefined` when it is not a heading. */
@@ -691,7 +739,9 @@ async function existingRealPath(target: string): Promise<string | undefined> {
  *   loop is yielded to, so a timer-driven abort can win;
  * - the parent's real path is resolved (and cached) before `existsSync`; an
  *   unknown or out-of-root parent is skipped, so a junction pointing outside
- *   the root is never probed and never reported as a broken link.
+ *   the root is never probed and never reported as a broken link; the real path
+ *   of an existing target is cached as well, so 20k anchors to one file cost
+ *   one `realpath`;
  * There is no per-file cap on reported broken links: the finding sink and the
  * global cap replace overflow with a MAJOR marker instead of dropping MAJORs.
  */
@@ -708,7 +758,6 @@ async function checkLinks(
   let candidatesTruncated = false
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    if (line.length > MAX_LINE_LENGTH) continue
     for (const match of line.matchAll(LINK_TARGET)) {
       const target = localLinkTarget(match[1])
       if (target === undefined) continue
@@ -721,6 +770,8 @@ async function checkLinks(
     if (candidatesTruncated) break
   }
   const parentRealPaths = new Map<string, string | undefined>()
+  const targetRealPaths = new Map<string, string | undefined>()
+  const probed = new Map<string, boolean>()
   const seen = new Set<string>()
   for (let index = 0; index < candidates.length; index += 1) {
     if (index % LINK_CHECK_YIELD === 0) {
@@ -765,10 +816,23 @@ async function checkLinks(
     // Unknown or out-of-root parent: do not probe the child (a junction could
     // otherwise pull `existsSync` outside the workspace).
     if (parentReal === undefined || !isInside(realRoot, parentReal)) continue
-    if (existsSync(resolved)) {
+    // The probe itself is cached per resolved path: 20k anchors to one file are
+    // one probe; a broken target repeated on many lines is still reported per
+    // candidate line below.
+    let exists = probed.get(resolved)
+    if (exists === undefined) {
+      exists = existsSync(resolved)
+      probed.set(resolved, exists)
+    }
+    if (exists) {
       // An existing symlink/junction inside the root can still resolve outside
-      // it; such a target is not ours to check either.
-      const targetReal = await existingRealPath(resolved)
+      // it; such a target is not ours to check either. The real path is cached:
+      // a list of 20k anchors to one file must not cost 20k `realpath` calls.
+      let targetReal = targetRealPaths.get(resolved)
+      if (!targetRealPaths.has(resolved)) {
+        targetReal = await existingRealPath(resolved)
+        targetRealPaths.set(resolved, targetReal)
+      }
       if (targetReal === undefined || !isInside(realRoot, targetReal)) continue
       continue
     }
@@ -792,7 +856,6 @@ function checkPlaceholders(
   let openQuestionsLevel: number | undefined
   for (let index = 0; index < lines.length; index += 1) {
     const raw = lines[index]
-    if (raw.length > MAX_LINE_LENGTH) continue
     // Masked text loses code and comments but keeps headings: a `## Open
     // questions` inside a fence must not open the allowance.
     const line = masked[index] ?? raw
@@ -831,43 +894,76 @@ function checkFirstLines(file: ContextFileResult, lines: readonly string[], sink
 }
 
 /**
- * Split an inline list at the top level only: never inside `(…)`, `[…]` or
- * `` `…` ``. Separators are `;`, `,`, `X and Y` / `X и Y` and a numbered marker
+ * Split an inline list at the top level only: never inside `(…)`, `[…]`, a
+ * backtick span of any width (``…``) or an HTML `<code>…</code>` span.
+ * Separators are `;`, `,`, `X and Y` / `X и Y` and a numbered marker
  * (`1.`/`2)`); a comma or semicolon inside brackets or code is content.
  */
 function splitTopLevelItems(text: string): string[] {
   const parts: string[] = []
   let current = ""
   let depth = 0
-  let inCode = false
+  let ticks = 0
+  let inCodeTag = false
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index]
-    if (character === "`") inCode = !inCode
-    if (!inCode) {
-      if (character === "(" || character === "[") depth += 1
-      else if (character === ")" || character === "]") depth = Math.max(0, depth - 1)
-      const previous = index === 0 ? " " : text[index - 1]
-      if (depth === 0 && (character === ";" || character === ",")) {
-        parts.push(current)
-        current = ""
-        continue
+    if (inCodeTag) {
+      if (text.slice(index, index + 7).toLowerCase() === "</code>") {
+        current += text.slice(index, index + 7)
+        index += 6
+        inCodeTag = false
+      } else {
+        current += character
       }
-      const joined = /^(?:and|и)\s+/i.exec(text.slice(index))
-      if (depth === 0 && /\s/.test(previous) && joined !== null) {
-        parts.push(current)
-        current = ""
-        index += joined[0].length - 1
-        continue
+      continue
+    }
+    if (ticks > 0) {
+      if (character === "`") {
+        const run = backtickRun(text, index)
+        current += text.slice(index, index + run)
+        index += run - 1
+        if (run === ticks) ticks = 0
+      } else {
+        current += character
       }
-      // A numbered marker starts an item only at the start or after whitespace;
-      // `AC1.1` and `v1.2` stay inside their item.
-      const numbered = /^\d+[.)]\s+/.exec(text.slice(index))
-      if (depth === 0 && /\s/.test(previous) && numbered !== null) {
-        parts.push(current)
-        current = ""
-        index += numbered[0].length - 1
-        continue
-      }
+      continue
+    }
+    if (character === "`") {
+      const run = backtickRun(text, index)
+      current += text.slice(index, index + run)
+      index += run - 1
+      ticks = run
+      continue
+    }
+    if (text.slice(index, index + 6).toLowerCase() === "<code>") {
+      current += text.slice(index, index + 6)
+      index += 5
+      inCodeTag = true
+      continue
+    }
+    if (character === "(" || character === "[") depth += 1
+    else if (character === ")" || character === "]") depth = Math.max(0, depth - 1)
+    const previous = index === 0 ? " " : text[index - 1]
+    if (depth === 0 && (character === ";" || character === ",")) {
+      parts.push(current)
+      current = ""
+      continue
+    }
+    const joined = /^(?:and|и)\s+/i.exec(text.slice(index))
+    if (depth === 0 && /\s/.test(previous) && joined !== null) {
+      parts.push(current)
+      current = ""
+      index += joined[0].length - 1
+      continue
+    }
+    // A numbered marker starts an item only at the start or after whitespace;
+    // `AC1.1` and `v1.2` stay inside their item.
+    const numbered = /^\d+[.)]\s+/.exec(text.slice(index))
+    if (depth === 0 && /\s/.test(previous) && numbered !== null) {
+      parts.push(current)
+      current = ""
+      index += numbered[0].length - 1
+      continue
     }
     current += character
   }
@@ -898,7 +994,8 @@ function isSeparatorRow(line: string): boolean {
  * Count top-level items in a section: bullets, numbered items, table rows and
  * paragraphs. A wrapped paragraph is one item (not one per line); a bullet is
  * top-level when it is not nested deeper than the list's base indent, so a
- * 2-space list under a bold label stays top-level.
+ * 2-space list under a bold label stays top-level. A bullet at 0–4 spaces is
+ * an item; anything indented 5+ is code or a continuation, not an item.
  */
 function countSectionItems(lines: readonly string[], start: number): number {
   let count = 0
@@ -922,6 +1019,7 @@ function countSectionItems(lines: readonly string[], start: number): number {
     }
     if (/^(?:[-*+]|\d+[.)])\s+/.test(raw.trimStart())) {
       paragraphOpen = false
+      if (indent > 4) continue // code, not a list item
       bulletIndent = bulletIndent === undefined ? indent : Math.min(bulletIndent, indent)
       // A sub-bullet belongs to its parent item, not to the count.
       if (indent > bulletIndent + 1) continue
@@ -945,7 +1043,8 @@ function countSectionItems(lines: readonly string[], start: number): number {
 /**
  * A non-goals section: a heading (numbered too, alone or combined as
  * `Goal and non-goals`), an inline `Non-goals: A; B; C`, or a wrapped label
- * followed by bullets. The count is top-level items, 3–7 by contract.
+ * followed by bullets. The count is top-level items, 3–7 by contract; bullets
+ * at 0–4 spaces under the label count, deeper indentation and fenced code do not.
  */
 function countNonGoals(lines: readonly string[]): { readonly present: boolean; readonly count: number } {
   for (let index = 0; index < lines.length; index += 1) {
@@ -1270,12 +1369,15 @@ function checkAcRows(file: ContextFileResult, lines: readonly string[], sink: Fi
 /**
  * Structural section checks. Commands/Boundaries/Verification/Definition of done
  * read the full mask (`masked`): a command or a check that exists only as inline
- * code is a sample, not a rule. Requirements, AC and non-goals read
- * `fenceMasked`: inline code keeps its text there (`AC1.1`, `R1`).
+ * code is a sample, not a rule. Requirements and AC read `fenceMasked`: inline
+ * code keeps its text there (`AC1.1`, `R1`). Non-goals read `sectionMasked`,
+ * which also keeps 4-space bullets visible: a bullet under the label is an item,
+ * not code.
  */
 function checkSections(
   file: ContextFileResult,
   fenceMasked: readonly string[],
+  sectionMasked: readonly string[],
   masked: readonly string[],
   sink: FindingSink,
 ): void {
@@ -1314,7 +1416,7 @@ function checkSections(
     }
   }
   if (file.kind === "spec") {
-    const nonGoals = countNonGoals(fenceMasked)
+    const nonGoals = countNonGoals(sectionMasked)
     if (!nonGoals.present) {
       sink.push({
         severity: "MAJOR",
@@ -1371,12 +1473,46 @@ function checkSections(
   }
 }
 
+/**
+ * A top-level `and`/`и` join: never inside `(…)`, `[…]` or a code span. `and`
+ * must be a whole word and `и` a separate word, so `Android` and `импорт` do
+ * not match.
+ */
+function topLevelJoin(text: string): boolean {
+  let depth = 0
+  let ticks = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (character === "`") {
+      const run = backtickRun(text, index)
+      ticks = ticks === 0 ? run : run === ticks ? 0 : ticks
+      index += run - 1
+      continue
+    }
+    if (ticks > 0) continue
+    if (character === "(" || character === "[") {
+      depth += 1
+      continue
+    }
+    if (character === ")" || character === "]") {
+      depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (depth > 0 || index === 0) continue
+    if (!/[\s,;:(]/.test(text[index - 1])) continue
+    const rest = text.slice(index)
+    if (/^and\b/i.test(rest)) return true
+    if (/^и(?=$|[\s,;:.!?—–-])/i.test(rest)) return true
+  }
+  return false
+}
+
 function checkAndChains(file: ContextFileResult, lines: readonly string[], sink: FindingSink): void {
   if (file.kind !== "spec") return
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
     if (!/^\s*[-*]?\s*\*{0,2}R\d+/i.test(line)) continue
-    if (/\band\b/i.test(line) || /(?:^|[\s,;:])и(?:[\s,;:]|$)/i.test(line)) {
+    if (topLevelJoin(line)) {
       sink.push({
         severity: "MINOR",
         kind: "other",
@@ -1493,6 +1629,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     // sample, not a rule.
     const fenceMasked = maskFences(lines)
     const masked = maskAll(lines)
+    const sectionMasked = maskSectionBlocks(lines)
     const chars = [...body].length
     const words = body.trim() === "" ? 0 : body.trim().split(/\s+/).length
     const file: ContextFileResult = {
@@ -1514,7 +1651,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     }
     checkPlaceholders(file, lines, masked, sink)
     checkFirstLines(file, lines, sink)
-    checkSections(file, fenceMasked, masked, sink)
+    checkSections(file, fenceMasked, sectionMasked, masked, sink)
     checkAcRows(file, fenceMasked, sink)
     checkAndChains(file, masked, sink)
     if (options.signal?.aborted) return { ok: false, code: "E_ABORTED", message: "context lint aborted" }
@@ -1529,19 +1666,6 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
         evidence: `${file.path}:1`,
         detail: `link candidates truncated at ${MAX_LINK_CANDIDATES}; result incomplete (further links are not checked)`,
         fix: "Split the file or remove generated links so every target is checked.",
-      })
-    }
-    const longLines = lines.reduce((count, line) => (line.length > MAX_LINE_LENGTH ? count + 1 : count), 0)
-    if (longLines > 0) {
-      // Line-oriented parsers skip long lines, so a broken link or placeholder on
-      // one is not seen. That is an incomplete result: a MAJOR marker keeps the
-      // verdict honest instead of letting a pass hide it.
-      sink.kept.push({
-        severity: "MAJOR",
-        kind: "other",
-        evidence: `${file.path}:1`,
-        detail: `long line skipped: ${longLines} line(s) over ${MAX_LINE_LENGTH} characters were not parsed (possible broken links or placeholders are not checked)`,
-        fix: "Split the line; every line must stay under the parser limit.",
       })
     }
     if (sink.majorDropped) {
@@ -1565,7 +1689,7 @@ export async function lintContext(options: ContextLintOptions): Promise<ContextL
     scanned.push({
       ...file,
       findings: sink.kept,
-      truncated: sink.truncated || links.truncated || longLines > 0,
+      truncated: sink.truncated || links.truncated,
     })
   }
 
