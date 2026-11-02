@@ -1687,6 +1687,31 @@ describe("R8 link scanner and HTML close tags", () => {
     }
   })
 
+  test("an angle destination may contain a literal `](`", async () => {
+    const root = await temporary()
+    try {
+      await write(root, "AGENTS.md", `${VALID_AGENTS}\n[v](<docs/a](b.md>)\n`)
+      const missing = await lintContext({ root, target: "AGENTS.md" })
+      expect(missing.ok).toBe(true)
+      const broken = missing.ok
+        ? missing.files[0]?.findings
+            .filter((finding) => finding.kind === "broken_link")
+            .map((finding) => finding.detail)
+        : []
+      expect(broken).toContain('missing path "docs/a](b.md"')
+
+      await write(root, "docs/a](b.md", "# keep")
+      const present = await lintContext({ root, target: "AGENTS.md" })
+      expect(present.ok).toBe(true)
+      const stillBroken = present.ok
+        ? present.files[0]?.findings.filter((finding) => finding.kind === "broken_link")
+        : []
+      expect(stillBroken).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("titles hide `)` and `](`; escaped quotes and angle destinations parse", async () => {
     const root = await temporary()
     try {
