@@ -149,14 +149,14 @@ const MAX_DETAIL_LENGTH = 120
  * the cap the file is reported incomplete (MAJOR marker) instead of failing on
  * a merely large link list.
  */
-const MAX_LINK_CANDIDATES = 20_000
+const MAX_LINK_CANDIDATES = 50_000
 /** Candidates between abort checks and a macrotask yield. */
 const LINK_CHECK_YIELD = 100
+/** Source characters between abort checks inside the linear link scanner. */
+const LINK_SCAN_ABORT_INTERVAL = 1_000
 
 const SKIP = new Set(["node_modules", ".git", ".ae", "dist", "build", "target", "vendor"])
 const TARGET_NAME = /^(AGENTS|SPEC|CLAUDE)\.md$/i
-/** `](target)` of a Markdown link, including the inner link of a badge. */
-const LINK_TARGET = /\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g
 /**
  * Linear: `<...>` (three or more dots) or a TODO/TBD/FIXME marker. A tag such
  * as `<DoD>` or a named slot `<name>` is markup, not a placeholder.
@@ -409,6 +409,19 @@ function backtickRun(text: string, index: number): number {
 }
 
 /**
+ * End index (inclusive) of an HTML open tag `<name …>` starting at `index`, or
+ * `undefined` when this position is not that tag. `<code>`/`<code class=…>` and
+ * `<pre>`/`<pre class=…>` match; `<codes>` does not.
+ */
+function htmlOpenTagEnd(text: string, index: number, name: string): number | undefined {
+  if (text.slice(index, index + name.length + 1).toLowerCase() !== `<${name}`) return undefined
+  const next = text[index + name.length + 1]
+  if (next !== ">" && next !== undefined && !/\s/.test(next)) return undefined
+  const close = text.indexOf(">", index + name.length + 1)
+  return close === -1 ? undefined : close
+}
+
+/**
  * Replace code blocks, `<pre>`/`<code>` spans, indented code and (when
  * `options.inlineCode` is set) inline code and HTML comments with spaces,
  * keeping the line count and every line length. A fence opened with N markers
@@ -416,6 +429,9 @@ function backtickRun(text: string, index: number): number {
  * opened with a run of N backticks closes only on a run of exactly N, so
  * ``a, b`` is one span. `options.indentedCode` (default `true`) masks 4-space
  * indented code; non-goals counting turns it off to accept its 4-space bullets.
+ * A `<pre>…</pre>` span is masked in place, preserving the text before and
+ * after it; an unclosed `<pre>` masks the following lines too, but never the
+ * current line prefix.
  */
 function maskCode(
   lines: readonly string[],
@@ -436,13 +452,7 @@ function maskCode(
       previousBlank = false
       continue
     }
-    if (inPre) {
-      masked.push(" ".repeat(line.length))
-      if (line.toLowerCase().includes("</pre>")) inPre = false
-      previousBlank = false
-      continue
-    }
-    if (!inComment) {
+    if (!inComment && !inPre) {
       // CommonMark indented code: four spaces (or a tab) after a blank line.
       const indented = options.indentedCode !== false && /^(?: {4,}|\t)/.test(line)
       if (indented && (inIndented || previousBlank)) {
@@ -459,19 +469,22 @@ function maskCode(
         previousBlank = false
         continue
       }
-      const pre = /<pre\b/i.exec(line)
-      if (pre !== null) {
-        masked.push(" ".repeat(line.length))
-        if (!line.slice(pre.index).toLowerCase().includes("</pre>")) inPre = true
-        previousBlank = false
-        continue
-      }
     }
     let out = ""
     let inlineTicks = 0
     let inCodeTag = false
     for (let index = 0; index < line.length; index += 1) {
       const character = line[index]
+      if (inPre) {
+        if (line.slice(index, index + 6).toLowerCase() === "</pre>") {
+          out += "      "
+          index += 5
+          inPre = false
+        } else {
+          out += " "
+        }
+        continue
+      }
       if (inComment) {
         if (line.startsWith("-->", index)) {
           out += "   "
@@ -516,16 +529,26 @@ function maskCode(
         inComment = true
         continue
       }
-      if (options.inlineCode && line.slice(index, index + 6).toLowerCase() === "<code>") {
-        out += "      "
-        index += 5
-        inCodeTag = true
+      if (options.inlineCode) {
+        const codeEnd = htmlOpenTagEnd(line, index, "code")
+        if (codeEnd !== undefined) {
+          out += " ".repeat(codeEnd - index + 1)
+          index = codeEnd
+          inCodeTag = true
+          continue
+        }
+      }
+      const preEnd = htmlOpenTagEnd(line, index, "pre")
+      if (preEnd !== undefined) {
+        out += " ".repeat(preEnd - index + 1)
+        index = preEnd
+        inPre = true
         continue
       }
       out += character
     }
     masked.push(out)
-    previousBlank = blank
+    previousBlank = inPre ? false : blank
   }
   return masked
 }
@@ -731,7 +754,68 @@ async function existingRealPath(target: string): Promise<string | undefined> {
 }
 
 /**
+ * Target of a `](…)` candidate: the first non-space run, optionally followed by
+ * a quoted title. Anything else (an empty target or an unquoted tail) is not a
+ * link, matching the former `\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)` contract.
+ */
+function linkTargetOf(raw: string): string | undefined {
+  const text = raw.replace(/^\s+/, "")
+  if (text === "") return undefined
+  const space = text.search(/\s/)
+  const target = space === -1 ? text : text.slice(0, space)
+  if (target === "") return undefined
+  const rest = space === -1 ? "" : text.slice(space).trim()
+  if (rest !== "" && !/^["'][^"']*["']$/.test(rest)) return undefined
+  return target
+}
+
+/**
+ * Targets of every `](target)` on one line, in one linear pass: `](` pushes a
+ * pending start, `)` pops the last pending start and emits its target, an
+ * unmatched `)` or an unclosed `](` is ignored. A backslash escapes the next
+ * character, so `\]\(x\)` is prose and `[a](b\)c)` keeps its escaped `)`.
+ * The scanner never backtracks, so a line of `](` without `)` is O(n), not
+ * O(n²). Nested `](…](…)` pairs are consumed innermost-first by the stack.
+ * Aborts are checked every `LINK_SCAN_ABORT_INTERVAL` characters.
+ */
+function scanLinkTargets(
+  line: string,
+  signal: AbortSignal | undefined,
+): { readonly targets: readonly string[]; readonly aborted: boolean } {
+  const targets: string[] = []
+  const pending: number[] = []
+  let checked = 0
+  for (let index = 0; index < line.length; index += 1) {
+    checked += 1
+    if (checked >= LINK_SCAN_ABORT_INTERVAL) {
+      if (signal?.aborted) return { targets, aborted: true }
+      checked = 0
+    }
+    const character = line[index]
+    if (character === "\\") {
+      index += 1
+      continue
+    }
+    if (character === "]" && line[index + 1] === "(") {
+      pending.push(index + 2)
+      index += 1
+      continue
+    }
+    if (character === ")") {
+      const start = pending.pop()
+      if (start !== undefined) {
+        const target = linkTargetOf(line.slice(start, index))
+        if (target !== undefined) targets.push(target)
+      }
+    }
+  }
+  return { targets, aborted: false }
+}
+
+/**
  * Check local relative links. Cost and containment are bounded:
+ * - the parser is a single-pass stack scanner (linear in the line length), so
+ *   `](` without a closing `)` cannot trigger quadratic backtracking;
  * - at most `MAX_LINK_CANDIDATES` candidates are collected per file; exceeding
  *   the cap returns `truncated: true` and the caller adds one MAJOR marker (the
  *   unverified remainder must never let the verdict pass);
@@ -758,8 +842,10 @@ async function checkLinks(
   let candidatesTruncated = false
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    for (const match of line.matchAll(LINK_TARGET)) {
-      const target = localLinkTarget(match[1])
+    const scanned = scanLinkTargets(line, signal)
+    if (scanned.aborted) return { aborted: true, truncated: candidatesTruncated }
+    for (const raw of scanned.targets) {
+      const target = localLinkTarget(raw)
       if (target === undefined) continue
       if (candidates.length >= MAX_LINK_CANDIDATES) {
         candidatesTruncated = true
@@ -894,10 +980,11 @@ function checkFirstLines(file: ContextFileResult, lines: readonly string[], sink
 }
 
 /**
- * Split an inline list at the top level only: never inside `(…)`, `[…]`, a
- * backtick span of any width (``…``) or an HTML `<code>…</code>` span.
- * Separators are `;`, `,`, `X and Y` / `X и Y` and a numbered marker
- * (`1.`/`2)`); a comma or semicolon inside brackets or code is content.
+ * Split an inline list at the top level only: never inside `(…)`, `[…]`, `{…}`,
+ * a backtick span of any width (``…``), an HTML `<code …>…</code>` span or a
+ * `<pre>…</pre>` span. Separators are `;`, `,`, `X and Y` / `X и Y` and a
+ * numbered marker (`1.`/`2)`); a comma or semicolon inside brackets or code is
+ * content.
  */
 function splitTopLevelItems(text: string): string[] {
   const parts: string[] = []
@@ -905,8 +992,19 @@ function splitTopLevelItems(text: string): string[] {
   let depth = 0
   let ticks = 0
   let inCodeTag = false
+  let inPre = false
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index]
+    if (inPre) {
+      if (text.slice(index, index + 6).toLowerCase() === "</pre>") {
+        current += text.slice(index, index + 6)
+        index += 5
+        inPre = false
+      } else {
+        current += character
+      }
+      continue
+    }
     if (inCodeTag) {
       if (text.slice(index, index + 7).toLowerCase() === "</code>") {
         current += text.slice(index, index + 7)
@@ -935,14 +1033,22 @@ function splitTopLevelItems(text: string): string[] {
       ticks = run
       continue
     }
-    if (text.slice(index, index + 6).toLowerCase() === "<code>") {
-      current += text.slice(index, index + 6)
-      index += 5
+    const preEnd = htmlOpenTagEnd(text, index, "pre")
+    if (preEnd !== undefined) {
+      current += text.slice(index, preEnd + 1)
+      index = preEnd
+      inPre = true
+      continue
+    }
+    const codeEnd = htmlOpenTagEnd(text, index, "code")
+    if (codeEnd !== undefined) {
+      current += text.slice(index, codeEnd + 1)
+      index = codeEnd
       inCodeTag = true
       continue
     }
-    if (character === "(" || character === "[") depth += 1
-    else if (character === ")" || character === "]") depth = Math.max(0, depth - 1)
+    if (character === "(" || character === "[" || character === "{") depth += 1
+    else if (character === ")" || character === "]" || character === "}") depth = Math.max(0, depth - 1)
     const previous = index === 0 ? " " : text[index - 1]
     if (depth === 0 && (character === ";" || character === ",")) {
       parts.push(current)
@@ -1474,9 +1580,9 @@ function checkSections(
 }
 
 /**
- * A top-level `and`/`и` join: never inside `(…)`, `[…]` or a code span. `and`
- * must be a whole word and `и` a separate word, so `Android` and `импорт` do
- * not match.
+ * A top-level `and`/`и` join: never inside `(…)`, `[…]`, `{…}` or a code span.
+ * `and` must be a whole word and `и` a separate word, so `Android` and `импорт`
+ * do not match.
  */
 function topLevelJoin(text: string): boolean {
   let depth = 0
@@ -1490,11 +1596,11 @@ function topLevelJoin(text: string): boolean {
       continue
     }
     if (ticks > 0) continue
-    if (character === "(" || character === "[") {
+    if (character === "(" || character === "[" || character === "{") {
       depth += 1
       continue
     }
-    if (character === ")" || character === "]") {
+    if (character === ")" || character === "]" || character === "}") {
       depth = Math.max(0, depth - 1)
       continue
     }

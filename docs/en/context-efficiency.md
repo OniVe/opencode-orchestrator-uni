@@ -111,8 +111,8 @@ supersedes: —
 ## 2. Goal and non-goals
 **Goal:** <one sentence>.
 **Non-goals:** <3–7 items we deliberately do not do>.
-<!-- one item per line with `-` at 0–2 spaces; a wrapped paragraph is one item;
-     4-space-indented bullets under a bold label are code, not items. -->
+<!-- one item per line with `-` at 0–4 spaces; a wrapped paragraph is one item;
+     fenced, `<pre>` and bullets indented 5+ are code, not items. -->
 
 ## 3. Scenarios
 | ID | Role | Goal | Value | Independent test |

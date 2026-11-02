@@ -279,8 +279,24 @@ describe("package identity", () => {
   })
 })
 
-// R6-5: both READMEs state the same shipped test count and the same file count,
-// so a round that adds tests cannot update one locale and forget the other.
+// R7-4: the tool scans every line in full, so no agent prompt may advertise a
+// long-line skip/marker that the implementation does not have.
+describe("agent prompt caps match the tool", () => {
+  test("no agent prompt advertises a skipped long line or a >4000 marker", async () => {
+    const violations: string[] = []
+    const retired = />\s*4000\b|skipped long line|пропущенная длинная строка/gi
+    for (const file of await agentFiles()) {
+      const markdown = await readFile(path.join(AGENTS_DIRECTORY, file), "utf8")
+      for (const match of markdown.matchAll(retired)) violations.push(`${file}: ${match[0]}`)
+    }
+    expect(violations).toEqual([])
+  })
+})
+
+// R6-5/R7-7: both READMEs state the same shipped test count and the same file
+// count, and the English count equals the pinned constant, so a round that adds
+// tests cannot leave both locales stale at the same old number.
+const SHIPPED_TEST_COUNT = 276
 describe("README test count", () => {
   test("both READMEs agree on the shipped test count and 9 files", async () => {
     const guards = [
@@ -298,6 +314,7 @@ describe("README test count", () => {
     const russian = counts[1]
     expect(english.tests).toBeGreaterThan(0)
     expect(english.tests).toBe(russian.tests)
+    expect(english.tests).toBe(SHIPPED_TEST_COUNT)
     expect(english.files).toBe(9)
     expect(russian.files).toBe(9)
   })
