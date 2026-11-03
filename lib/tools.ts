@@ -692,7 +692,15 @@ export async function registerAuditTools(
     const tracked = budget.tracked(target)
     const counters = budget.stats(target)
     const { session: sessionConfig, toolOutput } = budget.config
+    const guard = budget.guard()
     const getFn = sessionMethod<SessionGetFn>(session, "get")
+    if (getFn === undefined && !tracked) {
+      return failure(
+        "E_NO_API",
+        "this OpenCode build exposes no session.get() and the session is not tracked by this plugin instance",
+        { sessionID: target },
+      )
+    }
     let info: Record<string, unknown> | undefined
     let getError: unknown
     if (getFn !== undefined) {
@@ -703,11 +711,15 @@ export async function registerAuditTools(
       }
     }
     // A session this instance never observed is only "not found" when the store
-    // also refuses it; a known session with zero requests is a valid `tracked:false`.
+    // says so; a transient error (lock, permission, transport) stays `E_INTERNAL`
+    // instead of masquerading as a missing session. A known session with zero
+    // requests is a valid `tracked:false` report.
     if (info === undefined && getError !== undefined && !tracked) {
-      return failure("E_NOT_FOUND", `session ${target} was not found: ${errorMessage(getError)}`, {
-        sessionID: target,
-      })
+      const message = errorMessage(getError)
+      if (/not ?found|unknown/i.test(message)) {
+        return failure("E_NOT_FOUND", `session ${target} was not found: ${message}`, { sessionID: target })
+      }
+      return failure("E_INTERNAL", message, { sessionID: target })
     }
     return json({
       ok: true,
@@ -722,8 +734,12 @@ export async function registerAuditTools(
       compactionLimitReached: compactionLimitReached(budget.config, counters.compactions),
       toolsPerTurn: counters.requests > 0 ? Math.round((counters.toolCalls / counters.requests) * 100) / 100 : 0,
       tracked,
-      guard: { available: true, hooksRegistered: true },
-      ...(info === undefined ? {} : { session: info }),
+      guard,
+      ...(getFn === undefined
+        ? { session: null, limitations: ["session.get is unavailable in this build"] }
+        : info === undefined
+          ? {}
+          : { session: info }),
     })
   }
 
@@ -784,12 +800,13 @@ export async function registerAuditTools(
     editor.add({
       name: "session_stats",
       description:
-        "Session protocol counters of a session: requests, estimated prompt tokens (last/max), budget band, compactions, " +
-        "failed compactions, reminders injected, tool calls, capped tool outputs and chars kept out of context, plus the " +
+        "Session protocol counters of a session: requests, estimated prompt tokens (last/max), budget band, confirmed " +
+        "compactions and compaction attempts, failed compactions, the live compaction source, reminders injected, tool " +
+        "calls and capped tool outputs (totals and per normalized tool name), chars kept out of context, plus the " +
         "configured limits and toolsPerTurn. Read-only; counters belong to this plugin instance. `sessionID` may name any " +
         "session on this server, not only a child of the caller. Returns JSON {ok, sessionID, counters, limits, overBudget, " +
-        "compactionLimitReached, toolsPerTurn, tracked, guard, session?} or a typed code " +
-        "(E_INPUT|E_NOT_FOUND|E_UNAVAILABLE|E_ABORTED).",
+        "compactionLimitReached, toolsPerTurn, tracked, guard, session?, limitations?} or a typed code " +
+        "(E_INPUT|E_NOT_FOUND|E_INTERNAL|E_NO_API|E_UNAVAILABLE|E_ABORTED).",
       input: SESSION_STATS_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },
       execute: sessionStatsTool,

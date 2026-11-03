@@ -287,6 +287,24 @@ describe("opencode-orchestrator-uni", () => {
     expect(agents.size).toBe(9)
   })
 
+  test("hostile options.locale values do not break setup", async () => {
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    const hostile = {
+      toJSON() {
+        throw new Error("toJSON exploded")
+      },
+      toString() {
+        throw new Error("toString exploded")
+      },
+    }
+    for (const value of [10n, cyclic, hostile]) {
+      const { agents, warnings } = await runSetup({ locale: value })
+      expect(agents.size).toBe(9)
+      expect(warnings.some((line) => line.includes("options.locale"))).toBe(true)
+    }
+  })
+
   test("agents carry no model without options (subagents inherit the session model)", async () => {
     const { agents } = await runSetup()
     for (const agent of agents.values()) expect(agent.model).toBeUndefined()
@@ -417,9 +435,10 @@ describe("opencode-orchestrator-uni", () => {
 
   test("setup registers the guard hooks and subscribes to compaction events", async () => {
     const { sessionHooks, toolHooks, subscriptionSignals } = await runSetup({ locale: "ru" })
-    // This harness exposes an event stream, so the compaction hook is not
-    // registered: the subscription is the compaction source.
-    expect([...sessionHooks.keys()]).toEqual(["context"])
+    // The compaction hook is registered on every host (it counts attempts and
+    // provides liveness when the stream dies); the event stream is the primary
+    // source for confirmed compactions.
+    expect([...sessionHooks.keys()].sort()).toEqual(["compaction", "context"])
     expect([...toolHooks.keys()]).toEqual(["execute.after"])
     expect(subscriptionSignals).toHaveLength(2) // session index + compaction events
   })
@@ -472,6 +491,21 @@ describe("opencode-orchestrator-uni", () => {
     expect(prompts[0]).toMatchObject({ sessionID: "ses_test", delivery: "queue" })
     expect(String((prompts[0] as { text?: string }).text)).toContain("context-efficiency.md")
   })
+
+  for (const locale of ["ru", "en"] as const) {
+    test(`/handoff writes the canonical path and asks before committing (${locale})`, async () => {
+      const { commands, prompts } = await runSetup({ locale })
+      await commands.get("handoff")!.execute({
+        sessionID: "ses_test",
+        prompt: { text: "/handoff audit round" },
+        delivery: "queue",
+      })
+      const text = String((prompts.at(-1) as { text?: string } | undefined)?.text ?? "")
+      expect(text).toContain("docs/planning/handoff-<YYYY-MM-DD>.md")
+      expect(text).toMatch(/коммит|commit/i)
+      expect(text).toContain(locale === "ru" ? "не коммить без подтверждения" : "do not commit without the owner")
+    })
+  }
 
   /** Text the `/agents-md` handler injects for one typed goal. */
   async function agentsMdGoal(locale: Locale, goal: string): Promise<string> {

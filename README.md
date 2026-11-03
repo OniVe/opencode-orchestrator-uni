@@ -64,7 +64,7 @@ namespace and three slash commands — see [Tools](#tools) and [Commands](#comma
 | --- | --- |
 | `/agents-md` | Injects the AGENTS.md audit/draft workflow: `context-efficiency.md` template, `orch_uni_context_lint`, `context-lint`, approval before writing. |
 | `/spec` | Injects the SPEC.md workflow: brief, clarifying questions, EARS/AC/traceability, `orch_uni_context_lint`, `context-lint`, approval before writing. |
-| `/handoff` | Injects the slice-closing workflow: session and working-tree facts, the `session-discipline.md` handoff template, writes `docs/planning/handoff-<date>.md`. |
+| `/handoff` | Injects the slice-closing workflow: session and working-tree facts, the `session-discipline.md` handoff template, writes `docs/planning/handoff-<YYYY-MM-DD>.md`. |
 
 A command is a prompt, not a writer: its handler injects a workflow prompt into the
 current session. The orchestrator then follows the usual evidence and approval rules.
@@ -275,26 +275,38 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
   "counters": {
     "requests": 12, "promptTokensLast": 151204, "promptTokensMax": 161002,
     "promptTokensMedian": 148900, "band": 1, "compactions": 1,
-    "compactionFailures": 0, "compactionSource": "event",
+    "compactionAttempts": 1, "compactionFailures": 0, "compactionSource": "event",
     "reminders": 2, "toolCalls": 31, "outputsCapped": 1,
-    "outputCharsSaved": 18422, "errors": 0
+    "outputCharsSaved": 18422, "errors": 0,
+    "toolCallsByTool": { "shell": 18, "bash": 6, "webfetch": 2, "read": 5 },
+    "toolOutputsCappedByTool": { "shell": 1, "bash": 0, "webfetch": 0, "read": 0 }
   },
   "limits": { "promptTokensSoft": 150000, "maxCompactions": 1, "maxToolOutputChars": 20000 },
   "overBudget": true, "compactionLimitReached": true, "toolsPerTurn": 2.58,
-  "tracked": true, "guard": { "available": true, "hooksRegistered": true } }
+  "tracked": true,
+  "guard": { "available": true, "hooksRegistered": true, "sessionEnabled": true,
+             "toolOutputEnabled": true, "compactionSource": "event", "eventLive": true } }
 ```
 
 `sessionID` may name **any session on this server**, not only a child of the caller;
 that is deliberate — the orchestrator uses the report to control every slice it runs.
-Counters are per plugin instance, and `tracked` is `true` only for a session this
-instance observed. `band` is the highest budget level reached (`0` below the soft
-threshold); `promptTokensMedian` is the median over the last 256 requests;
-`toolCalls` includes nested Code Mode calls; `outputCharsSaved` is a character
-count, not bytes, and an upper estimate (the injected stub is subtracted). A
+Counters are per plugin instance, and `tracked` is `true` once any event or hook
+observed the session; a `session.deleted` event forgets it. `band` is the highest
+budget level reached (`0` below the soft threshold); `promptTokensMedian` is the
+median over the last 256 requests; `toolCalls` includes nested Code Mode calls;
+`toolCallsByTool` and `toolOutputsCappedByTool` split calls and capped outputs by the
+normalized tool name (namespace stripped, lower-case); `outputCharsSaved` is a
+character count, not bytes, and an upper estimate (the injected stub is subtracted).
+`compactions` counts confirmed `session.compaction.ended` events only;
+`compactionAttempts` counts every `session.compaction` hook call, so on a host with a
+dead or absent event stream attempts keep growing while `compactions` and
+`compactionLimitReached` stay put (a failed attempt is never a stop signal). A
 session the store does not return and this instance never observed is
-`E_NOT_FOUND`; a known session with zero requests is a valid report with
-`tracked: false`. Codes: `E_INPUT`, `E_NOT_FOUND`, `E_UNAVAILABLE` (the guard is
-not registered or its hooks failed), `E_ABORTED`.
+`E_NOT_FOUND`; a transient `session.get` failure is `E_INTERNAL`; a known session
+with zero requests is a valid report with `tracked: false`. Without `session.get`,
+an untracked session is `E_NO_API`, a tracked one is `ok` with `session: null` and a
+`limitations` entry. Codes: `E_INPUT`, `E_NOT_FOUND`, `E_INTERNAL`, `E_NO_API`,
+`E_UNAVAILABLE` (the guard is not registered or its hooks failed), `E_ABORTED`.
 
 ## Session hygiene
 
@@ -302,17 +314,22 @@ The plugin implements the [`session-discipline.md`](./docs/en/session-discipline
 protocol: a session is one slice, the prompt budget is ≤150k tokens, at most one
 compaction, tool output goes to a file, and a slice ends with a handoff.
 
-The runtime part is two hooks plus a compaction-event subscription:
+The runtime part is three hooks (`session.context`, `session.compaction`,
+`tool.execute.after`) plus a compaction-event subscription:
 
 - `session.context` — estimates the prompt (system + messages) and, when it crosses
   a budget level, adds one short reminder. The reminder is injected **once, when a
   new level is crossed**, not on every request; within a level the text is stable,
   so the prefix cache is not broken.
-- compaction events — `session.compaction.ended` counts the compaction and the
-  next request reminds that the summary is lossy and decisions must be pinned to a
-  file; `session.compaction.failed` only increments `compactionFailures`. On a host
-  without an event stream the `session.compaction` hook is the fallback, and
-  `counters.compactionSource` says which source is live.
+- compaction events — the `session.compaction` hook is registered on **every** host:
+  it counts attempts (`compactionAttempts`) and sets a tentative lossy note for the
+  nearest request. Only `session.compaction.ended` confirms a compaction
+  (deduplicated by `event.id` or the durable position); `session.compaction.failed`
+  increments `compactionFailures` and drops the tentative note. If the event stream
+  ends or throws, `guard.eventLive` turns `false` and `guard.compactionSource`
+  becomes `hook` (once, counted in `errors`); the hook keeps counting attempts, but
+  no confirmed compaction, no lossy note and no false "limit reached" is invented on
+  that path.
 - `tool.execute.after` — for `shell`, `bash`, `webfetch` it caps output over
   `maxChars`: the full text goes to `os.tmpdir()/opencode-tool-output/` (POSIX
   modes 0700/0600; Windows ignores them), the model gets a head and the path.
@@ -492,7 +509,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (368 tests in 10 files, up from
+`npm test` scans only `./test/` — the shipped suite (386 tests in 10 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`

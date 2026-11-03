@@ -10,8 +10,9 @@
  * `orch_uni_session_stats` tool is checked through the shared tools harness,
  * including the `E_UNAVAILABLE` and `E_NOT_FOUND` paths.
  */
-import { describe, expect, test } from "bun:test"
-import { readFile, rm } from "node:fs/promises"
+import { afterEach, describe, expect, test } from "bun:test"
+import { randomUUID } from "node:crypto"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
@@ -88,7 +89,16 @@ interface BudgetHarness {
   readonly aborted: () => boolean
 }
 
-function createBudgetHarness(options: { events?: boolean; workspace?: string } = {}): BudgetHarness {
+interface BudgetHarnessOptions {
+  readonly events?: boolean
+  readonly workspace?: string
+  /** Replace the push stream (a stream that ends or throws). */
+  readonly stream?: AsyncIterable<unknown>
+  /** Make every hook registration throw. */
+  readonly failingHooks?: boolean
+}
+
+function createBudgetHarness(options: BudgetHarnessOptions = {}): BudgetHarness {
   const hooks = new Map<string, HookCallback>()
   const disposed: string[] = []
   const events = new EventStream()
@@ -98,6 +108,7 @@ function createBudgetHarness(options: { events?: boolean; workspace?: string } =
     location: { directory: options.workspace ?? process.cwd() },
     session: {
       hook: async (name: string, callback: HookCallback) => {
+        if (options.failingHooks === true) throw new Error("hook registration failed")
         hooks.set(`session.${name}`, callback)
         return {
           dispose: async () => {
@@ -108,6 +119,7 @@ function createBudgetHarness(options: { events?: boolean; workspace?: string } =
     },
     tool: {
       hook: async (name: string, callback: HookCallback) => {
+        if (options.failingHooks === true) throw new Error("hook registration failed")
         hooks.set(`tool.${name}`, callback)
         return {
           dispose: async () => {
@@ -117,13 +129,13 @@ function createBudgetHarness(options: { events?: boolean; workspace?: string } =
       },
     },
   }
-  if (options.events === true) {
+  if (options.events === true || options.stream !== undefined) {
     ctx.event = {
       subscribe: (requestOptions?: { signal?: AbortSignal }) => {
         subscribed = true
         signal = requestOptions?.signal
         requestOptions?.signal?.addEventListener("abort", () => events.close())
-        return events
+        return options.stream ?? events
       },
     }
   }
@@ -147,6 +159,57 @@ async function drain(harness: BudgetHarness): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0))
   }
   throw new Error("event drain timed out")
+}
+
+/** Poll a condition while the subscription loop runs. */
+async function waitFor(condition: () => boolean, what = "condition"): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (condition()) {
+      for (let tick = 0; tick < 4; tick += 1) await Promise.resolve()
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  throw new Error(`${what} timed out`)
+}
+
+/**
+ * Session ids are unique per run and their temp directories are removed after
+ * each test: a crashed earlier run must not turn the next one into a retry-path
+ * assertion failure, and a green run must not leak files under `%TEMP%`.
+ */
+const createdSessions = new Set<string>()
+
+function sessionFor(prefix: string): string {
+  const id = `ses_${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`
+  createdSessions.add(id)
+  return id
+}
+
+afterEach(async () => {
+  for (const id of createdSessions) {
+    await rm(path.dirname(outputPath(id, "cleanup")), { recursive: true, force: true })
+  }
+  createdSessions.clear()
+})
+
+/**
+ * A stream that fails on its first read: an async iterable, not a generator, so
+ * the "no yield" lint rule does not reject a deliberately broken stream.
+ */
+function failingStream(message: string): AsyncIterable<unknown> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<unknown> {
+      return { next: () => Promise.reject(new Error(message)) }
+    },
+  }
+}
+
+/** A stream that ends before its first event. */
+const emptyStream: AsyncIterable<unknown> = {
+  [Symbol.asyncIterator](): AsyncIterator<unknown> {
+    return { next: async () => ({ done: true, value: undefined }) }
+  },
 }
 
 function config(overrides: Partial<SessionBudgetConfig> = {}): SessionBudgetConfig {
@@ -235,6 +298,55 @@ describe("options", () => {
     expect(warnings).toHaveLength(2)
     expect(warnings[0]).toContain("read")
     expect(warnings[1]).toContain("orch_uni_session_stats")
+  })
+
+  test("a namespace prefix is stripped from configured and runtime tool names", () => {
+    const warnings: string[] = []
+    const parsed = readSessionBudgetOptions(
+      { toolOutputGuard: { tools: ["functions.SHELL", "orch_uni.session_stats"] } },
+      (message) => warnings.push(message),
+    )
+    expect(parsed.toolOutput.tools).toEqual(["shell"])
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain("orch_uni.session_stats")
+    expect(warnings[0]).toContain("protected")
+  })
+
+  test("an all-empty tools list disables capping with a warning; an explicit empty list is silent", () => {
+    const warnings: string[] = []
+    const parsed = readSessionBudgetOptions({ toolOutputGuard: { tools: ["", "  ", "\t"] } }, (message) =>
+      warnings.push(message),
+    )
+    expect(parsed.toolOutput.tools).toEqual([])
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain("capping is disabled")
+
+    const silent: string[] = []
+    const explicit = readSessionBudgetOptions({ toolOutputGuard: { tools: [] } }, (message) => silent.push(message))
+    expect(explicit.toolOutput.tools).toEqual([])
+    expect(silent).toEqual([])
+  })
+
+  test("a hostile option value is formatted without throwing", () => {
+    const warnings: string[] = []
+    const hostile = {
+      toJSON() {
+        throw new Error("toJSON exploded")
+      },
+      toString() {
+        throw new Error("toString exploded")
+      },
+    }
+    const parsed = readSessionBudgetOptions(
+      {
+        sessionGuard: { enabled: hostile },
+        toolOutputGuard: { tools: [hostile, "shell"] },
+      },
+      (message) => warnings.push(message),
+    )
+    expect(parsed.session.enabled).toBe(DEFAULT_SESSION_GUARD.enabled)
+    expect(parsed.toolOutput.tools).toEqual(DEFAULT_TOOL_OUTPUT_GUARD.tools)
+    expect(warnings.filter((line) => line.includes("[unserializable]"))).toHaveLength(2)
   })
 
   test("BigInt and cyclic option values do not break parsing", () => {
@@ -338,31 +450,36 @@ describe("hooks", () => {
     await budget.cleanup()
   })
 
-  test("without an event stream the compaction hook is the fallback source", async () => {
+  test("without an event stream the hook counts attempts but confirms no compaction", async () => {
     const harness = createBudgetHarness()
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
     expect(harness.subscribed()).toBe(false)
+    expect(harness.hooks.has("session.compaction")).toBe(true)
     const compaction = harness.hooks.get("session.compaction") as HookCallback
     const context = harness.hooks.get("session.context") as HookCallback
+    const s = sessionFor("fallback")
 
-    await compaction({ sessionID: "ses_b", system: [], messages: [] })
-    await compaction({ sessionID: "ses_b", system: [], messages: [] })
+    await compaction({ sessionID: s, system: [], messages: [] })
 
-    const after = contextInput("ses_b", 100)
-    await context(after)
-    expect(after.system).toHaveLength(1)
-    expect(after.system[0]?.text).toContain("Компакция #2")
-    expect(after.system[0]?.text).toContain("Лимит исчерпан")
-
-    const next = contextInput("ses_b", 100)
-    await context(next)
-    expect(next.system).toHaveLength(0)
-
-    const stats = budget.stats("ses_b")
-    expect(stats.compactions).toBe(2)
+    const stats = budget.stats(s)
+    expect(stats.compactionAttempts).toBe(1)
+    expect(stats.compactions).toBe(0)
     expect(stats.compactionFailures).toBe(0)
     expect(stats.compactionSource).toBe("hook")
-    expect(stats.requests).toBe(2)
+    expect(compactionLimitReached(budget.config, stats.compactions)).toBe(false)
+
+    // No success is known on this host, so no lossy note and no false stop.
+    const after = contextInput(s, 100)
+    await context(after)
+    expect(after.system).toHaveLength(0)
+    expect(budget.guard()).toMatchObject({
+      available: true,
+      hooksRegistered: true,
+      sessionEnabled: true,
+      toolOutputEnabled: true,
+      compactionSource: "hook",
+      eventLive: false,
+    })
     await budget.cleanup()
   })
 
@@ -370,26 +487,29 @@ describe("hooks", () => {
     const harness = createBudgetHarness({ events: true })
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
     expect(harness.subscribed()).toBe(true)
-    expect(harness.hooks.get("session.compaction")).toBeUndefined()
+    // The hook is registered even on an event host: it counts attempts.
+    expect(harness.hooks.has("session.compaction")).toBe(true)
+    expect(budget.guard()).toMatchObject({ eventLive: true, compactionSource: "event" })
 
-    harness.events.push({ type: "session.compaction.failed", data: { sessionID: "ses_ev" } })
-    harness.events.push({ type: "session.compaction.ended", data: { sessionID: "ses_ev" } })
+    const s = sessionFor("ev")
+    harness.events.push({ id: "evt_f1", type: "session.compaction.failed", data: { sessionID: s } })
+    harness.events.push({ id: "evt_e1", type: "session.compaction.ended", data: { sessionID: s } })
     await drain(harness)
 
-    const stats = budget.stats("ses_ev")
+    const stats = budget.stats(s)
     expect(stats.compactions).toBe(1)
     expect(stats.compactionFailures).toBe(1)
     expect(stats.compactionSource).toBe("event")
     expect(compactionLimitReached(budget.config, stats.compactions)).toBe(true)
 
-    const after = contextInput("ses_ev", 100)
+    const after = contextInput(s, 100)
     await (harness.hooks.get("session.context") as HookCallback)(after)
     expect(after.system).toHaveLength(1)
     expect(after.system[0]?.text).toContain("Компакция #1")
     expect(after.system[0]?.text).toContain("Лимит исчерпан")
 
     // The note is one-shot: the next request carries no compaction text.
-    const next = contextInput("ses_ev", 100)
+    const next = contextInput(s, 100)
     await (harness.hooks.get("session.context") as HookCallback)(next)
     expect(next.system).toHaveLength(0)
 
@@ -397,20 +517,101 @@ describe("hooks", () => {
     expect(harness.aborted()).toBe(true)
   })
 
-  test("a failed compaction leaves the counters and pending note alone", async () => {
+  test("a repeated compaction event is counted once per event id or durable position", async () => {
     const harness = createBudgetHarness({ events: true })
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
-    harness.events.push({ type: "session.compaction.failed", data: { sessionID: "ses_failed" } })
+    const s = sessionFor("dup")
+
+    // The same event delivered twice by a reconnecting stream.
+    for (let copy = 0; copy < 2; copy += 1) {
+      harness.events.push({ id: "evt_dup_ended", type: "session.compaction.ended", data: { sessionID: s } })
+      harness.events.push({ id: "evt_dup_failed", type: "session.compaction.failed", data: { sessionID: s } })
+    }
+    await drain(harness)
+    expect(budget.stats(s)).toMatchObject({ compactions: 1, compactionFailures: 1 })
+
+    // Without `id`, the durable envelope identifies the event.
+    for (let copy = 0; copy < 2; copy += 1) {
+      harness.events.push({
+        type: "session.compaction.ended",
+        data: { sessionID: s },
+        durable: { aggregateID: s, seq: 7 },
+      })
+    }
+    await drain(harness)
+    expect(budget.stats(s)).toMatchObject({ compactions: 2, compactionFailures: 1 })
+    await budget.cleanup()
+  })
+
+  test("a hook attempt between events puts a tentative note on the nearest request", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const s = sessionFor("race")
+
+    // The compaction hook fires before the `ended` event arrives.
+    await (harness.hooks.get("session.compaction") as HookCallback)({ sessionID: s, system: [], messages: [] })
+    expect(budget.stats(s)).toMatchObject({ compactionAttempts: 1, compactions: 0 })
+
+    const race = contextInput(s, 100)
+    await (harness.hooks.get("session.context") as HookCallback)(race)
+    expect(race.system).toHaveLength(1)
+    expect(race.system[0]?.text).toContain("Компакция #1")
+
+    // The event confirms the compaction; the next request carries the real note.
+    harness.events.push({ id: "evt_race", type: "session.compaction.ended", data: { sessionID: s } })
+    await drain(harness)
+    expect(budget.stats(s)).toMatchObject({ compactionAttempts: 1, compactions: 1 })
+    const confirmed = contextInput(s, 100)
+    await (harness.hooks.get("session.context") as HookCallback)(confirmed)
+    expect(confirmed.system).toHaveLength(1)
+    expect(confirmed.system[0]?.text).toContain("Компакция #1")
+    await budget.cleanup()
+  })
+
+  test("a failed compaction clears the tentative note and confirms nothing", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const s = sessionFor("failed")
+    await (harness.hooks.get("session.compaction") as HookCallback)({ sessionID: s, system: [], messages: [] })
+    harness.events.push({ id: "evt_failed", type: "session.compaction.failed", data: { sessionID: s } })
     await drain(harness)
 
-    const stats = budget.stats("ses_failed")
+    const stats = budget.stats(s)
     expect(stats.compactions).toBe(0)
     expect(stats.compactionFailures).toBe(1)
+    expect(stats.compactionAttempts).toBe(1)
 
-    const after = contextInput("ses_failed", 100)
+    const after = contextInput(s, 100)
     await (harness.hooks.get("session.context") as HookCallback)(after)
     expect(after.system).toHaveLength(0)
+    expect(compactionLimitReached(budget.config, stats.compactions)).toBe(false)
     await budget.cleanup()
+  })
+
+  test("an ended or throwing event stream flips the guard to the hook without inventing compactions", async () => {
+    for (const [label, stream] of [
+      ["empty", emptyStream],
+      ["throwing", failingStream("transport closed")],
+    ] as const) {
+      const harness = createBudgetHarness({ stream })
+      const budget = await createSessionBudget(harness.ctx, config(), "ru")
+      expect(harness.subscribed()).toBe(true)
+      await waitFor(() => !budget.guard().eventLive, `${label} stream death`)
+      expect(budget.guard()).toMatchObject({ eventLive: false, compactionSource: "hook", available: true })
+      expect(harness.hooks.has("session.compaction")).toBe(true)
+
+      const s = sessionFor(`dead_${label}`)
+      await (harness.hooks.get("session.compaction") as HookCallback)({ sessionID: s, system: [], messages: [] })
+      const stats = budget.stats(s)
+      expect(stats.compactionAttempts).toBe(1)
+      expect(stats.compactions).toBe(0)
+      expect(stats.errors).toBe(1)
+      expect(compactionLimitReached(budget.config, stats.compactions)).toBe(false)
+      const input = contextInput(s, 100)
+      await (harness.hooks.get("session.context") as HookCallback)(input)
+      expect(input.system).toHaveLength(0)
+      await budget.cleanup()
+    }
   })
 
   test("maxCompactions=0 disables the limit and never claims it is reached", async () => {
@@ -441,9 +642,10 @@ describe("hooks", () => {
       "ru",
     )
     const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("large")
 
     const result: Record<string, unknown> = { content: "y".repeat(5000), metadata: { previous: true } }
-    await hook(toolCall("ses_c", "call_1", "shell", result))
+    await hook(toolCall(s, "call_1", "shell", result))
 
     const content = result.content as string
     expect(content.startsWith("y".repeat(100))).toBe(true)
@@ -451,17 +653,16 @@ describe("hooks", () => {
     expect(content).toContain("full output:")
     expect(result.metadata).toEqual({
       previous: true,
-      toolOutputGuard: { chars: 5000, path: outputPath("ses_c", "call_1") },
+      toolOutputGuard: { chars: 5000, path: outputPath(s, "call_1") },
     })
 
-    const file = outputPath("ses_c", "call_1")
+    const file = outputPath(s, "call_1")
     expect(await readFile(file, "utf8")).toBe("y".repeat(5000))
-    await rm(path.dirname(file), { recursive: true, force: true })
 
-    expect(budget.stats("ses_c").outputsCapped).toBe(1)
+    expect(budget.stats(s).outputsCapped).toBe(1)
     // The saved count is the whole original text minus the stub actually injected,
     // including its head, marker and path.
-    expect(budget.stats("ses_c").outputCharsSaved).toBe(5000 - content.length)
+    expect(budget.stats(s).outputCharsSaved).toBe(5000 - content.length)
     await budget.cleanup()
   })
 
@@ -473,13 +674,14 @@ describe("hooks", () => {
       "ru",
     )
     const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("array")
 
     const filePart = { type: "file", uri: "data:image/png;base64,xx", mime: "image/png" }
     const result: Record<string, unknown> = {
       content: [{ type: "text", text: "y".repeat(5000) }, filePart],
       metadata: {},
     }
-    await hook(toolCall("ses_array", "call_array", "shell", result))
+    await hook(toolCall(s, "call_array", "shell", result))
 
     const parts = result.content as { type: string; text?: string; uri?: string; mime?: string }[]
     expect(parts).toHaveLength(2)
@@ -487,9 +689,8 @@ describe("hooks", () => {
     expect(parts[0]?.text).toContain("5000 chars total")
     expect(parts[1]).toEqual(filePart)
 
-    const file = outputPath("ses_array", "call_array")
+    const file = outputPath(s, "call_array")
     expect(await readFile(file, "utf8")).toBe("y".repeat(5000))
-    await rm(path.dirname(file), { recursive: true, force: true })
     await budget.cleanup()
   })
 
@@ -501,19 +702,17 @@ describe("hooks", () => {
       "ru",
     )
     const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("surrogate")
 
     const text = `${"a".repeat(9)}\u{1F600}${"b".repeat(1500)}`
     const result: Record<string, unknown> = { content: text, metadata: {} }
-    await hook(toolCall("ses_surrogate", "call_surrogate", "shell", result))
+    await hook(toolCall(s, "call_surrogate", "shell", result))
 
     const stub = result.content as string
     const head = stub.slice(0, stub.indexOf("\n\n"))
     expect(head).toBe(`${"a".repeat(9)}\u{1F600}`)
     expect(head.length).toBe(11)
     expect(/[\uD800-\uDBFF]$/.test(head)).toBe(false)
-
-    const file = outputPath("ses_surrogate", "call_surrogate")
-    await rm(path.dirname(file), { recursive: true, force: true })
     await budget.cleanup()
   })
 
@@ -525,23 +724,21 @@ describe("hooks", () => {
       "ru",
     )
     const hook = harness.hooks.get("tool.execute.after") as HookCallback
-    // The property is "no file is written", so a stale file from an earlier run
-    // must not mask it.
-    await rm(path.dirname(outputPath("ses_stub", "call_exact")), { recursive: true, force: true })
+    const s = sessionFor("stub")
 
     for (const [id, length] of [
       ["call_exact", 100],
       ["call_over", 101],
     ] as const) {
       const result: Record<string, unknown> = { content: "z".repeat(length), metadata: {} }
-      await hook(toolCall("ses_stub", id, "shell", result))
+      await hook(toolCall(s, id, "shell", result))
       expect(result.content).toHaveLength(length)
       expect(result.metadata).toEqual({})
-      await expect(readFile(outputPath("ses_stub", id), "utf8")).rejects.toThrow()
+      await expect(readFile(outputPath(s, id), "utf8")).rejects.toThrow()
     }
 
-    expect(budget.stats("ses_stub").outputsCapped).toBe(0)
-    expect(budget.stats("ses_stub").errors).toBe(0)
+    expect(budget.stats(s).outputsCapped).toBe(0)
+    expect(budget.stats(s).errors).toBe(0)
     await budget.cleanup()
   })
 
@@ -549,42 +746,74 @@ describe("hooks", () => {
     const harness = createBudgetHarness()
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
     const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("other")
 
     const readResult = { content: "z".repeat(50_000) }
-    await hook(toolCall("ses_d", "call_2", "read", readResult))
+    await hook(toolCall(s, "call_2", "read", readResult))
     expect(readResult.content).toHaveLength(50_000)
 
     const smallResult = { content: "short" }
-    await hook(toolCall("ses_d", "call_3", "shell", smallResult))
+    await hook(toolCall(s, "call_3", "shell", smallResult))
     expect(smallResult.content).toBe("short")
 
     const failed = { content: "e".repeat(50_000) }
-    await hook(toolCall("ses_d", "call_4", "shell", failed, "error"))
+    await hook(toolCall(s, "call_4", "shell", failed, "error"))
     expect(failed.content).toHaveLength(50_000)
 
-    expect(budget.stats("ses_d").toolCalls).toBe(3)
-    expect(budget.stats("ses_d").outputsCapped).toBe(0)
+    expect(budget.stats(s).toolCalls).toBe(3)
+    expect(budget.stats(s).outputsCapped).toBe(0)
+    expect(budget.stats(s).toolCallsByTool).toEqual({ read: 1, shell: 2 })
+    expect(budget.stats(s).toolOutputsCappedByTool).toEqual({ read: 0, shell: 0 })
     await budget.cleanup()
   })
 
-  test("a normalized uppercase tool name is capped at runtime", async () => {
+  test("per-tool counters split calls and capped outputs by normalized name", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 100, headChars: 10 } }),
+      "ru",
+    )
+    const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("per_tool")
+
+    const capped = { content: "q".repeat(500), metadata: {} }
+    const small = { content: "short", metadata: {} }
+    const read = { content: "r".repeat(500), metadata: {} }
+    await hook(toolCall(s, "per_1", "shell", capped))
+    await hook(toolCall(s, "per_2", "shell", small))
+    await hook(toolCall(s, "per_3", "read", read))
+
+    const stats = budget.stats(s)
+    expect(stats.toolCallsByTool).toEqual({ shell: 2, read: 1 })
+    expect(stats.toolOutputsCappedByTool).toEqual({ shell: 1, read: 0 })
+    expect(stats.toolCalls).toBe(3)
+    expect(stats.outputsCapped).toBe(1)
+    await budget.cleanup()
+  })
+
+  test("a namespaced tool name in the config is normalized to the runtime tool", async () => {
     const warnings: string[] = []
     const parsed = readSessionBudgetOptions(
-      { toolOutputGuard: { tools: ["SHELL"], maxChars: 100, headChars: 10 } },
+      { toolOutputGuard: { tools: ["functions.SHELL"], maxChars: 100, headChars: 10 } },
       (message) => warnings.push(message),
     )
     expect(parsed.toolOutput.tools).toEqual(["shell"])
+    expect(warnings).toEqual([])
     const harness = createBudgetHarness()
     const budget = await createSessionBudget(harness.ctx, parsed, "ru")
+    const s = sessionFor("upper")
     const result: Record<string, unknown> = { content: "q".repeat(500), metadata: {} }
     await (harness.hooks.get("tool.execute.after") as HookCallback)(
-      toolCall("ses_upper", "call_upper", "shell", result),
+      toolCall(s, "call_upper", "functions.shell", result),
     )
     expect(result.metadata).toMatchObject({ toolOutputGuard: { chars: 500, path: expect.any(String) } })
+    expect(budget.stats(s).toolCallsByTool).toEqual({ shell: 1 })
+    expect(budget.stats(s).toolOutputsCappedByTool).toEqual({ shell: 1 })
     await budget.cleanup()
   })
 
-  test("cleanup disposes every fallback registration and is idempotent", async () => {
+  test("cleanup disposes every registration and is idempotent", async () => {
     const harness = createBudgetHarness()
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
     await budget.cleanup()
@@ -614,6 +843,14 @@ describe("hooks", () => {
     expect(warnings[0]).toContain("session guard disabled")
     expect(budget.available).toBe(false)
     expect(budget.tracked("ses_missing")).toBe(false)
+    expect(budget.guard()).toEqual({
+      available: false,
+      hooksRegistered: false,
+      sessionEnabled: true,
+      toolOutputEnabled: true,
+      compactionSource: "hook",
+      eventLive: false,
+    })
     expect(budget.stats("ses_missing")).toMatchObject({
       sessionID: "ses_missing",
       requests: 0,
@@ -623,30 +860,128 @@ describe("hooks", () => {
     await budget.cleanup()
   })
 
-  test("a disabled guard counts but never injects or caps", async () => {
+  test("a failing hook registration reports an unavailable guard and disposes what was registered", async () => {
+    const warnings: string[] = []
+    const harness = createBudgetHarness({ failingHooks: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru", (message) => warnings.push(message))
+    expect(budget.available).toBe(false)
+    expect(budget.guard()).toMatchObject({ available: false, hooksRegistered: false })
+    expect(warnings.some((line) => line.includes("hook registration failed"))).toBe(true)
+    expect(harness.hooks.size).toBe(0)
+    await budget.cleanup()
+  })
+
+  test("a disabled guard counts tools but never injects or caps", async () => {
     const harness = createBudgetHarness()
     const disabled = config({
       session: { ...DEFAULT_SESSION_GUARD, enabled: false },
       toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, enabled: false },
     })
     const budget = await createSessionBudget(harness.ctx, disabled, "ru")
+    const s = sessionFor("disabled")
 
-    const input = contextInput("ses_e", 600_000)
+    const input = contextInput(s, 600_000)
     await (harness.hooks.get("session.context") as HookCallback)(input)
     expect(input.system).toHaveLength(0)
 
     const result: Record<string, unknown> = { content: "q".repeat(50_000) }
-    await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall("ses_e", "call_5", "shell", result))
+    await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(s, "call_5", "shell", result))
     expect(result.content).toHaveLength(50_000)
-    await expect(readFile(outputPath("ses_e", "call_5"), "utf8")).rejects.toThrow()
+    await expect(readFile(outputPath(s, "call_5"), "utf8")).rejects.toThrow()
 
-    const stats = budget.stats("ses_e")
+    const stats = budget.stats(s)
     expect(stats.requests).toBe(1)
     expect(stats.toolCalls).toBe(1)
     expect(stats.outputsCapped).toBe(0)
+    expect(stats.toolCallsByTool).toEqual({ shell: 1 })
+    expect(stats.toolOutputsCappedByTool).toEqual({ shell: 0 })
+    expect(budget.guard()).toEqual({
+      available: true,
+      hooksRegistered: true,
+      sessionEnabled: false,
+      toolOutputEnabled: false,
+      compactionSource: "hook",
+      eventLive: false,
+    })
+    await budget.cleanup()
+  })
+
+  test("tracked follows events: session.created marks, session.deleted forgets", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const s = sessionFor("tracked")
+
+    harness.events.push({ type: "session.created", data: { sessionID: s } })
+    await drain(harness)
+    expect(budget.tracked(s)).toBe(true)
+
+    harness.events.push({ type: "session.deleted", data: { sessionID: s } })
+    await drain(harness)
+    expect(budget.tracked(s)).toBe(false)
+    expect(budget.stats(s).requests).toBe(0)
+    await budget.cleanup()
+  })
+
+  test("a tmpdir inside the workspace is reported once at setup", async () => {
+    // The workspace must contain os.tmpdir() for the warning branch.
+    const workspace = path.dirname(path.resolve(tmpdir()))
+    const warnings: string[] = []
+    const harness = createBudgetHarness({ workspace })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru", (message) => warnings.push(message))
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain("inside the workspace")
+    await budget.cleanup()
+  })
+
+  test("a write failure leaves the frozen tool result untouched and counts one error", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 100, headChars: 10 } }),
+      "ru",
+    )
+    const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("frozen")
+    // Block the session directory with a regular file: mkdir() cannot create it.
+    await writeFile(path.dirname(outputPath(s, "blocked")), "blocker", "utf8")
+
+    const result: Record<string, unknown> = { content: "w".repeat(5000), metadata: { previous: true } }
+    await hook(toolCall(s, "call_frozen", "shell", result))
+
+    expect(result.content).toBe("w".repeat(5000))
+    expect(result.metadata).toEqual({ previous: true })
+    expect(budget.stats(s).errors).toBe(1)
+    expect(budget.stats(s).outputsCapped).toBe(0)
     await budget.cleanup()
   })
 })
+
+/**
+ * A platform either allows a directory link (Windows junction with no extra
+ * rights, or a POSIX symlink) or it does not; the containment test reports a
+ * skip with the reason instead of failing where creation is impossible.
+ */
+async function detectLinkStyle(): Promise<"junction" | "symlink" | undefined> {
+  const base = await mkdtemp(path.join(tmpdir(), "audit-link-probe-"))
+  const source = path.join(base, "source")
+  const link = path.join(base, "link")
+  await mkdir(source)
+  try {
+    if (process.platform === "win32") {
+      const proc = Bun.spawnSync(["cmd", "/c", "mklink", "/J", link, source])
+      return proc.exitCode === 0 ? "junction" : undefined
+    }
+    await symlink(source, link, "dir")
+    return "symlink"
+  } catch {
+    return undefined
+  } finally {
+    await rm(link, { recursive: true, force: true })
+    await rm(base, { recursive: true, force: true })
+  }
+}
+
+const linkStyle = await detectLinkStyle()
 
 describe("temp output paths", () => {
   test("outputPath keeps every segment inside the temp root", () => {
@@ -664,6 +999,41 @@ describe("temp output paths", () => {
     }
     expect(outputPath("CON", "call")).toBe(path.join(root, "_CON", "call.txt"))
     expect(outputPath(".hidden", "call")).toBe(path.join(root, "hidden", "call.txt"))
+  })
+
+  test.skipIf(linkStyle === undefined)("a symlink or junction under the temp root is refused", async () => {
+    const root = path.resolve(tmpdir(), "opencode-tool-output")
+    const outside = await mkdtemp(path.join(tmpdir(), "audit-outside-"))
+    const s = sessionFor("link")
+    const link = path.join(root, s)
+    try {
+      if (linkStyle === "junction") {
+        const proc = Bun.spawnSync(["cmd", "/c", "mklink", "/J", link, outside])
+        expect(proc.exitCode).toBe(0)
+      } else {
+        await symlink(outside, link, "dir")
+      }
+
+      const harness = createBudgetHarness()
+      const budget = await createSessionBudget(
+        harness.ctx,
+        config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 100, headChars: 10 } }),
+        "ru",
+      )
+      const result: Record<string, unknown> = { content: "s".repeat(5000), metadata: {} }
+      await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(s, "call_link", "shell", result))
+
+      // The link is refused fail-open: the result is untouched and nothing lands outside.
+      expect(result.content).toBe("s".repeat(5000))
+      expect(result.metadata).toEqual({})
+      await expect(readFile(path.join(outside, "call_link.txt"), "utf8")).rejects.toThrow()
+      expect(budget.stats(s).errors).toBe(1)
+      expect(budget.stats(s).outputsCapped).toBe(0)
+      await budget.cleanup()
+    } finally {
+      await rm(link, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
   })
 })
 
@@ -689,6 +1059,7 @@ describe("orch_uni_session_stats", () => {
     promptTokensMedian: 170_000,
     band: 1,
     compactions: 1,
+    compactionAttempts: 1,
     compactionFailures: 0,
     compactionSource: "event",
     reminders: 1,
@@ -696,6 +1067,17 @@ describe("orch_uni_session_stats", () => {
     outputsCapped: 2,
     outputCharsSaved: 40_000,
     errors: 0,
+    toolCallsByTool: { shell: 5, read: 4 },
+    toolOutputsCappedByTool: { shell: 2, read: 0 },
+  }
+
+  const guard = {
+    available: true,
+    hooksRegistered: true,
+    sessionEnabled: true,
+    toolOutputEnabled: true,
+    compactionSource: "event" as const,
+    eventLive: true,
   }
 
   function report(overrides: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
@@ -704,6 +1086,7 @@ describe("orch_uni_session_stats", () => {
       config: config(),
       stats: (sessionID) => ({ ...counters, sessionID }),
       tracked: (sessionID) => sessionID === "ses_test",
+      guard: () => guard,
       ...overrides,
     }
   }
@@ -720,9 +1103,23 @@ describe("orch_uni_session_stats", () => {
     expect(body.compactionLimitReached).toBe(true)
     expect(body.toolsPerTurn).toBe(3)
     expect(body.tracked).toBe(true)
-    expect(body.guard).toEqual({ available: true, hooksRegistered: true })
+    expect(body.guard).toEqual({
+      available: true,
+      hooksRegistered: true,
+      sessionEnabled: true,
+      toolOutputEnabled: true,
+      compactionSource: "event",
+      eventLive: true,
+    })
     expect(body.schema).toBeUndefined()
-    expect(body.counters).toMatchObject({ requests: 3, outputsCapped: 2, compactionSource: "event" })
+    expect(body.counters).toMatchObject({
+      requests: 3,
+      outputsCapped: 2,
+      compactionSource: "event",
+      compactionAttempts: 1,
+      toolCallsByTool: { shell: 5, read: 4 },
+      toolOutputsCappedByTool: { shell: 2, read: 0 },
+    })
     expect(body.limits).toMatchObject({ promptTokensSoft: 150_000, maxCompactions: 1 })
     harness.dispose()
   })
@@ -832,6 +1229,66 @@ describe("orch_uni_session_stats", () => {
     expect(body.tracked).toBe(false)
     expect(body.toolsPerTurn).toBe(0)
     expect((body.session as { sessionID?: string }).sessionID).toBe("ses_known")
+    harness.dispose()
+  })
+
+  test("a transient session.get failure is E_INTERNAL, a missing session is E_NOT_FOUND", async () => {
+    for (const [message, code] of [
+      ["database is locked", "E_INTERNAL"],
+      ["permission denied", "E_INTERNAL"],
+      ["session not found", "E_NOT_FOUND"],
+      ["unknown session", "E_NOT_FOUND"],
+    ] as const) {
+      const harness = await createHarness({
+        sessions: {
+          get: async () => {
+            throw new Error(message)
+          },
+        },
+        sessionBudget: report(),
+      })
+      const body = JSON.parse(
+        String(
+          (
+            await harness.tools
+              .get("orch_uni_session_stats")
+              ?.execute({ sessionID: "ses_unknown" }, { sessionID: "ses_caller", signal: new AbortController().signal })
+          )?.content,
+        ),
+      ) as Record<string, unknown>
+      expect(body.ok, message).toBe(false)
+      expect(body.code, message).toBe(code)
+      expect(String(body.message)).toContain(message)
+      harness.dispose()
+    }
+  })
+
+  test("without session.get an untracked session is E_NO_API; a tracked one reports session:null", async () => {
+    const harness = await createHarness({ sessions: {}, sessionBudget: report() })
+
+    const untracked = JSON.parse(
+      String(
+        (
+          await harness.tools
+            .get("orch_uni_session_stats")
+            ?.execute({ sessionID: "ses_unknown" }, { sessionID: "ses_caller", signal: new AbortController().signal })
+        )?.content,
+      ),
+    ) as Record<string, unknown>
+    expect(untracked).toMatchObject({ ok: false, code: "E_NO_API" })
+
+    const tracked = JSON.parse(
+      String(
+        (
+          await harness.tools
+            .get("orch_uni_session_stats")
+            ?.execute({ sessionID: "ses_test" }, { sessionID: "ses_caller", signal: new AbortController().signal })
+        )?.content,
+      ),
+    ) as Record<string, unknown>
+    expect(tracked.ok).toBe(true)
+    expect(tracked.session).toBeNull()
+    expect(tracked.limitations).toEqual(["session.get is unavailable in this build"])
     harness.dispose()
   })
 

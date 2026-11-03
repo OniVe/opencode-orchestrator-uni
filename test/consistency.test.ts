@@ -296,7 +296,7 @@ describe("agent prompt caps match the tool", () => {
 // R6-5/R7-7: both READMEs state the same shipped test count and the same file
 // count, and the English count equals the pinned constant, so a round that adds
 // tests cannot leave both locales stale at the same old number.
-const SHIPPED_TEST_COUNT = 368
+const SHIPPED_TEST_COUNT = 386
 describe("README test count", () => {
   test("both READMEs agree on the shipped test count and 10 files", async () => {
     const guards = [
@@ -317,5 +317,26 @@ describe("README test count", () => {
     expect(english.tests).toBe(SHIPPED_TEST_COUNT)
     expect(english.files).toBe(10)
     expect(russian.files).toBe(10)
+  })
+})
+
+// R9 (session-discipline round 2): the canonical protocol document must name the
+// handoff file path, and the `/handoff` prompt must use the same path — otherwise
+// an agent can satisfy the template without writing where the project expects.
+describe("handoff path is canonical", () => {
+  const HANDOFF_PATH = "docs/planning/handoff-<YYYY-MM-DD>.md"
+
+  test("both locale documents, both READMEs and the /handoff prompt name the path", async () => {
+    const files = [
+      path.join(DOCS_DIRECTORY, "ru", "session-discipline.md"),
+      path.join(DOCS_DIRECTORY, "en", "session-discipline.md"),
+      path.join(KIT_ROOT, "README.md"),
+      path.join(KIT_ROOT, "README.ru.md"),
+      path.join(KIT_ROOT, "lib", "commands.ts"),
+    ]
+    for (const file of files) {
+      const source = await readFile(file, "utf8")
+      expect(source, `${path.relative(KIT_ROOT, file)} names ${HANDOFF_PATH}`).toContain(HANDOFF_PATH)
+    }
   })
 })

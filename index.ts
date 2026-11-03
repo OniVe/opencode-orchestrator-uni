@@ -53,7 +53,7 @@ import { fileURLToPath } from "node:url"
 import type { Agent, Model, Plugin, Reference } from "@opencode/plugin"
 import matter from "gray-matter"
 import { registerKitCommands } from "./lib/commands"
-import { createSessionBudget, readSessionBudgetOptions } from "./lib/session-budget"
+import { createSessionBudget, readSessionBudgetOptions, safeJson } from "./lib/session-budget"
 import { registerAuditTools } from "./lib/tools"
 
 /** Stable plugin id: diagnostics, enable/disable selectors, storage scope. */
@@ -356,7 +356,7 @@ function readLocaleOptions(options: unknown): Locale | undefined {
   if (raw === undefined) return undefined
   const locale = parseLocaleTag(raw)
   if (!locale) {
-    warn(`options.locale: expected one of ${SUPPORTED_LOCALES.join("|")}, got ${JSON.stringify(raw)}, ignored`)
+    warn(`options.locale: expected one of ${SUPPORTED_LOCALES.join("|")}, got ${safeJson(raw)}, ignored`)
   }
   return locale
 }
