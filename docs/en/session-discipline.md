@@ -15,6 +15,8 @@ covers keeping context small and decisions pinned.
   decisions, not the decisions; a second compaction paraphrases a paraphrase.
 - A measured long session: 13 253 turns, 19 compactions, the median prompt grew
   from 314k to 780k tokens. Almost all of that is re-sending history, not work.
+  This is an internal measurement of a consumer project: the artifact is not
+  attached to the repository, and the figures are not reproducible from it.
 
 The protocol keeps the working state small and the decisions in files that
 outlive the session.
@@ -76,9 +78,10 @@ the number of small steps.
 ## 5. State in files
 
 - `handoff` — the required output of a slice (template below).
-- `decisions` — decisions and reasons; one decision per entry.
+- `decisions` — decisions and reasons; one decision per entry; default path
+  `docs/planning/decisions-<YYYY-MM-DD>.md`.
 - `state` — branch, gates, open risks, the next three steps; refreshed before a
-  new session.
+  new session; default path `docs/planning/state.md`.
 - A new session starts from `state` and the target SPEC section, not from a
   retelling of the previous session.
 
@@ -88,7 +91,9 @@ the number of small steps.
   reviews and dispute resolution.
 - Document edits, reading and mechanical checks do not need an expensive model.
 - Measurement: 223 turns of the expensive model cost $63, 104 turns of the cheap
-  one cost $0.09. One model switch saves more than any prompt tweak.
+  one cost $0.09. One model switch saves more than any prompt tweak. This is an
+  internal measurement of a consumer project: the artifact is not attached to the
+  repository, and the figures are not reproducible from it.
 
 ## 7. Metrics
 
@@ -96,8 +101,8 @@ the number of small steps.
 | --- | --- | --- |
 | Estimated prompt (median) | ≤ 150k | `orch_uni_session_stats` |
 | Compactions per slice | ≤ 1 | `orch_uni_session_stats` |
-| Tools per turn | ≥ 2 | `orch_uni_session_stats` |
-| Outputs over 20k chars | < 5% | `orch_uni_session_stats` |
+| Tools per turn (`toolCalls/requests`, reported as `toolsPerTurn`) | ≥ 2 | `orch_uni_session_stats` |
+| Share of outputs over 20k chars among `shell`/`bash`/`webfetch` (the only tools the cap applies to), not among all calls | < 5% | `orch_uni_session_stats` |
 | Handoff at slice end | present | working tree |
 
 `orch_uni_session_stats` reports the counters of the current plugin instance and
@@ -106,15 +111,24 @@ the project side.
 
 ## 8. Guard
 
-The guard is three plugin hooks, not a set of bans:
+The guard is a set of plugin hooks plus a compaction-event subscription, not a
+set of bans:
 
 - `session.context` — estimates the prompt and adds one short reminder when it
-  crosses a budget level; the text is stable within a level, so the prefix cache
-  is not broken on every turn.
-- `session.compaction` — counts compactions; the next request carries a reminder
-  that the summary is lossy and decisions must be pinned to a file.
+  crosses a budget level. The reminder is injected once at a level transition,
+  not on every request; within a level the text is stable, so the prefix cache is
+  not broken.
+- compaction events — `session.compaction.ended` counts the compaction and the
+  next request carries a reminder that the summary is lossy and decisions must be
+  pinned to a file; `session.compaction.failed` only increments
+  `compactionFailures`. A host without an event stream falls back to the
+  `session.compaction` hook; the live source is visible in
+  `counters.compactionSource`.
 - `tool.execute.after` — caps the output of the configured tools and stores the
-  full text in a temp directory.
+  full text in `os.tmpdir()/opencode-tool-output/` (POSIX modes 0700 for the
+  directory and 0600 for the file; Windows ignores mode). The files are not
+  cleaned up automatically — remove them yourself; if `TMPDIR` points inside the
+  workspace, they land there.
 
 Configuration (defaults):
 
@@ -134,9 +148,14 @@ Configuration (defaults):
 }
 ```
 
+`maxCompactions: 0` disables the compaction limit. In the counters, `toolCalls`
+includes nested Code Mode calls, and `outputCharsSaved` is an upper estimate in
+characters (the injected stub is subtracted).
+
 The guard is fail-open: a hook error neither breaks the request nor corrupts the
-tool result. It writes nothing to the working tree and blocks nothing — it only
-reminds and caps output. Either part can be disabled with its `enabled` flag.
+tool result. It writes nothing to the working tree (except when `TMPDIR` points
+inside the workspace — see above) and blocks nothing — it only reminds and caps
+output. Either part can be disabled with its `enabled` flag.
 
 ## Handoff template
 

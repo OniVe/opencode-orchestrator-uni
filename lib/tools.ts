@@ -1,10 +1,10 @@
 /**
  * tools — registration of the kit's deterministic, read-only audit tools.
  *
- * `registerAuditTools(ctx)` publishes four tools in the `orch_uni` namespace
+ * `registerAuditTools(ctx)` publishes five tools in the `orch_uni` namespace
  * (effective names `orch_uni_validate_report`, `orch_uni_context_lint`,
- * `orch_uni_snapshot`, `orch_uni_sessions`) and returns a cleanup that stops the
- * background session-index subscription:
+ * `orch_uni_snapshot`, `orch_uni_sessions`, `orch_uni_session_stats`) and returns
+ * a cleanup that stops the background session-index subscription:
  *
  * - `validate_report` — extract the SGR JSON block of an agent report, resolve
  *   its schema, validate it and report prompt-level warnings;
@@ -14,11 +14,12 @@
  * - `snapshot` — deterministic revision of a directory tree (per-file sha256 +
  *   aggregate hash) for "the state the verdict was fixed on";
  * - `sessions` — child sessions of a session (agent, model, cost, tokens, time),
- *   read through the plugin's session API only.
+ *   read through the plugin's session API only;
+ * - `session_stats` — the session-protocol counters and limits of one session.
  *
  * Every tool answers with a JSON text body. Failures are typed (`E_*`) codes in
  * the body rather than thrown tool errors, so an agent can branch on the code.
- * All four are read-only: they never write to the workspace or the config; the
+ * All five are read-only: they never write to the workspace or the config; the
  * only state `sessions` keeps is a plugin-scoped session index in `ctx.storage`
  * (see the `sessions` tool notes below).
  */
@@ -28,7 +29,7 @@ import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode/plugin"
 import { lintContext } from "./context-lint"
 import { checkReport, type JsonSchemaNode, type ValidationCode } from "./report-schema"
-import type { SessionBudgetReport } from "./session-budget"
+import { compactionLimitReached, type SessionBudgetReport } from "./session-budget"
 import { DEFAULT_EXCLUDE, isSnapshotFailure, snapshotTree } from "./snapshot"
 
 /** Tool namespace; effective names become `orch_uni_<name>`. */
@@ -683,19 +684,32 @@ export async function registerAuditTools(
         sessionID: target,
       })
     }
+    if (!budget.available) {
+      return failure("E_UNAVAILABLE", "the session guard is unavailable: its hooks could not be registered", {
+        sessionID: target,
+      })
+    }
+    const tracked = budget.tracked(target)
     const counters = budget.stats(target)
     const { session: sessionConfig, toolOutput } = budget.config
     const getFn = sessionMethod<SessionGetFn>(session, "get")
     let info: Record<string, unknown> | undefined
+    let getError: unknown
     if (getFn !== undefined) {
       try {
         info = sessionSummary(await getFn({ sessionID: target }))
-      } catch {
-        info = undefined
+      } catch (error) {
+        getError = error
       }
     }
+    // A session this instance never observed is only "not found" when the store
+    // also refuses it; a known session with zero requests is a valid `tracked:false`.
+    if (info === undefined && getError !== undefined && !tracked) {
+      return failure("E_NOT_FOUND", `session ${target} was not found: ${errorMessage(getError)}`, {
+        sessionID: target,
+      })
+    }
     return json({
-      schema: "orch_uni/session_stats/v1",
       ok: true,
       sessionID: target,
       counters,
@@ -705,7 +719,10 @@ export async function registerAuditTools(
         maxToolOutputChars: toolOutput.maxChars,
       },
       overBudget: counters.promptTokensMax > sessionConfig.promptTokensSoft,
-      compactionLimitReached: counters.compactions >= sessionConfig.maxCompactions,
+      compactionLimitReached: compactionLimitReached(budget.config, counters.compactions),
+      toolsPerTurn: counters.requests > 0 ? Math.round((counters.toolCalls / counters.requests) * 100) / 100 : 0,
+      tracked,
+      guard: { available: true, hooksRegistered: true },
       ...(info === undefined ? {} : { session: info }),
     })
   }
@@ -768,9 +785,11 @@ export async function registerAuditTools(
       name: "session_stats",
       description:
         "Session protocol counters of a session: requests, estimated prompt tokens (last/max), budget band, compactions, " +
-        "reminders injected, tool calls, capped tool outputs and bytes kept out of context, plus the configured limits. " +
-        "Read-only; counters belong to this plugin instance. Returns JSON {schema, ok, sessionID, counters, limits, " +
-        "overBudget, compactionLimitReached, session?} or a typed code (E_INPUT|E_UNAVAILABLE|E_ABORTED).",
+        "failed compactions, reminders injected, tool calls, capped tool outputs and chars kept out of context, plus the " +
+        "configured limits and toolsPerTurn. Read-only; counters belong to this plugin instance. `sessionID` may name any " +
+        "session on this server, not only a child of the caller. Returns JSON {ok, sessionID, counters, limits, overBudget, " +
+        "compactionLimitReached, toolsPerTurn, tracked, guard, session?} or a typed code " +
+        "(E_INPUT|E_NOT_FOUND|E_UNAVAILABLE|E_ABORTED).",
       input: SESSION_STATS_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },
       execute: sessionStatsTool,
