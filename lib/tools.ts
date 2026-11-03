@@ -147,6 +147,31 @@ function asRecord(input: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
+/**
+ * `session.get` failures that mean the session is genuinely absent.
+ *
+ * A live host may throw with an empty message but a typed `_tag`/`name`/`code`;
+ * the message regex is only a narrow fallback, so a transient `unknown database`
+ * or `unknown host` stays `E_INTERNAL` and cannot masquerade as a missing session.
+ */
+function isNotFoundError(error: unknown): boolean {
+  const record = asRecord(error)
+  if (record !== undefined) {
+    for (const field of ["_tag", "name", "code"] as const) {
+      const value = record[field]
+      if (
+        value === "Session.NotFoundError" ||
+        value === "SessionNotFoundError" ||
+        value === "NotFoundError" ||
+        value === "ENOENT"
+      ) {
+        return true
+      }
+    }
+  }
+  return /session.*not.?found|unknown session/i.test(errorMessage(error))
+}
+
 /** `validate_report` input contract. */
 const VALIDATE_REPORT_INPUT = {
   type: "object",
@@ -659,7 +684,7 @@ export async function registerAuditTools(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (message === "E_ABORTED" || toolContext.signal.aborted) return failure("E_ABORTED", "listing aborted")
-      if (getFn !== undefined && /not ?found|unknown/i.test(message)) {
+      if (getFn !== undefined && isNotFoundError(error)) {
         return failure("E_NOT_FOUND", `session ${parentID} was not found: ${message}`, { sessionID: parentID })
       }
       return failure("E_INTERNAL", message, { sessionID: parentID })
@@ -703,9 +728,12 @@ export async function registerAuditTools(
     }
     let info: Record<string, unknown> | undefined
     let getError: unknown
+    let getMissing = false
     if (getFn !== undefined) {
       try {
-        info = sessionSummary(await getFn({ sessionID: target }))
+        const fetched: SessionInfoLike | null | undefined = await getFn({ sessionID: target })
+        if (fetched === undefined || fetched === null) getMissing = true
+        else info = sessionSummary(fetched)
       } catch (error) {
         getError = error
       }
@@ -713,13 +741,19 @@ export async function registerAuditTools(
     // A session this instance never observed is only "not found" when the store
     // says so; a transient error (lock, permission, transport) stays `E_INTERNAL`
     // instead of masquerading as a missing session. A known session with zero
-    // requests is a valid `tracked:false` report.
-    if (info === undefined && getError !== undefined && !tracked) {
-      const message = errorMessage(getError)
-      if (/not ?found|unknown/i.test(message)) {
-        return failure("E_NOT_FOUND", `session ${target} was not found: ${message}`, { sessionID: target })
+    // requests is a valid `tracked:false` report. `session.get` returning
+    // `undefined` without an error is the store's "no such session" answer.
+    if (info === undefined && !tracked) {
+      if (getError !== undefined) {
+        const message = errorMessage(getError)
+        if (isNotFoundError(getError)) {
+          return failure("E_NOT_FOUND", `session ${target} was not found: ${message}`, { sessionID: target })
+        }
+        return failure("E_INTERNAL", message, { sessionID: target })
       }
-      return failure("E_INTERNAL", message, { sessionID: target })
+      if (getMissing) {
+        return failure("E_NOT_FOUND", `session ${target} was not found`, { sessionID: target })
+      }
     }
     return json({
       ok: true,

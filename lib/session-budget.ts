@@ -13,12 +13,13 @@
  *   append one short reminder to the request's system parts. The reminder text is
  *   constant within a band, so prefix caching is not broken on every turn;
  * - compaction events — the `session.compaction` hook is registered on every host
- *   and counts attempts (`compactionAttempts`) plus a tentative note; a compaction
- *   is confirmed only by `session.compaction.ended` (deduplicated), which is what
- *   raises the limit. When the event stream dies, the guard flips
- *   `compactionSource` to `hook` and reports it in `guard`; on a host without an
- *   event stream attempts grow but no confirmed compaction or stop signal appears,
- *   so a failed attempt is never mistaken for a lossy summary;
+ *   and counts attempts (`compactionAttempts`) plus a tentative note that names no
+ *   compaction number and claims no limit; a compaction is confirmed only by
+ *   `session.compaction.ended` (deduplicated), which is what raises the limit.
+ *   When the event stream dies, the guard flips `compactionSource` to `hook` and
+ *   reports the failure in `guard.streamFailures`; on a host without an event
+ *   stream attempts grow but no confirmed compaction or stop signal appears, so a
+ *   failed attempt is never mistaken for a lossy summary;
  * - `tool.execute.after` — cap the model-facing content of configured tools.
  *   The full output is written to a temp file; the model gets a head plus the
  *   path. Only tools that produce read-only text (shell/bash/webfetch by
@@ -91,6 +92,7 @@ export interface SessionBudgetCounters {
   readonly toolCalls: number
   readonly outputsCapped: number
   readonly outputCharsSaved: number
+  /** Hook errors observed while handling this session; a dead event stream is in `guard.streamFailures`. */
   readonly errors: number
   /** All tool calls by normalized tool name (namespace stripped, lower-case). */
   readonly toolCallsByTool: Readonly<Record<string, number>>
@@ -108,7 +110,10 @@ interface MutableCounters {
   compactions: number
   compactionAttempts: number
   compactionFailures: number
-  pendingCompaction: number
+  /** Confirmed compactions whose lossy note was not delivered yet. */
+  pendingConfirmed: number
+  /** An attempt is in flight: a terminal event has not arrived yet. */
+  tentative: boolean
   reminders: number
   toolCalls: number
   outputsCapped: number
@@ -130,6 +135,8 @@ export interface SessionBudgetGuard {
   readonly compactionSource: CompactionSource
   /** `true` while the compaction event stream is subscribed and consuming. */
   readonly eventLive: boolean
+  /** Number of event-stream failures (0 or 1); kept out of the per-session `errors`. */
+  readonly streamFailures: number
 }
 
 /** Read-only view handed to the tools; keeps the hook state private. */
@@ -387,6 +394,24 @@ function compactionText(locale: Locale, count: number, config: SessionBudgetConf
   )
 }
 
+/**
+ * A compaction attempt was observed through the always-registered hook, but no
+ * terminal event has confirmed or failed it yet. The text deliberately names no
+ * compaction number and no limit: only a confirmed compaction may do that.
+ */
+function tentativeCompactionText(locale: Locale): string {
+  if (locale === "ru") {
+    return (
+      "[Гигиена сессии] Попытка компакции, подтверждение ожидается. " +
+      "Зафиксируй решения, риски и следующий шаг в handoff — не полагайся на пересказ."
+    )
+  }
+  return (
+    "[Session hygiene] Compaction attempt in progress, confirmation pending. " +
+    "Pin decisions, risks and the next step to the handoff; do not trust the summary."
+  )
+}
+
 interface ToolContentText {
   readonly type: "text"
   readonly text: string
@@ -479,23 +504,49 @@ function outputRoot(): string {
   return path.resolve(tmpdir(), OUTPUT_DIRECTORY)
 }
 
+/** Compare two resolved paths; Windows paths are case-insensitive. */
+function samePath(left: string, right: string): boolean {
+  const a = path.normalize(left)
+  const b = path.normalize(right)
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
+/** Reject a symlink or an NTFS junction planted at a path the guard writes through. */
+async function assertNotLink(target: string, what: string): Promise<void> {
+  const entry = await lstat(target)
+  if (entry.isSymbolicLink()) {
+    throw new Error(`refusing to write a capped tool output: ${what} ${target} is a symlink/junction`)
+  }
+}
+
 /**
  * Resolve the session output directory and prove it stays inside the temp root.
  *
- * A lexical check on the joined path is not enough: a symlink or an NTFS
- * junction planted at `root/<session>` would resolve outside the root. The
- * directory is created first, then `lstat` rejects a reparse point and
- * `realpath` proves containment. Both checks are fail-open at the call site: a
- * throw leaves the tool result untouched.
+ * A lexical check on the joined path is not enough: the trust anchor is the
+ * directory `realpath(os.tmpdir())/opencode-tool-output`, not the lexical path.
+ * A symlink or an NTFS junction planted at the root itself also redirects every
+ * write, so the root is `lstat`ed (created with 0700 when absent) and its
+ * `realpath` must equal the anchor; `realpath(tmpdir())` keeps a symlinked
+ * `TMPDIR` such as macOS `/tmp` working. The session directory is checked the
+ * same way and must resolve inside the root. The caller writes to the returned
+ * real path, so the checked location is the written one. Both checks are
+ * fail-open at the call site: a throw leaves the tool result untouched.
  */
 async function containedOutputDirectory(root: string, directory: string): Promise<string> {
-  await mkdir(root, { recursive: true, mode: 0o700 })
-  await mkdir(directory, { recursive: true, mode: 0o700 })
-  const entry = await lstat(directory)
-  if (entry.isSymbolicLink()) {
-    throw new Error(`refusing to write a capped tool output: ${directory} is a symlink/junction`)
+  const expectedRoot = path.join(await realpath(tmpdir()), OUTPUT_DIRECTORY)
+  try {
+    await assertNotLink(root, "output root")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    await mkdir(root, { recursive: true, mode: 0o700 })
+    await assertNotLink(root, "output root")
   }
   const realRoot = await realpath(root)
+  if (!samePath(realRoot, expectedRoot)) {
+    throw new Error(`refusing to write a capped tool output: ${root} resolves to ${realRoot}, expected ${expectedRoot}`)
+  }
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  await assertNotLink(directory, "session directory")
   const realDirectory = await realpath(directory)
   if (!isInside(realRoot, realDirectory)) {
     throw new Error(`refusing to write a capped tool output outside ${realRoot} (got ${realDirectory})`)
@@ -505,15 +556,18 @@ async function containedOutputDirectory(root: string, directory: string): Promis
 
 /** Write the full output with `wx`; one retry with a random suffix on `EEXIST`. */
 async function writeOutput(file: string, text: string): Promise<string> {
-  await containedOutputDirectory(outputRoot(), path.dirname(file))
+  const realDirectory = await containedOutputDirectory(outputRoot(), path.dirname(file))
+  // The checked directory is the written one: a lexical path could still name a
+  // reparse point that realpath resolved away.
+  const target = path.join(realDirectory, path.basename(file))
   try {
-    await writeFile(file, text, { encoding: "utf8", mode: 0o600, flag: "wx" })
-    return file
+    await writeFile(target, text, { encoding: "utf8", mode: 0o600, flag: "wx" })
+    return target
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
   }
   const extension = ".txt"
-  const retry = `${file.slice(0, -extension.length)}-${randomBytes(4).toString("hex")}${extension}`
+  const retry = `${target.slice(0, -extension.length)}-${randomBytes(4).toString("hex")}${extension}`
   await writeFile(retry, text, { encoding: "utf8", mode: 0o600, flag: "wx" })
   return retry
 }
@@ -593,10 +647,11 @@ function eventSubscriber(ctx: Plugin.Context): EventSubscribe | undefined {
 
 /**
  * Register the hooks. Every host gets the `session.compaction` hook (attempts and
- * a tentative note); on a host with an event stream `session.compaction.ended`
- * confirms a compaction and `session.compaction.failed` drops the tentative note.
- * If the stream ends or throws, `compactionSource` flips to `hook` and `guard`
- * exposes `eventLive: false`, so a dead stream is visible instead of silently
+ * a tentative note that names no count and no limit); on a host with an event
+ * stream `session.compaction.ended` confirms a compaction and
+ * `session.compaction.failed` drops the tentative note. If the stream ends or
+ * throws, `compactionSource` flips to `hook` and `guard` exposes `eventLive: false`
+ * plus `streamFailures: 1`, so a dead stream is visible instead of silently
  * freezing the count. The returned `stats` reports one session's counters;
  * `cleanup` aborts the subscription and disposes every registration (safe to call
  * twice). A host without the V2 hook domains degrades to counters only: the guard
@@ -625,6 +680,7 @@ export async function createSessionBudget(
         toolOutputEnabled: config.toolOutput.enabled,
         compactionSource: "hook",
         eventLive: false,
+        streamFailures: 0,
       }),
     }
   }
@@ -641,6 +697,8 @@ export async function createSessionBudget(
   }
 
   const states = new Map<string, MutableCounters>()
+  /** Ids whose `session.deleted` was observed: late events/hooks must not resurrect them. */
+  const deletedSessions = new Set<string>()
   let compactionSource: CompactionSource = "hook"
   let eventLive = false
   let streamFailures = 0
@@ -657,14 +715,17 @@ export async function createSessionBudget(
         compactions: 0,
         compactionAttempts: 0,
         compactionFailures: 0,
-        pendingCompaction: 0,
+        pendingConfirmed: 0,
+        tentative: false,
         reminders: 0,
         toolCalls: 0,
         outputsCapped: 0,
         outputCharsSaved: 0,
         errors: 0,
-        toolCallsByTool: {},
-        toolOutputsCappedByTool: {},
+        // Null-prototype maps: a tool literally named `constructor` or `__proto__`
+        // must not collide with `Object.prototype`.
+        toolCallsByTool: Object.create(null) as Record<string, number>,
+        toolOutputsCappedByTool: Object.create(null) as Record<string, number>,
         seenCompactionEvents: new Set<string>(),
       }
       states.set(sessionID, state)
@@ -688,27 +749,38 @@ export async function createSessionBudget(
           try {
             for await (const event of stream) {
               const record = event as SessionEventLike | null | undefined
-              const sessionID = record?.data?.sessionID
+              if (record === null || record === undefined) continue
+              const sessionID = record.data?.sessionID
               if (typeof sessionID !== "string" || sessionID === "") continue
-              // `session.deleted` forgets the session: counters and dedup window go
-              // away, so a reused id starts clean and `tracked` turns false.
-              if (record?.type === "session.deleted") {
+              const type = record.type
+              // `session.deleted` forgets the session and plants a tombstone: counters
+              // and the dedup window go away, so a reused id starts clean, and late
+              // events for the deleted id are ignored instead of resurrecting it.
+              // `session.created` is the only event allowed to lift the tombstone.
+              if (type === "session.deleted") {
                 states.delete(sessionID)
+                deletedSessions.add(sessionID)
                 continue
+              }
+              if (deletedSessions.has(sessionID)) {
+                if (type !== "session.created") continue
+                deletedSessions.delete(sessionID)
               }
               const state = stateFor(sessionID)
               try {
-                if (record?.type === "session.compaction.ended") {
+                if (type === "session.compaction.ended") {
                   const key = compactionEventKey(record)
                   if (key !== undefined && !firstSighting(state, key)) continue
                   state.compactions += 1
-                  state.pendingCompaction = state.compactions
-                } else if (record?.type === "session.compaction.failed") {
+                  state.pendingConfirmed = state.compactions
+                  state.tentative = false
+                } else if (type === "session.compaction.failed") {
                   const key = compactionEventKey(record)
                   if (key !== undefined && !firstSighting(state, key)) continue
                   state.compactionFailures += 1
-                  // A failed attempt produces no lossy summary: drop the tentative note.
-                  if (state.pendingCompaction > state.compactions) state.pendingCompaction = 0
+                  // A failed attempt produces no lossy summary: drop only the tentative
+                  // slot; a confirmed compaction still waiting for delivery is kept.
+                  state.tentative = false
                 }
               } catch {
                 state.errors += 1
@@ -734,9 +806,11 @@ export async function createSessionBudget(
       await ctx.session.hook("context", (input) => {
         const payload = input as { sessionID?: unknown } | null | undefined
         if (payload === null || payload === undefined) return
+        const sessionID = String(payload.sessionID ?? "")
+        if (deletedSessions.has(sessionID)) return
         let state: MutableCounters | undefined
         try {
-          state = stateFor(String(payload.sessionID ?? ""))
+          state = stateFor(sessionID)
           state.requests += 1
           const tokens = estimateTokens(input.system) + estimateTokens(input.messages)
           state.promptTokensLast = tokens
@@ -751,12 +825,17 @@ export async function createSessionBudget(
             state.band = band
             parts.push(reminderText(locale, band, config))
           }
-          // The lossy note is only trustworthy on a live event stream: the always-on
-          // compaction hook sees attempts, not success, so the fallback never claims
-          // that a summary happened (and never raises the limit).
-          if (state.pendingCompaction > 0 && compactionSource === "event") {
-            parts.push(compactionText(locale, state.pendingCompaction, config))
-            state.pendingCompaction = 0
+          // Confirmed note first: only `session.compaction.ended` raises
+          // `pendingConfirmed`, so the number and the limit are facts even if the
+          // event stream died after the event arrived. Otherwise an attempt note
+          // goes out without a number and without a limit claim.
+          if (state.pendingConfirmed > 0) {
+            parts.push(compactionText(locale, state.pendingConfirmed, config))
+            state.pendingConfirmed = 0
+            state.tentative = false
+          } else if (state.tentative) {
+            parts.push(tentativeCompactionText(locale))
+            state.tentative = false
           }
           if (parts.length === 0) return
           input.system.push(...parts.map((text) => ({ type: "text" as const, text })))
@@ -769,19 +848,22 @@ export async function createSessionBudget(
 
     // `session.compaction` is registered on every host: the hook sees every attempt,
     // so the counters keep moving even when the event stream is absent or dies. The
-    // hook only records a tentative pending note — `compactions` grows on
+    // hook only records a tentative attempt — `compactions` grows on
     // `session.compaction.ended` (event hosts), and only that count raises the limit.
     registrations.push(
       await ctx.session.hook("compaction", (input) => {
         const payload = input as { sessionID?: unknown } | null | undefined
         if (payload === null || payload === undefined) return
+        const sessionID = String(payload.sessionID ?? "")
+        if (deletedSessions.has(sessionID)) return
         let state: MutableCounters | undefined
         try {
-          state = stateFor(String(payload.sessionID ?? ""))
+          state = stateFor(sessionID)
           state.compactionAttempts += 1
-          // Tentative: the nearest primary after an attempt gets the lossy note even
-          // when the `ended` event is delayed. Never touches `compactions`.
-          state.pendingCompaction = state.compactions + 1
+          // Tentative: the nearest primary after an attempt gets an attempt note even
+          // when the terminal event is delayed. Never touches `compactions` or a
+          // confirmed note that is still waiting for delivery.
+          state.tentative = true
         } catch {
           if (state !== undefined) state.errors += 1
         }
@@ -792,9 +874,11 @@ export async function createSessionBudget(
       await ctx.tool.hook("execute.after", async (input) => {
         const payload = input as { sessionID?: unknown } | null | undefined
         if (payload === null || payload === undefined) return
+        const sessionID = String(payload.sessionID ?? "")
+        if (deletedSessions.has(sessionID)) return
         let state: MutableCounters | undefined
         try {
-          state = stateFor(String(payload.sessionID ?? ""))
+          state = stateFor(sessionID)
           state.toolCalls += 1
           const name = normalizeToolName(String(input.tool))
           state.toolCallsByTool[name] = (state.toolCallsByTool[name] ?? 0) + 1
@@ -810,7 +894,7 @@ export async function createSessionBudget(
           const text = toolResultText(result.content)
           if (text.length <= config.toolOutput.maxChars) return
 
-          const file = outputPath(String(payload.sessionID ?? ""), String(input.id))
+          const file = outputPath(sessionID, String(input.id))
           const head = headOf(text, config.toolOutput.headChars)
           const stub = cappedStub(head, text, file)
           // Capping must shrink the context: a stub at least as long as the text
@@ -880,6 +964,7 @@ export async function createSessionBudget(
     toolOutputEnabled: config.toolOutput.enabled,
     compactionSource,
     eventLive,
+    streamFailures,
   })
 
   return {
@@ -891,7 +976,7 @@ export async function createSessionBudget(
     stats: (sessionID: string): SessionBudgetCounters => {
       const state = states.get(sessionID)
       if (state === undefined) {
-        return { ...emptyCounters(sessionID, compactionSource), errors: streamFailures }
+        return emptyCounters(sessionID, compactionSource)
       }
       return {
         sessionID: state.sessionID,
@@ -908,7 +993,7 @@ export async function createSessionBudget(
         toolCalls: state.toolCalls,
         outputsCapped: state.outputsCapped,
         outputCharsSaved: state.outputCharsSaved,
-        errors: state.errors + streamFailures,
+        errors: state.errors,
         toolCallsByTool: { ...state.toolCallsByTool },
         toolOutputsCappedByTool: { ...state.toolOutputsCappedByTool },
       }

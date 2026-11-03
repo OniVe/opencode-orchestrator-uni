@@ -285,7 +285,8 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
   "overBudget": true, "compactionLimitReached": true, "toolsPerTurn": 2.58,
   "tracked": true,
   "guard": { "available": true, "hooksRegistered": true, "sessionEnabled": true,
-             "toolOutputEnabled": true, "compactionSource": "event", "eventLive": true } }
+             "toolOutputEnabled": true, "compactionSource": "event", "eventLive": true,
+             "streamFailures": 0 } }
 ```
 
 `sessionID` may name **any session on this server**, not only a child of the caller;
@@ -293,17 +294,27 @@ that is deliberate — the orchestrator uses the report to control every slice i
 Counters are per plugin instance, and `tracked` is `true` once any event or hook
 observed the session; a `session.deleted` event forgets it. `band` is the highest
 budget level reached (`0` below the soft threshold); `promptTokensMedian` is the
-median over the last 256 requests; `toolCalls` includes nested Code Mode calls;
-`toolCallsByTool` and `toolOutputsCappedByTool` split calls and capped outputs by the
-normalized tool name (namespace stripped, lower-case); `outputCharsSaved` is a
-character count, not bytes, and an upper estimate (the injected stub is subtracted).
-`compactions` counts confirmed `session.compaction.ended` events only;
-`compactionAttempts` counts every `session.compaction` hook call, so on a host with a
-dead or absent event stream attempts keep growing while `compactions` and
-`compactionLimitReached` stay put (a failed attempt is never a stop signal). A
+median over the last 256 requests; `toolCalls` and the per-tool counters include
+nested Code Mode calls; `toolCallsByTool` and `toolOutputsCappedByTool` split calls
+and capped outputs by the normalized tool name (namespace stripped, lower-case);
+`outputCharsSaved` is a character count, not bytes, and an upper estimate (the
+injected stub is subtracted). `compactions` counts confirmed
+`session.compaction.ended` events only; `compactionAttempts` counts every
+`session.compaction` hook call, so on a host with a dead or absent event stream
+attempts keep growing while `compactions` and `compactionLimitReached` stay put (a
+failed attempt is never a stop signal). A dead stream is reported once in
+`guard.streamFailures`; the per-session `errors` counts hook failures only, so a
+transport incident is not attributed to every session. Duplicate compaction events
+are counted once only when the host supplies `event.id` or a durable position;
+without either identity a re-delivered event may be counted again (fail-open in the
+direction of counting). A
 session the store does not return and this instance never observed is
-`E_NOT_FOUND`; a transient `session.get` failure is `E_INTERNAL`; a known session
-with zero requests is a valid report with `tracked: false`. Without `session.get`,
+`E_NOT_FOUND` (recognized by the typed `_tag`/`name`/`code` — `Session.NotFoundError`,
+`SessionNotFoundError`, `NotFoundError`, `ENOENT` — with a narrow message fallback);
+`session.get` returning `undefined` for an untracked session is the same not-found
+answer; a transient `session.get` failure (a lock, permission, `unknown database`) is
+`E_INTERNAL`; a known session with zero requests is a valid report with
+`tracked: false`. Without `session.get`,
 an untracked session is `E_NO_API`, a tracked one is `ok` with `session: null` and a
 `limitations` entry. Codes: `E_INPUT`, `E_NOT_FOUND`, `E_INTERNAL`, `E_NO_API`,
 `E_UNAVAILABLE` (the guard is not registered or its hooks failed), `E_ABORTED`.
@@ -322,17 +333,23 @@ The runtime part is three hooks (`session.context`, `session.compaction`,
   new level is crossed**, not on every request; within a level the text is stable,
   so the prefix cache is not broken.
 - compaction events — the `session.compaction` hook is registered on **every** host:
-  it counts attempts (`compactionAttempts`) and sets a tentative lossy note for the
-  nearest request. Only `session.compaction.ended` confirms a compaction
-  (deduplicated by `event.id` or the durable position); `session.compaction.failed`
-  increments `compactionFailures` and drops the tentative note. If the event stream
-  ends or throws, `guard.eventLive` turns `false` and `guard.compactionSource`
-  becomes `hook` (once, counted in `errors`); the hook keeps counting attempts, but
-  no confirmed compaction, no lossy note and no false "limit reached" is invented on
-  that path.
+  it counts attempts (`compactionAttempts`) and sends a tentative note to the
+  nearest request; the note names no compaction number and claims no limit. Only
+  `session.compaction.ended` confirms a compaction (deduplicated by `event.id` or
+  the durable position) and raises a confirmed note with the number and the limit;
+  `session.compaction.failed` increments `compactionFailures`, drops the tentative
+  note and keeps a confirmed note that is still waiting for delivery. If the event
+  stream ends or throws, `guard.eventLive` turns `false`,
+  `guard.compactionSource` becomes `hook` and `guard.streamFailures` becomes `1`
+  (the per-session `errors` stays `0`); the hook keeps counting attempts, but no
+  confirmed compaction and no false "limit reached" is invented on that path.
 - `tool.execute.after` — for `shell`, `bash`, `webfetch` it caps output over
   `maxChars`: the full text goes to `os.tmpdir()/opencode-tool-output/` (POSIX
   modes 0700/0600; Windows ignores them), the model gets a head and the path.
+  The root is trusted only as a real directory: a symlink or junction at
+  `opencode-tool-output` is refused, its `realpath` must equal
+  `<real tmpdir>/opencode-tool-output`, and each session directory is `lstat`ed and
+  proven inside the root; the file is written by the resolved path.
   Those files are **not cleaned up automatically** — remove them yourself. If
   `TMPDIR` points inside the workspace, the files land there instead.
   `read`, `write`, `edit`, `execute` and the kit's own tools are not capped.
@@ -509,7 +526,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (386 tests in 10 files, up from
+`npm test` scans only `./test/` — the shipped suite (397 tests in 10 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`

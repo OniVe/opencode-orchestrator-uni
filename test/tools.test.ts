@@ -264,6 +264,9 @@ describe("orch_uni_sessions", () => {
       sessions: {
         get: async ({ sessionID }: { sessionID: string }) => {
           if (sessionID === "ses_missing") throw new Error("session not found")
+          if (sessionID === "ses_missing_tagged") {
+            throw Object.assign(new Error(""), { _tag: "Session.NotFoundError" })
+          }
           return child(sessionID, "ses_parent", "meta")
         },
         list: async () => ({ data: [], cursor: {} }),
@@ -275,6 +278,10 @@ describe("orch_uni_sessions", () => {
       code: "E_INPUT",
     })
     expect(await runTool(harness, "orch_uni_sessions", { sessionID: "ses_missing" })).toMatchObject({
+      ok: false,
+      code: "E_NOT_FOUND",
+    })
+    expect(await runTool(harness, "orch_uni_sessions", { sessionID: "ses_missing_tagged" })).toMatchObject({
       ok: false,
       code: "E_NOT_FOUND",
     })
