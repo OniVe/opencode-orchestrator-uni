@@ -12,22 +12,22 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import {
   compactionLimitReached,
-  createSessionBudget,
   DEFAULT_SESSION_GUARD,
   DEFAULT_TOOL_OUTPUT_GUARD,
   estimateTokens,
   formatThreshold,
-  outputPath,
   readSessionBudgetOptions,
+  type SessionBudget,
   type SessionBudgetConfig,
   type SessionBudgetCounters,
   type SessionBudgetReport,
+  createSessionBudget as startSessionBudget,
   toolResultText,
 } from "../lib/session-budget"
 import { createHarness } from "./support/harness"
@@ -173,24 +173,26 @@ async function waitFor(condition: () => boolean, what = "condition"): Promise<vo
   throw new Error(`${what} timed out`)
 }
 
-/**
- * Session ids are unique per run and their temp directories are removed after
- * each test: a crashed earlier run must not turn the next one into a retry-path
- * assertion failure, and a green run must not leak files under `%TEMP%`.
- */
-const createdSessions = new Set<string>()
-
+/** Unique per run: a crashed earlier run must not turn the next one into a retry. */
 function sessionFor(prefix: string): string {
-  const id = `ses_${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`
-  createdSessions.add(id)
-  return id
+  return `ses_${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`
+}
+
+/**
+ * Every budget owns a private temp root. The wrapper registers it for cleanup so
+ * a test that fails before its own `cleanup()` still leaves no files under
+ * `%TEMP%`; `cleanup` is idempotent by contract.
+ */
+const liveBudgets: SessionBudget[] = []
+
+async function createSessionBudget(...args: Parameters<typeof startSessionBudget>): Promise<SessionBudget> {
+  const budget = await startSessionBudget(...args)
+  liveBudgets.push(budget)
+  return budget
 }
 
 afterEach(async () => {
-  for (const id of createdSessions) {
-    await rm(path.dirname(outputPath(id, "cleanup")), { recursive: true, force: true })
-  }
-  createdSessions.clear()
+  for (const budget of liveBudgets.splice(0)) await budget.cleanup()
 })
 
 /**
@@ -791,10 +793,10 @@ describe("hooks", () => {
     expect(content).toContain("full output:")
     expect(result.metadata).toEqual({
       previous: true,
-      toolOutputGuard: { chars: 5000, path: outputPath(s, "call_1") },
+      toolOutputGuard: { chars: 5000, path: expect.any(String) },
     })
 
-    const file = outputPath(s, "call_1")
+    const file = (result.metadata as { toolOutputGuard: { path: string } }).toolOutputGuard.path
     expect(await readFile(file, "utf8")).toBe("y".repeat(5000))
 
     expect(budget.stats(s).outputsCapped).toBe(1)
@@ -827,7 +829,7 @@ describe("hooks", () => {
     expect(parts[0]?.text).toContain("5000 chars total")
     expect(parts[1]).toEqual(filePart)
 
-    const file = outputPath(s, "call_array")
+    const file = (result.metadata as { toolOutputGuard: { path: string } }).toolOutputGuard.path
     expect(await readFile(file, "utf8")).toBe("y".repeat(5000))
     await budget.cleanup()
   })
@@ -872,7 +874,6 @@ describe("hooks", () => {
       await hook(toolCall(s, id, "shell", result))
       expect(result.content).toHaveLength(length)
       expect(result.metadata).toEqual({})
-      await expect(readFile(outputPath(s, id), "utf8")).rejects.toThrow()
     }
 
     expect(budget.stats(s).outputsCapped).toBe(0)
@@ -1059,7 +1060,7 @@ describe("hooks", () => {
     const result: Record<string, unknown> = { content: "q".repeat(50_000) }
     await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(s, "call_5", "shell", result))
     expect(result.content).toHaveLength(50_000)
-    await expect(readFile(outputPath(s, "call_5"), "utf8")).rejects.toThrow()
+    expect(result.metadata).toBeUndefined()
 
     const stats = budget.stats(s)
     expect(stats.requests).toBe(1)
@@ -1143,15 +1144,19 @@ describe("hooks", () => {
 
   test("a write failure leaves the frozen tool result untouched and counts one error", async () => {
     const harness = createBudgetHarness()
+    const root = await mkdtemp(path.join(tmpdir(), "audit-write-fail-"))
     const budget = await createSessionBudget(
       harness.ctx,
       config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 100, headChars: 10 } }),
       "ru",
+      () => {},
+      { createOutputRoot: async () => root },
     )
     const hook = harness.hooks.get("tool.execute.after") as HookCallback
     const s = sessionFor("frozen")
-    // Block the session directory with a regular file: mkdir() cannot create it.
-    await writeFile(path.dirname(outputPath(s, "blocked")), "blocker", "utf8")
+    // The setup succeeded, then the root disappeared: the session directory cannot
+    // be created, so the cap fails instead of writing anywhere.
+    await rm(root, { recursive: true, force: true })
 
     const result: Record<string, unknown> = { content: "w".repeat(5000), metadata: { previous: true } }
     await hook(toolCall(s, "call_frozen", "shell", result))
@@ -1191,72 +1196,138 @@ async function detectLinkStyle(): Promise<"junction" | "symlink" | undefined> {
 
 const linkStyle = await detectLinkStyle()
 
-describe("temp output paths", () => {
-  test("outputPath keeps every segment inside the temp root", () => {
-    const root = path.resolve(tmpdir(), "opencode-tool-output")
-    for (const [sessionID, callID] of [
-      ["..", "call"],
-      ["a/b", "c\\d"],
-      ["...", "."],
-      ["CON", "call"],
-      ["lpt1.txt", "nul"],
-    ] as const) {
-      const file = path.resolve(outputPath(sessionID, callID))
-      expect(file).not.toBe(root)
-      expect(file.startsWith(`${root}${path.sep}`)).toBe(true)
+describe("private output root", () => {
+  const capConfig = config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 1000, headChars: 100 } })
+
+  function pathOf(result: Record<string, unknown>): string {
+    return (result.metadata as { toolOutputGuard: { path: string } }).toolOutputGuard.path
+  }
+
+  test("a capped output lives in a random root, random session directory and random 0600 file", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(harness.ctx, capConfig, "en")
+    const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const session = sessionFor("random")
+    const other = sessionFor("random_other")
+
+    const first: Record<string, unknown> = { content: "a".repeat(5000), metadata: {} }
+    const second: Record<string, unknown> = { content: "b".repeat(5000), metadata: {} }
+    const third: Record<string, unknown> = { content: "c".repeat(5000), metadata: {} }
+    await hook(toolCall(session, "call_a", "shell", first))
+    await hook(toolCall(session, "call_b", "shell", second))
+    await hook(toolCall(other, "call_c", "shell", third))
+
+    const fileA = pathOf(first)
+    const fileB = pathOf(second)
+    const dir = path.dirname(fileA)
+    // The same session reuses one directory; another session gets its own.
+    expect(path.dirname(fileB)).toBe(dir)
+    expect(path.dirname(pathOf(third))).not.toBe(dir)
+    expect(path.basename(dir)).toMatch(/^s-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    expect(path.basename(fileA)).toMatch(/^c-[0-9a-f-]{36}\.txt$/)
+    expect(path.basename(fileA)).not.toBe(path.basename(fileB))
+    const root = path.dirname(dir)
+    expect(path.basename(root)).toMatch(/^opencode-tool-output-.+$/)
+    expect(path.dirname(root)).toBe(await realpath(tmpdir()))
+    expect(await readFile(fileA, "utf8")).toBe("a".repeat(5000))
+
+    if (process.platform !== "win32") {
+      expect((await stat(root)).mode & 0o077).toBe(0)
+      const uid = process.getuid?.()
+      if (uid !== undefined) expect((await stat(root)).uid).toBe(uid)
+      expect((await stat(dir)).mode & 0o777).toBe(0o700)
+      expect((await stat(fileA)).mode & 0o777).toBe(0o600)
     }
-    expect(outputPath("CON", "call")).toBe(path.join(root, "_CON", "call.txt"))
-    expect(outputPath(".hidden", "call")).toBe(path.join(root, "hidden", "call.txt"))
+    await budget.cleanup()
   })
 
-  test.skipIf(linkStyle === undefined)("a symlink or junction under the temp root is refused", async () => {
-    const root = path.resolve(tmpdir(), "opencode-tool-output")
-    const outside = await mkdtemp(path.join(tmpdir(), "audit-outside-"))
-    const s = sessionFor("link")
-    const link = path.join(root, s)
-    try {
-      if (linkStyle === "junction") {
-        const proc = Bun.spawnSync(["cmd", "/c", "mklink", "/J", link, outside])
-        expect(proc.exitCode).toBe(0)
-      } else {
-        await symlink(outside, link, "dir")
-      }
+  test("an unavailable temp root disables capping with a warning and leaves results untouched", async () => {
+    const warnings: string[] = []
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(harness.ctx, capConfig, "ru", (message) => warnings.push(message), {
+      createOutputRoot: async () => {
+        throw new Error("read-only temp")
+      },
+    })
+    expect(budget.guard()).toMatchObject({ available: true, toolOutputEnabled: false, sessionEnabled: true })
+    expect(warnings.some((m) => m.includes("tool output guard disabled") && m.includes("read-only temp"))).toBe(true)
 
-      const harness = createBudgetHarness()
-      const budget = await createSessionBudget(
-        harness.ctx,
-        config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 100, headChars: 10 } }),
-        "ru",
-      )
-      const result: Record<string, unknown> = { content: "s".repeat(5000), metadata: {} }
-      await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(s, "call_link", "shell", result))
-
-      // The link is refused fail-open: the result is untouched and nothing lands outside.
-      expect(result.content).toBe("s".repeat(5000))
-      expect(result.metadata).toEqual({})
-      await expect(readFile(path.join(outside, "call_link.txt"), "utf8")).rejects.toThrow()
-      expect(budget.stats(s).errors).toBe(1)
-      expect(budget.stats(s).outputsCapped).toBe(0)
-      await budget.cleanup()
-    } finally {
-      await rm(link, { recursive: true, force: true })
-      await rm(outside, { recursive: true, force: true })
-    }
+    const session = sessionFor("no_root")
+    const result: Record<string, unknown> = { content: "n".repeat(5000), metadata: { previous: true } }
+    await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(session, "call_n", "shell", result))
+    expect(result.content).toBe("n".repeat(5000))
+    expect(result.metadata).toEqual({ previous: true })
+    expect(budget.stats(session)).toMatchObject({ toolCalls: 1, errors: 0, outputsCapped: 0 })
+    await budget.cleanup()
   })
-  test.skipIf(linkStyle === undefined)("a symlink or junction at the output root is refused", async () => {
-    // A redirect at the root itself moves every session directory; the guard must
-    // trust the real temp anchor, not the lexical path. TMPDIR/TEMP/TMP are
-    // pointed at a private base so the shared output root is never re-pointed.
-    const base = await mkdtemp(path.join(tmpdir(), "audit-root-"))
-    const outside = await mkdtemp(path.join(tmpdir(), "audit-root-outside-"))
-    const root = path.join(base, "opencode-tool-output")
+
+  test.skipIf(process.platform === "win32")("a root readable by others disables capping", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "audit-public-root-"))
+    await chmod(root, 0o777)
+    const warnings: string[] = []
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(harness.ctx, capConfig, "en", (message) => warnings.push(message), {
+      createOutputRoot: async () => root,
+    })
+    expect(budget.guard().toolOutputEnabled).toBe(false)
+    expect(warnings.some((m) => m.includes("tool output guard disabled") && m.includes("group/other"))).toBe(true)
+
+    const session = sessionFor("public_root")
+    const result: Record<string, unknown> = { content: "p".repeat(5000), metadata: {} }
+    await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(session, "call_p", "shell", result))
+    expect(result.content).toBe("p".repeat(5000))
+    expect(result.metadata).toEqual({})
+    expect(budget.stats(session)).toMatchObject({ toolCalls: 1, errors: 0, outputsCapped: 0 })
+    await budget.cleanup()
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session.deleted evicts the cached session directory", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, capConfig, "en")
+    const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const session = sessionFor("evict")
+    const first: Record<string, unknown> = { content: "a".repeat(5000), metadata: {} }
+    await hook(toolCall(session, "call_1", "shell", first))
+    const firstDir = path.dirname(pathOf(first))
+
+    harness.events.push({ type: "session.deleted", data: { sessionID: session } })
+    await drain(harness)
+    harness.events.push({ type: "session.created", data: { sessionID: session } })
+    await drain(harness)
+
+    // The tombstone is lifted and the cache was evicted: a new directory is made.
+    const second: Record<string, unknown> = { content: "b".repeat(5000), metadata: {} }
+    await hook(toolCall(session, "call_2", "shell", second))
+    expect(path.dirname(pathOf(second))).not.toBe(firstDir)
+    await budget.cleanup()
+  })
+
+  test("cleanup removes the private root", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "audit-cleanup-root-"))
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(harness.ctx, capConfig, "en", () => {}, {
+      createOutputRoot: async () => root,
+    })
+    await budget.cleanup()
+    await expect(stat(root)).rejects.toThrow()
+  })
+
+  test.skipIf(linkStyle === undefined)("a pre-created fixed root junction is never used", async () => {
+    // The guard creates its own `opencode-tool-output-<random>` root, so a
+    // directory or junction pre-created at `<tmp>/opencode-tool-output` no longer
+    // blocks or redirects capping. TMPDIR/TEMP/TMP point at a private base so the
+    // shared system temp is never touched.
+    const base = await mkdtemp(path.join(tmpdir(), "audit-fixed-root-"))
+    const outside = await mkdtemp(path.join(tmpdir(), "audit-fixed-outside-"))
+    const fixed = path.join(base, "opencode-tool-output")
     const previous = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP }
     try {
       if (linkStyle === "junction") {
-        const proc = Bun.spawnSync(["cmd", "/c", "mklink", "/J", root, outside])
+        const proc = Bun.spawnSync(["cmd", "/c", "mklink", "/J", fixed, outside])
         expect(proc.exitCode).toBe(0)
       } else {
-        await symlink(outside, root, "dir")
+        await symlink(outside, fixed, "dir")
       }
       process.env.TMPDIR = base
       process.env.TMP = base
@@ -1269,16 +1340,18 @@ describe("temp output paths", () => {
         config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 100, headChars: 10 } }),
         "ru",
       )
-      const s = sessionFor("rootlink")
+      const session = sessionFor("fixed_root")
       const result: Record<string, unknown> = { content: "r".repeat(5000), metadata: { previous: true } }
-      await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(s, "call_rootlink", "shell", result))
+      await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(session, "call_fixed", "shell", result))
 
-      // Refused fail-open: the result is untouched and nothing lands outside.
-      expect(result.content).toBe("r".repeat(5000))
-      expect(result.metadata).toEqual({ previous: true })
-      await expect(readFile(path.join(outside, s, "call_rootlink.txt"), "utf8")).rejects.toThrow()
-      expect(budget.stats(s).errors).toBe(1)
-      expect(budget.stats(s).outputsCapped).toBe(0)
+      // Capping works inside the fresh random root; the fixed name is untouched.
+      expect((result.content as string).length).toBeLessThan(5000)
+      const file = pathOf(result)
+      const root = path.dirname(path.dirname(file))
+      expect(path.basename(root)).toMatch(/^opencode-tool-output-.+$/)
+      expect(path.dirname(root)).toBe(await realpath(base))
+      expect(await readdir(outside)).toEqual([])
+      expect(budget.stats(session)).toMatchObject({ errors: 0, outputsCapped: 1 })
       await budget.cleanup()
     } finally {
       for (const key of ["TMPDIR", "TMP", "TEMP"] as const) {
@@ -1286,7 +1359,7 @@ describe("temp output paths", () => {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value
       }
-      await rm(root, { recursive: true, force: true })
+      await rm(fixed, { recursive: true, force: true })
       await rm(base, { recursive: true, force: true })
       await rm(outside, { recursive: true, force: true })
     }
