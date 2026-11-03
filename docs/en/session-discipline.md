@@ -136,14 +136,18 @@ set of bans:
 - `tool.execute.after` — caps the output of the configured tools and stores the
   full text in a private per-process root
   `os.tmpdir()/opencode-tool-output-<random>/` (POSIX 0700 for the root and the
-  session directory, 0600 for the file; Windows ignores mode). The root is created
+  session directory, 0600 for the file). Windows ignores mode (measured: 0666 for
+  the root, the session directory and the file): privacy there rests on the ACL of
+  `os.tmpdir()` and is not checked by code. The root is created
   with `mkdtemp` at setup, so a pre-created directory or junction named
   `opencode-tool-output` is never used; on POSIX the root must belong to the
   current uid with no group/other access, otherwise the guard disables itself with
   a warning (fail-open: the result is untouched). Session directories (`s-<uuid>`)
   and files (`c-<uuid>.txt`, written with `wx`) are random, and each `realpath` is
   proven inside the root; the root is removed when the plugin unloads (best
-  effort). Residual risk accepted: a same-user attacker can still swap a session
+  effort). A string with a lone surrogate is normalized once (U+FFFD), so the
+  file, the head and the counters describe the same string. Residual risk
+  accepted: a same-user attacker can still swap a session
   directory between `realpath` and `writeFile` (Node has no `openat`). If `TMPDIR`
   points inside the workspace, the files land there.
 
@@ -165,7 +169,13 @@ Configuration (defaults):
 }
 ```
 
-`maxCompactions: 0` disables the compaction limit. In the counters, `toolCalls`
+`maxCompactions: 0` disables the compaction limit. `guard.toolOutputEnabled` is
+`true` only when the private root exists **and** the effective tool list is not
+empty; `guard.toolOutputTools` is that list (normalized, protected and kit names
+removed) and `guard.unkeyedCalls` counts hook calls without a non-empty
+`sessionID` (such input is dropped, not bucketed under `""`). An empty `tools`
+list — explicit or after every entry was rejected — disables capping with a
+warning. In the counters, `toolCalls`
 and the per-tool counters include nested Code Mode calls, and `outputCharsSaved`
 is an upper estimate in characters (the injected stub is subtracted).
 `toolCallsByTool` and `toolOutputsCappedByTool` split calls and capped outputs by

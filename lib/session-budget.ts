@@ -131,12 +131,20 @@ export interface SessionBudgetGuard {
   readonly available: boolean
   readonly hooksRegistered: boolean
   readonly sessionEnabled: boolean
+  /**
+   * `true` only when capping can actually fire: the private root exists **and**
+   * the effective tool list is not empty.
+   */
   readonly toolOutputEnabled: boolean
+  /** The effective (normalized, protected names removed) list of capped tools. */
+  readonly toolOutputTools: readonly string[]
   readonly compactionSource: CompactionSource
   /** `true` while the compaction event stream is subscribed and consuming. */
   readonly eventLive: boolean
   /** Number of event-stream failures (0 or 1); kept out of the per-session `errors`. */
   readonly streamFailures: number
+  /** Hook calls without a usable `sessionID`; they are dropped, not bucketed under `""`. */
+  readonly unkeyedCalls: number
 }
 
 /** Read-only view handed to the tools; keeps the hook state private. */
@@ -160,6 +168,12 @@ export interface SessionBudget extends SessionBudgetReport {
  */
 export interface SessionBudgetRuntime {
   readonly createOutputRoot?: () => Promise<string>
+  /**
+   * Test seam between `mkdir` of the session directory and the link/realpath
+   * check: the containment test swaps the directory for a junction to prove
+   * that a link planted there is refused. Production never sets it.
+   */
+  readonly afterSessionDirectoryCreated?: (directory: string) => Promise<void> | void
 }
 
 const DEFAULT_RUNTIME: SessionBudgetRuntime = {}
@@ -230,6 +244,21 @@ const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * The kit's own tools are never capped. Runtime names are namespaced
+ * (`orch_uni.session_stats`) and the `orch_uni` prefix is caught by
+ * `isProtectedTool`, but a config entry may name the bare segment
+ * (`session_stats`); those are refused by segment so the protection cannot be
+ * configured away.
+ */
+const KIT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "session_stats",
+  "sessions",
+  "snapshot",
+  "context_lint",
+  "validate_report",
+])
+
+/**
  * Runtime tool names may carry a namespace (`functions.shell`); the guard cares
  * about the tool itself. Normalization strips the namespace, trims and
  * lower-cases, and is applied to both the config list and the runtime name.
@@ -295,10 +324,18 @@ export function readSessionBudgetOptions(options: unknown, warn: Warn): SessionB
           warn(`options.toolOutputGuard.tools: "${full}" is a protected tool and cannot be capped, ignored`)
           continue
         }
+        if (KIT_TOOL_NAMES.has(name)) {
+          warn(`options.toolOutputGuard.tools: "${full}" is a kit tool and cannot be capped, ignored`)
+          continue
+        }
         if (!normalized.includes(name)) normalized.push(name)
       }
-      if (normalized.length === 0 && outputRaw.tools.length > 0) {
-        warn("options.toolOutputGuard.tools: every entry was empty or protected, tool output capping is disabled")
+      if (normalized.length === 0) {
+        warn(
+          outputRaw.tools.length === 0
+            ? "options.toolOutputGuard.tools: the list is empty, tool output capping is disabled"
+            : "options.toolOutputGuard.tools: every entry was empty or protected, tool output capping is disabled",
+        )
       }
       tools = normalized
     } else {
@@ -488,6 +525,16 @@ function emptyCounters(sessionID: string, source: CompactionSource): SessionBudg
   }
 }
 
+/**
+ * Lone surrogates (a JSON string escaped as `\ud800`, a sliced UTF-16 buffer) are
+ * not encodable as UTF-8: `writeFile` substitutes U+FFFD, so the file would not
+ * match the text whose length the stub reports. Normalize once, up front, and use
+ * the same string for the file, the head and the counters.
+ */
+function wellFormed(text: string): string {
+  return text.isWellFormed() ? text : text.toWellFormed()
+}
+
 /** `headChars` code units, extended by one when the cut would split a surrogate pair. */
 function headOf(text: string, headChars: number): string {
   if (headChars <= 0) return ""
@@ -542,11 +589,17 @@ async function assertPrivateRoot(root: string): Promise<void> {
  * its `realpath` must stay inside the real root. The returned path is the written
  * one. Fail-open at the call site: a throw leaves the tool result untouched.
  */
-async function sessionOutputDirectory(root: string, sessionID: string, cache: Map<string, string>): Promise<string> {
+async function sessionOutputDirectory(
+  root: string,
+  sessionID: string,
+  cache: Map<string, string>,
+  runtime: SessionBudgetRuntime,
+): Promise<string> {
   const cached = cache.get(sessionID)
   if (cached !== undefined) return cached
   const directory = path.join(root, `s-${randomUUID()}`)
   await mkdir(directory, { mode: 0o700 })
+  await runtime.afterSessionDirectoryCreated?.(directory)
   await assertNotLink(directory, "session directory")
   const realDirectory = await realpath(directory)
   if (!isInside(root, realDirectory)) {
@@ -554,6 +607,15 @@ async function sessionOutputDirectory(root: string, sessionID: string, cache: Ma
   }
   cache.set(sessionID, realDirectory)
   return realDirectory
+}
+
+/** Best effort: a leftover temp file must never break the tool result. */
+async function removeFileQuietly(file: string): Promise<void> {
+  try {
+    await rm(file, { force: true })
+  } catch {
+    // best effort: nothing else to do with an orphaned temp file
+  }
 }
 
 /**
@@ -676,10 +738,13 @@ export async function createSessionBudget(
         available: false,
         hooksRegistered: false,
         sessionEnabled: config.session.enabled,
-        toolOutputEnabled: config.toolOutput.enabled,
+        // No hooks, no private root: capping cannot fire here at all.
+        toolOutputEnabled: false,
+        toolOutputTools: config.toolOutput.tools,
         compactionSource: "hook",
         eventLive: false,
         streamFailures: 0,
+        unkeyedCalls: 0,
       }),
     }
   }
@@ -712,7 +777,9 @@ export async function createSessionBudget(
       )
     }
   }
-  const outputGuardEnabled = outputRoot !== undefined
+  // Capping needs both a private root and at least one tool to cap: a root with an
+  // empty effective list would report an enabled guard that can never fire.
+  const outputGuardEnabled = outputRoot !== undefined && config.toolOutput.tools.length > 0
 
   const states = new Map<string, MutableCounters>()
   /** `sessionID → realpath` of its private directory, evicted with `session.deleted`. */
@@ -722,6 +789,8 @@ export async function createSessionBudget(
   let compactionSource: CompactionSource = "hook"
   let eventLive = false
   let streamFailures = 0
+  /** Hook calls whose `sessionID` was missing or empty: dropped, never bucketed under `""`. */
+  let unkeyedCalls = 0
   const stateFor = (sessionID: string): MutableCounters => {
     let state = states.get(sessionID)
     if (state === undefined) {
@@ -766,9 +835,24 @@ export async function createSessionBudget(
         compactionSource = "event"
         eventLive = true
         void (async () => {
+          // Race every read against the abort signal: a host that ignores the
+          // signal (or a `next()` that never settles) must not keep this loop and
+          // its closures alive after `cleanup()`.
+          const aborted = new Promise<"aborted">((resolve) => {
+            const signal = compactionSubscription.signal
+            if (signal.aborted) {
+              resolve("aborted")
+              return
+            }
+            signal.addEventListener("abort", () => resolve("aborted"), { once: true })
+          })
+          const iterator = stream[Symbol.asyncIterator]()
           try {
-            for await (const event of stream) {
-              const record = event as SessionEventLike | null | undefined
+            while (true) {
+              const step = await Promise.race([iterator.next(), aborted])
+              if (step === "aborted") break
+              if (step.done === true) break
+              const record = step.value as SessionEventLike | null | undefined
               if (record === null || record === undefined) continue
               const sessionID = record.data?.sessionID
               if (typeof sessionID !== "string" || sessionID === "") continue
@@ -827,7 +911,11 @@ export async function createSessionBudget(
       await ctx.session.hook("context", (input) => {
         const payload = input as { sessionID?: unknown } | null | undefined
         if (payload === null || payload === undefined) return
-        const sessionID = String(payload.sessionID ?? "")
+        const sessionID = payload.sessionID
+        if (typeof sessionID !== "string" || sessionID === "") {
+          unkeyedCalls += 1
+          return
+        }
         if (deletedSessions.has(sessionID)) return
         let state: MutableCounters | undefined
         try {
@@ -842,24 +930,29 @@ export async function createSessionBudget(
 
           const parts: string[] = []
           const band = Math.floor((tokens - 1) / config.session.promptTokensSoft)
+          const level = band > state.band ? band : state.band
           if (band > state.band) {
-            state.band = band
             parts.push(reminderText(locale, band, config))
           }
           // Confirmed note first: only `session.compaction.ended` raises
           // `pendingConfirmed`, so the number and the limit are facts even if the
           // event stream died after the event arrived. Otherwise an attempt note
           // goes out without a number and without a limit claim.
-          if (state.pendingConfirmed > 0) {
+          const confirmedNote = state.pendingConfirmed > 0
+          const tentativeNote = !confirmedNote && state.tentative
+          if (confirmedNote) {
             parts.push(compactionText(locale, state.pendingConfirmed, config))
-            state.pendingConfirmed = 0
-            state.tentative = false
-          } else if (state.tentative) {
+          } else if (tentativeNote) {
             parts.push(tentativeCompactionText(locale))
-            state.tentative = false
           }
           if (parts.length === 0) return
           input.system.push(...parts.map((text) => ({ type: "text" as const, text })))
+          // Marks move only after the reminder was actually delivered to the
+          // request: a host whose `system` array rejects the push (frozen/foreign
+          // array) must not lose the note for this level forever.
+          state.band = level
+          if (confirmedNote) state.pendingConfirmed = 0
+          if (confirmedNote || tentativeNote) state.tentative = false
           state.reminders += parts.length
         } catch {
           if (state !== undefined) state.errors += 1
@@ -875,7 +968,11 @@ export async function createSessionBudget(
       await ctx.session.hook("compaction", (input) => {
         const payload = input as { sessionID?: unknown } | null | undefined
         if (payload === null || payload === undefined) return
-        const sessionID = String(payload.sessionID ?? "")
+        const sessionID = payload.sessionID
+        if (typeof sessionID !== "string" || sessionID === "") {
+          unkeyedCalls += 1
+          return
+        }
         if (deletedSessions.has(sessionID)) return
         let state: MutableCounters | undefined
         try {
@@ -895,7 +992,11 @@ export async function createSessionBudget(
       await ctx.tool.hook("execute.after", async (input) => {
         const payload = input as { sessionID?: unknown } | null | undefined
         if (payload === null || payload === undefined) return
-        const sessionID = String(payload.sessionID ?? "")
+        const sessionID = payload.sessionID
+        if (typeof sessionID !== "string" || sessionID === "") {
+          unkeyedCalls += 1
+          return
+        }
         if (deletedSessions.has(sessionID)) return
         let state: MutableCounters | undefined
         try {
@@ -906,40 +1007,73 @@ export async function createSessionBudget(
           state.toolOutputsCappedByTool[name] ??= 0
           if (input.status !== "completed") return
           if (!outputGuardEnabled || outputRoot === undefined) return
+          // The kit's own tools are checked on the raw name too: a namespace-less
+          // config entry (`session_stats`) must not turn one into a capped tool.
+          if (isProtectedTool(String(input.tool).trim().toLowerCase()) || isProtectedTool(name)) return
           if (!config.toolOutput.tools.includes(name)) return
 
           const result = input.result as {
             content?: string | ReadonlyArray<ToolContent>
             metadata?: Record<string, unknown>
           }
-          const text = toolResultText(result.content)
+          // One normalized string for the file, the head and the counters: a lone
+          // surrogate would otherwise be replaced by U+FFFD on disk only.
+          const text = wellFormed(toolResultText(result.content))
           if (text.length <= config.toolOutput.maxChars) return
 
           const head = headOf(text, config.toolOutput.headChars)
+          const root = outputRoot
+          const writeOnce = async (): Promise<string> => {
+            const directory = await sessionOutputDirectory(root, sessionID, sessionDirectories, runtime)
+            return await writeCappedOutput(directory, text)
+          }
           let written: string
           try {
-            const directory = await sessionOutputDirectory(outputRoot, sessionID, sessionDirectories)
-            written = await writeCappedOutput(directory, text)
-          } catch {
-            state.errors += 1
-            return
+            written = await writeOnce()
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+              state.errors += 1
+              return
+            }
+            // The cached session directory (or the root itself) was removed outside
+            // the plugin (`%TEMP%` cleanup): drop the stale path and retry once.
+            sessionDirectories.delete(sessionID)
+            try {
+              written = await writeOnce()
+            } catch {
+              state.errors += 1
+              return
+            }
           }
           const stub = cappedStub(head, text, written)
           // Capping must shrink the context: a stub at least as long as the text
           // would make the guard itself the problem, so the file is removed and the
           // result stays untouched.
           if (stub.length >= text.length) {
-            try {
-              await rm(written, { force: true })
-            } catch {
-              // best effort: a leftover temp file must not corrupt the result
-            }
+            await removeFileQuietly(written)
             return
           }
-          result.content = cappedContent(result.content as string | ReadonlyArray<ToolContent>, stub)
-          result.metadata = {
-            ...(result.metadata ?? {}),
-            toolOutputGuard: { chars: text.length, path: written },
+          // Assign, then verify: a host may hand out a frozen/readonly result. An
+          // unapplied stub leaves an orphaned file, so it is removed and the result
+          // is left exactly as it came.
+          const original = result.content
+          const replacement = cappedContent(original as string | ReadonlyArray<ToolContent>, stub)
+          try {
+            result.content = replacement
+            if (result.content !== replacement) throw new Error("tool result content is readonly")
+            result.metadata = {
+              ...(result.metadata ?? {}),
+              toolOutputGuard: { chars: text.length, path: written },
+            }
+          } catch {
+            try {
+              result.content = original
+            } catch {
+              // frozen object: there is nothing to restore
+            }
+            await removeFileQuietly(written)
+            state.errors += 1
+            return
           }
           state.outputsCapped += 1
           state.toolOutputsCappedByTool[name] = (state.toolOutputsCappedByTool[name] ?? 0) + 1
@@ -969,6 +1103,10 @@ export async function createSessionBudget(
   const cleanup: Plugin.Cleanup = async () => {
     if (disposed) return
     disposed = true
+    // Terminal state first: a host that ignores the abort signal must not leave
+    // the guard reporting a live subscription after unload.
+    eventLive = false
+    compactionSource = "hook"
     compactionSubscription.abort()
     for (const registration of registrations.reverse()) {
       try {
@@ -992,9 +1130,11 @@ export async function createSessionBudget(
     hooksRegistered,
     sessionEnabled: config.session.enabled,
     toolOutputEnabled: outputGuardEnabled,
+    toolOutputTools: config.toolOutput.tools,
     compactionSource,
     eventLive,
     streamFailures,
+    unkeyedCalls,
   })
 
   return {

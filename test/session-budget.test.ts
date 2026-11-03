@@ -314,7 +314,23 @@ describe("options", () => {
     expect(warnings[0]).toContain("protected")
   })
 
-  test("an all-empty tools list disables capping with a warning; an explicit empty list is silent", () => {
+  test("a namespace-less kit tool name is refused with a warning", () => {
+    const warnings: string[] = []
+    const parsed = readSessionBudgetOptions(
+      {
+        toolOutputGuard: {
+          tools: ["session_stats", "sessions", "snapshot", "context_lint", "validate_report", "shell"],
+        },
+      },
+      (message) => warnings.push(message),
+    )
+    // Every kit segment is dropped; the ordinary tool survives.
+    expect(parsed.toolOutput.tools).toEqual(["shell"])
+    expect(warnings).toHaveLength(5)
+    expect(warnings.every((line) => line.includes("kit tool"))).toBe(true)
+  })
+
+  test("an all-empty or explicit empty tools list disables capping with a warning", () => {
     const warnings: string[] = []
     const parsed = readSessionBudgetOptions({ toolOutputGuard: { tools: ["", "  ", "\t"] } }, (message) =>
       warnings.push(message),
@@ -323,10 +339,11 @@ describe("options", () => {
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toContain("capping is disabled")
 
-    const silent: string[] = []
-    const explicit = readSessionBudgetOptions({ toolOutputGuard: { tools: [] } }, (message) => silent.push(message))
-    expect(explicit.toolOutput.tools).toEqual([])
-    expect(silent).toEqual([])
+    const explicit: string[] = []
+    const empty = readSessionBudgetOptions({ toolOutputGuard: { tools: [] } }, (message) => explicit.push(message))
+    expect(empty.toolOutput.tools).toEqual([])
+    expect(explicit).toHaveLength(1)
+    expect(explicit[0]).toContain("the list is empty")
   })
 
   test("a hostile option value is formatted without throwing", () => {
@@ -431,6 +448,52 @@ describe("hooks", () => {
     expect(estimateTokens(above.system) + estimateTokens(above.messages)).toBeGreaterThan(soft)
     await hook(above)
     expect(above.system).toHaveLength(1)
+    await budget.cleanup()
+  })
+
+  test("a refused reminder push keeps the level for the next request", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const context = harness.hooks.get("session.context") as HookCallback
+    const s = sessionFor("frozen_system")
+
+    // A frozen `system` array rejects the push: the request is unharmed, the error
+    // is counted, but the level must not move — the reminder is still owed.
+    const frozen = {
+      ...contextInput(s, 600_000),
+      system: Object.freeze([]) as unknown as { type: "text"; text: string }[],
+    }
+    await context(frozen)
+    expect(budget.stats(s)).toMatchObject({ errors: 1, band: 0, reminders: 0 })
+
+    const retry = contextInput(s, 600_000)
+    await context(retry)
+    expect(retry.system).toHaveLength(1)
+    expect(retry.system[0]?.text).toContain("уровень 1×150k")
+    expect(budget.stats(s)).toMatchObject({ errors: 1, band: 1, reminders: 1 })
+
+    // Delivered once per level: the next request in the same band stays silent.
+    const sameBand = contextInput(s, 620_000)
+    await context(sameBand)
+    expect(sameBand.system).toHaveLength(0)
+    expect(budget.stats(s).reminders).toBe(1)
+    await budget.cleanup()
+  })
+
+  test("hook calls without a session id are dropped instead of sharing an empty bucket", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const context = harness.hooks.get("session.context") as HookCallback
+    const compaction = harness.hooks.get("session.compaction") as HookCallback
+    const tool = harness.hooks.get("tool.execute.after") as HookCallback
+
+    await context({ system: [], messages: [] })
+    await compaction({ sessionID: "", system: [], messages: [] })
+    await tool({ tool: "shell", status: "completed", result: { content: "ok" }, sessionID: null })
+
+    expect(budget.tracked("")).toBe(false)
+    expect(budget.stats("")).toMatchObject({ requests: 0, compactionAttempts: 0, toolCalls: 0 })
+    expect(budget.guard().unkeyedCalls).toBe(3)
     await budget.cleanup()
   })
 
@@ -881,6 +944,162 @@ describe("hooks", () => {
     await budget.cleanup()
   })
 
+  test("exactly maxChars is untouched and one character more is capped", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 1000, headChars: 100 } }),
+      "ru",
+    )
+    const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("boundary")
+
+    const exact: Record<string, unknown> = { content: "z".repeat(1000), metadata: {} }
+    await hook(toolCall(s, "call_exact", "shell", exact))
+    expect(exact.content).toHaveLength(1000)
+    expect(exact.metadata).toEqual({})
+
+    const over: Record<string, unknown> = { content: "z".repeat(1001), metadata: {} }
+    await hook(toolCall(s, "call_over", "shell", over))
+    expect((over.content as string).length).toBeLessThan(1001)
+
+    const file = (over.metadata as { toolOutputGuard: { path: string; chars: number } }).toolOutputGuard
+    expect(file.chars).toBe(1001)
+    expect(typeof file.path).toBe("string")
+    expect(await readFile(file.path, "utf8")).toBe("z".repeat(1001))
+
+    expect(budget.stats(s)).toMatchObject({ outputsCapped: 1, errors: 0 })
+    await budget.cleanup()
+  })
+
+  test("a lone surrogate is normalized once for the file, the head and the stub", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 1000, headChars: 100 } }),
+      "ru",
+    )
+    const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("lone_surrogate")
+
+    const text = `${"a".repeat(50)}\uD800${"b".repeat(4000)}`
+    const result: Record<string, unknown> = { content: text, metadata: {} }
+    await hook(toolCall(s, "call_lone", "shell", result))
+
+    const stub = result.content as string
+    const normalized = text.toWellFormed()
+    const file = (result.metadata as { toolOutputGuard: { path: string; chars: number } }).toolOutputGuard
+    const written = await readFile(file.path, "utf8")
+    const head = stub.slice(0, stub.indexOf("\n\n"))
+
+    // The file holds exactly the string the stub counts and heads.
+    expect(written).toBe(normalized)
+    expect(head).toBe(normalized.slice(0, head.length))
+    expect(written.startsWith(head)).toBe(true)
+    expect(stub).toContain(`${written.length} chars total`)
+    expect(file.chars).toBe(written.length)
+    expect(budget.stats(s).errors).toBe(0)
+    await budget.cleanup()
+  })
+
+  test("a kit tool named by segment in the config is still never capped at runtime", async () => {
+    // `readSessionBudgetOptions` drops such an entry; a config object built in
+    // process can bypass the parser, so the runtime refuses the tool by its raw name.
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, tools: ["session_stats"], maxChars: 100, headChars: 10 } }),
+      "ru",
+    )
+    const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("kit_tool")
+
+    for (const tool of ["orch_uni.session_stats", "orch_uni_session_stats"]) {
+      const result: Record<string, unknown> = { content: "q".repeat(500), metadata: {} }
+      await hook(toolCall(s, `call_${tool}`, tool, result))
+      expect(result.content).toHaveLength(500)
+      expect(result.metadata).toEqual({})
+    }
+    expect(budget.stats(s)).toMatchObject({ toolCalls: 2, outputsCapped: 0, errors: 0 })
+    await budget.cleanup()
+  })
+
+  test("an empty effective tool list reports capping as disabled", async () => {
+    const warnings: string[] = []
+    const parsed = readSessionBudgetOptions(
+      { toolOutputGuard: { tools: [], maxChars: 100, headChars: 10 } },
+      (message) => warnings.push(message),
+    )
+    expect(warnings.some((line) => line.includes("the list is empty"))).toBe(true)
+
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(harness.ctx, parsed, "ru")
+    expect(budget.guard()).toMatchObject({ toolOutputEnabled: false, toolOutputTools: [] })
+
+    const result: Record<string, unknown> = { content: "q".repeat(500), metadata: {} }
+    await (harness.hooks.get("tool.execute.after") as HookCallback)(
+      toolCall("ses_empty_tools", "call_empty", "shell", result),
+    )
+    expect(result.content).toHaveLength(500)
+    expect(result.metadata).toEqual({})
+    expect(budget.stats("ses_empty_tools")).toMatchObject({ outputsCapped: 0, errors: 0 })
+    await budget.cleanup()
+  })
+
+  test("an externally removed session directory heals on the next cap", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 1000, headChars: 100 } }),
+      "ru",
+    )
+    const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("heal")
+
+    const first: Record<string, unknown> = { content: "a".repeat(5000), metadata: {} }
+    await hook(toolCall(s, "call_a", "shell", first))
+    await rm(path.dirname((first.metadata as { toolOutputGuard: { path: string } }).toolOutputGuard.path), {
+      recursive: true,
+      force: true,
+    })
+
+    const second: Record<string, unknown> = { content: "b".repeat(5000), metadata: {} }
+    await hook(toolCall(s, "call_b", "shell", second))
+    expect((second.content as string).length).toBeLessThan(5000)
+    const file = (second.metadata as { toolOutputGuard: { path: string } }).toolOutputGuard.path
+    expect(await readFile(file, "utf8")).toBe("b".repeat(5000))
+
+    const third: Record<string, unknown> = { content: "c".repeat(5000), metadata: {} }
+    await hook(toolCall(s, "call_c", "shell", third))
+    expect((third.content as string).length).toBeLessThan(5000)
+    expect(budget.stats(s)).toMatchObject({ outputsCapped: 3, errors: 0 })
+    await budget.cleanup()
+  })
+
+  test("a frozen tool result leaves no orphaned file and counts one error", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "audit-frozen-result-"))
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 100, headChars: 10 } }),
+      "ru",
+      () => {},
+      { createOutputRoot: async () => root },
+    )
+    const s = sessionFor("frozen_result")
+    const result = Object.freeze({ content: "w".repeat(5000), metadata: {} })
+    await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(s, "call_frozen", "shell", result))
+
+    // Neither the content nor the metadata changed; the written file is gone.
+    expect(result.content).toHaveLength(5000)
+    expect(result.metadata).toEqual({})
+    expect(budget.stats(s)).toMatchObject({ errors: 1, outputsCapped: 0 })
+    const entries = await readdir(root, { recursive: true, withFileTypes: true })
+    expect(entries.filter((entry) => entry.isFile())).toEqual([])
+    await budget.cleanup()
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("other tools, small outputs and failed calls are untouched", async () => {
     const harness = createBudgetHarness()
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
@@ -993,6 +1212,33 @@ describe("hooks", () => {
     expect(harness.disposed.sort()).toEqual(["session.compaction", "session.context", "tool.execute.after"])
   })
 
+  test("cleanup reports a terminal guard state even when the host ignores abort", async () => {
+    // A stream whose `next()` never settles and which never looks at the signal.
+    const pending: ((value: IteratorResult<unknown>) => void)[] = []
+    const stubborn: AsyncIterable<unknown> = {
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise((resolve) => pending.push(resolve)) }),
+    }
+    const harness = createBudgetHarness({ stream: stubborn })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    expect(budget.guard()).toMatchObject({ eventLive: true, compactionSource: "event" })
+
+    // The terminal state is visible as soon as unload starts, not one microtask
+    // later: a stats call racing the unload must not see a live subscription.
+    const unloading = budget.cleanup()
+    expect(budget.guard()).toMatchObject({ eventLive: false, compactionSource: "hook" })
+    await unloading
+    expect(budget.guard()).toMatchObject({
+      eventLive: false,
+      compactionSource: "hook",
+      streamFailures: 0,
+    })
+
+    // The host still holds the iterator: an event fed afterwards must not be consumed.
+    pending.shift()?.({ done: false, value: { type: "session.created", data: { sessionID: "ses_late_event" } } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(budget.tracked("ses_late_event")).toBe(false)
+  })
+
   test("undefined or null hook input is ignored without throwing or counting", async () => {
     const harness = createBudgetHarness()
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
@@ -1019,10 +1265,12 @@ describe("hooks", () => {
       available: false,
       hooksRegistered: false,
       sessionEnabled: true,
-      toolOutputEnabled: true,
+      toolOutputEnabled: false,
+      toolOutputTools: ["shell", "bash", "webfetch"],
       compactionSource: "hook",
       eventLive: false,
       streamFailures: 0,
+      unkeyedCalls: 0,
     })
     expect(budget.stats("ses_missing")).toMatchObject({
       sessionID: "ses_missing",
@@ -1073,9 +1321,11 @@ describe("hooks", () => {
       hooksRegistered: true,
       sessionEnabled: false,
       toolOutputEnabled: false,
+      toolOutputTools: ["shell", "bash", "webfetch"],
       compactionSource: "hook",
       eventLive: false,
       streamFailures: 0,
+      unkeyedCalls: 0,
     })
     await budget.cleanup()
   })
@@ -1303,6 +1553,41 @@ describe("private output root", () => {
     await budget.cleanup()
   })
 
+  test.skipIf(linkStyle === undefined)("a link planted as the session directory is refused", async () => {
+    // The seam swaps the freshly created session directory for a junction (or a
+    // symlink) pointing outside the root; the containment check must refuse to
+    // write through it, leave the result untouched and count one error.
+    const root = await mkdtemp(path.join(tmpdir(), "audit-session-link-"))
+    const outside = await mkdtemp(path.join(tmpdir(), "audit-session-outside-"))
+    try {
+      const harness = createBudgetHarness()
+      const budget = await createSessionBudget(harness.ctx, capConfig, "en", () => {}, {
+        createOutputRoot: async () => root,
+        afterSessionDirectoryCreated: async (directory) => {
+          await rm(directory, { recursive: true, force: true })
+          if (linkStyle === "junction") {
+            const proc = Bun.spawnSync(["cmd", "/c", "mklink", "/J", directory, outside])
+            expect(proc.exitCode).toBe(0)
+          } else {
+            await symlink(outside, directory, "dir")
+          }
+        },
+      })
+      const session = sessionFor("session_link")
+      const result: Record<string, unknown> = { content: "l".repeat(5000), metadata: { previous: true } }
+      await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(session, "call_link", "shell", result))
+
+      expect(result.content).toBe("l".repeat(5000))
+      expect(result.metadata).toEqual({ previous: true })
+      expect(budget.stats(session)).toMatchObject({ outputsCapped: 0, errors: 1 })
+      expect(await readdir(outside)).toEqual([])
+      await budget.cleanup()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
   test("cleanup removes the private root", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "audit-cleanup-root-"))
     const harness = createBudgetHarness()
@@ -1405,9 +1690,11 @@ describe("orch_uni_session_stats", () => {
     hooksRegistered: true,
     sessionEnabled: true,
     toolOutputEnabled: true,
+    toolOutputTools: ["shell", "bash", "webfetch"] as readonly string[],
     compactionSource: "event" as const,
     eventLive: true,
     streamFailures: 0,
+    unkeyedCalls: 0,
   }
 
   function report(overrides: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
@@ -1438,9 +1725,11 @@ describe("orch_uni_session_stats", () => {
       hooksRegistered: true,
       sessionEnabled: true,
       toolOutputEnabled: true,
+      toolOutputTools: ["shell", "bash", "webfetch"],
       compactionSource: "event",
       eventLive: true,
       streamFailures: 0,
+      unkeyedCalls: 0,
     })
     expect(body.schema).toBeUndefined()
     expect(body.counters).toMatchObject({

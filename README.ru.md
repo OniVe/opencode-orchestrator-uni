@@ -287,8 +287,10 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
   "overBudget": true, "compactionLimitReached": true, "toolsPerTurn": 2.58,
   "tracked": true,
   "guard": { "available": true, "hooksRegistered": true, "sessionEnabled": true,
-             "toolOutputEnabled": true, "compactionSource": "event", "eventLive": true,
-             "streamFailures": 0 } }
+             "toolOutputEnabled": true,
+             "toolOutputTools": ["shell", "bash", "webfetch"],
+             "compactionSource": "event", "eventLive": true,
+             "streamFailures": 0, "unkeyedCalls": 0 } }
 ```
 
 `sessionID` может называть **любую сессию на этом сервере**, не только дочернюю
@@ -348,19 +350,28 @@ Runtime-часть — три хука (`session.context`, `session.compaction`,
 - `tool.execute.after` — для `shell`, `bash`, `webfetch` урезает вывод больше
   `maxChars`: полный текст пишется в приватный корень на инстанс плагина
   `os.tmpdir()/opencode-tool-output-<random>/` (POSIX: 0700 на корень и каталог
-  сессии, 0600 на файл; Windows mode игнорирует), модель получает голову и путь.
-  Корень создаётся `mkdtemp` при setup, поэтому заранее созданный каталог или
+  сессии, 0600 на файл), модель получает голову и путь. На Windows mode не
+  действует (замер: 0666), приватность там держится только на ACL каталога
+  `os.tmpdir()` и кодом не проверяется. Корень создаётся `mkdtemp` при setup,
+  поэтому заранее созданный каталог или
   junction `opencode-tool-output` не используется; на POSIX корень обязан
   принадлежать текущему uid и не давать доступа group/other, иначе guard
   отключается с warning (fail-open: результат не трогается). Каталог сессии
   (`s-<uuid>`) и файл (`c-<uuid>.txt`, запись `wx`) — случайные, их `realpath`
   проверяется внутри корня. При выгрузке плагина корень удаляется best effort.
-  Остаточный риск принят: same-user атакующий всё ещё может подменить каталог
+  Строка с lone surrogate нормализуется один раз (U+FFFD), поэтому файл, голова и
+  счётчики описывают одну и ту же строку. Остаточный риск принят: same-user
+  атакующий всё ещё может подменить каталог
   сессии между `realpath` и `writeFile` (в Node нет `openat`). Если `TMPDIR`
   указывает внутрь воркспейса, файлы попадут туда. `read`, `write`, `edit`,
-  `execute` и инструменты комплекта не урезаются.
+  `execute` и инструменты комплекта не урезаются; kit-имя без namespace
+  (`session_stats`) отбрасывается в конфиге с warning.
 
-`maxCompactions: 0` отключает лимит компакций. Guard fail-open: ошибка хука не
+`maxCompactions: 0` отключает лимит компакций. `guard.toolOutputEnabled` равен
+`true` только когда приватный корень создан **и** эффективный список инструментов
+непуст; `guard.toolOutputTools` — этот список, `guard.unkeyedCalls` — вызовы
+хуков без непустого `sessionID` (отбрасываются, а не сливаются в бакет `""`).
+Пустой `tools` выключает кап с warning. Guard fail-open: ошибка хука не
 ломает запрос и не портит результат. Отключается флагами `enabled`:
 
 ```jsonc
