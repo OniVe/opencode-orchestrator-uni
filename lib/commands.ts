@@ -1,10 +1,10 @@
 /**
- * Slash commands of the kit: `/agents-md` and `/spec`.
+ * Slash commands of the kit: `/agents-md`, `/spec` and `/handoff`.
  *
  * Commands are prompts, not writers: `execute` injects a short workflow prompt
  * into the current session, and the orchestrator runs it with the usual
  * evidence/approval rules. The detailed templates and checklists live in
- * `docs/<locale>/context-efficiency.md`.
+ * `docs/<locale>/context-efficiency.md` and `docs/<locale>/session-discipline.md`.
  */
 import type { Plugin } from "@opencode/plugin"
 
@@ -12,17 +12,22 @@ type CommandLocale = "ru" | "en"
 
 /** Arguments typed after the slash command, without a duplicated command token. */
 function commandArgs(text: string): string {
-  return text.replace(/^\s*\/(?:agents-md|spec)\b/i, "").trim()
+  return text.replace(/^\s*\/(?:agents-md|spec|handoff)\b/i, "").trim()
 }
 
-const DESCRIPTIONS: Record<CommandLocale, { readonly agentsMd: string; readonly spec: string }> = {
+const DESCRIPTIONS: Record<
+  CommandLocale,
+  { readonly agentsMd: string; readonly spec: string; readonly handoff: string }
+> = {
   ru: {
     agentsMd: "Создать или проверить AGENTS.md по шаблону context-efficiency.md.",
     spec: "Создать или проверить SPEC.md по шаблону context-efficiency.md.",
+    handoff: "Сформировать handoff среза по шаблону session-discipline.md.",
   },
   en: {
     agentsMd: "Create or audit AGENTS.md using the context-efficiency.md template.",
     spec: "Create or audit SPEC.md using the context-efficiency.md template.",
+    handoff: "Write the slice handoff using the session-discipline.md template.",
   },
 }
 
@@ -84,7 +89,34 @@ function specPrompt(locale: CommandLocale, brief: string): string {
   ].join("\n")
 }
 
-/** Register `/agents-md` and `/spec`; the cleanup disposes the transform registration. */
+function handoffPrompt(locale: CommandLocale, goal: string): string {
+  if (locale === "ru") {
+    return [
+      "[Команда /handoff]",
+      `Срез: ${goal}.`,
+      "",
+      "Работай по документу session-discipline.md из reference audit-kit.",
+      "1. Собери факты только из текущей сессии и рабочего дерева: что сделано, чем подтверждено (команды, тесты, коммиты), что не сделано и почему.",
+      "2. Заполни шаблон handoff из session-discipline.md: цель и DoD, сделано, не сделано, решения и причины, риски/принятые ограничения, следующий шаг.",
+      "3. Запиши файл `docs/planning/handoff-<YYYY-MM-DD>.md` (нет каталога — корень проекта) инструментом `write`, не shell-heredoc.",
+      "4. Ничего не додумывай: неизвестное помечай «не проверено»; секреты и токены в handoff не переноси.",
+      "5. Покажи путь файла, краткий diff и открытые вопросы; канонические документы не меняй без подтверждения.",
+    ].join("\n")
+  }
+  return [
+    "[Command /handoff]",
+    `Slice: ${goal}.`,
+    "",
+    "Follow session-discipline.md from the audit-kit reference.",
+    "1. Collect facts from the current session and the working tree only: what is done, what proves it (commands, tests, commits), what is not done and why.",
+    "2. Fill the handoff template from session-discipline.md: goal and DoD, done, not done, decisions and reasons, risks/accepted limits, next step.",
+    "3. Write `docs/planning/handoff-<YYYY-MM-DD>.md` (use the project root when the directory is absent) with the `write` tool, not a shell heredoc.",
+    "4. Do not invent facts: mark the unknown as `unverified`; never copy secrets or tokens into the handoff.",
+    "5. Show the file path, a short diff and open questions; do not change canonical documents without approval.",
+  ].join("\n")
+}
+
+/** Register `/agents-md`, `/spec` and `/handoff`; the cleanup disposes the transform registration. */
 export async function registerKitCommands(ctx: Plugin.Context, locale: CommandLocale): Promise<Plugin.Cleanup> {
   // The command API is optional in a host build. A missing `list` was already
   // tolerated; a missing `transform` used to throw out of `setup` and take every
@@ -132,6 +164,28 @@ export async function registerKitCommands(ctx: Plugin.Context, locale: CommandLo
               locale,
               commandArgs(input.prompt.text) ||
                 (locale === "ru" ? "описание фичи не задано — спроси" : "no feature brief — ask for one"),
+            ),
+            ...(input.prompt.files === undefined ? {} : { files: input.prompt.files }),
+            ...(input.prompt.agents === undefined ? {} : { agents: input.prompt.agents }),
+            ...(input.prompt.skills === undefined ? {} : { skills: input.prompt.skills }),
+            delivery: input.delivery,
+          })
+        },
+      })
+    }
+    if (!existing.has("handoff")) {
+      editor.add({
+        name: "handoff",
+        description: DESCRIPTIONS[locale].handoff,
+        execute: async (input) => {
+          await ctx.session.prompt({
+            sessionID: input.sessionID,
+            text: handoffPrompt(
+              locale,
+              commandArgs(input.prompt.text) ||
+                (locale === "ru"
+                  ? "текущая сессия — опиши срез по фактам"
+                  : "the current session — describe the slice from facts"),
             ),
             ...(input.prompt.files === undefined ? {} : { files: input.prompt.files }),
             ...(input.prompt.agents === undefined ? {} : { agents: input.prompt.agents }),

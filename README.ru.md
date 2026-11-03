@@ -12,11 +12,11 @@
 - `fix-runner` — единственный пишущий субагент (применяет список «к закрытию»);
 - процессные документы комплекта, доступные как **reference `audit-kit`**
   (`call-mechanics.md`, `process-ready-loop.md`, `root-runbook.md`,
-  `instruction-other-session.md`, `context-efficiency.md`);
-- четыре детерминированных read-only инструмента — `orch_uni_validate_report`,
-  `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions`
-  (см. [Инструменты](#инструменты));
-- две слэш-команды — `/agents-md` и `/spec` (см. [Команды](#команды)).
+  `instruction-other-session.md`, `context-efficiency.md`, `session-discipline.md`);
+- пять детерминированных read-only инструментов — `orch_uni_validate_report`,
+  `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions`,
+  `orch_uni_session_stats` (см. [Инструменты](#инструменты));
+- три слэш-команды — `/agents-md`, `/spec` и `/handoff` (см. [Команды](#команды)).
 
 Read-only аудиторы держатся на `edit: deny` плюс запрете в промпте; shell-разрешение
 остаётся, чтобы запускать проверки (принятый риск, ни одно разрешение не ослаблено).
@@ -57,8 +57,8 @@ Reference `audit-kit` указывает на per-locale каталог `docs/<l
 может читать процессные документы напрямую, например
 `<reference path>/call-mechanics.md`.
 
-Плагин также регистрирует четыре детерминированных **read-only** инструмента в
-пространстве имён `orch_uni` и две слэш-команды — см. [Инструменты](#инструменты)
+Плагин также регистрирует пять детерминированных **read-only** инструментов в
+пространстве имён `orch_uni` и три слэш-команды — см. [Инструменты](#инструменты)
 и [Команды](#команды).
 
 ## Команды
@@ -67,6 +67,7 @@ Reference `audit-kit` указывает на per-locale каталог `docs/<l
 | --- | --- |
 | `/agents-md` | Вставляет workflow аудита/черновика AGENTS.md: шаблон `context-efficiency.md`, `orch_uni_context_lint`, `context-lint`, подтверждение перед записью. |
 | `/spec` | Вставляет workflow SPEC.md: бриф, уточняющие вопросы, EARS/AC/трассировка, `orch_uni_context_lint`, `context-lint`, подтверждение перед записью. |
+| `/handoff` | Вставляет workflow закрытия среза: факты сессии и рабочего дерева, шаблон handoff из `session-discipline.md`, запись `docs/planning/handoff-<дата>.md`. |
 
 Команда — это промпт, а не писатель: обработчик вставляет workflow-промпт в
 текущую сессию. Дальше оркестратор работает по обычным правилам evidence и
@@ -80,10 +81,11 @@ Reference `audit-kit` указывает на per-locale каталог `docs/<l
 | `orch_uni_context_lint`     | да        | Детерминированный аудит AGENTS.md/SPEC.md: бюджет, vague, ссылки, секции       |
 | `orch_uni_snapshot`        | да        | Детерминированная ревизия дерева каталогов (sha256 на файл + агрегатный хэш)  |
 | `orch_uni_sessions`        | да        | Дочерние сессии сессии: агент, модель, стоимость, токены, время               |
+| `orch_uni_session_stats`   | да        | Счётчики протокола сессии: промпт, компакции, тулы/ход, урезанные выводы       |
 
 Каждый инструмент отвечает JSON-текстом. Ошибки — **типизированные коды** внутри
 тела (`E_INPUT`, `E_NO_JSON`, …), а не исключения, чтобы агент мог ветвиться по
-коду, не разбирая прозу. Ни один из четырёх ничего не пишет в воркспейс, хранилище
+коду, не разбирая прозу. Ни один из пяти ничего не пишет в воркспейс, хранилище
 сессий или конфигурацию.
 
 ### `orch_uni_validate_report`
@@ -262,6 +264,47 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
 
 `E_INPUT` при некорректных аргументах, `E_NOT_FOUND`, когда родительской сессии
 нет, `E_ABORTED`, когда сессия остановлена.
+
+## Гигиена сессии
+
+Плагин реализует протокол [`session-discipline.md`](./docs/ru/session-discipline.md):
+сессия = один срез, бюджет промпта ≤150k токенов, ≤1 компакция, вывод инструментов
+— в файл, в конце среза — handoff.
+
+Runtime-часть — три хука:
+
+- `session.context` — оценивает промпт (system + messages) и при переходе через
+  уровень бюджета добавляет одно короткое напоминание; текст стабилен внутри
+  уровня, поэтому префикс-кэш не рвётся каждый ход.
+- `session.compaction` — считает компакции; следующий запрос напоминает, что
+  пересказ lossy и решения надо закрепить в файле.
+- `tool.execute.after` — для `shell`, `bash`, `webfetch` урезает вывод больше
+  `maxChars`: полный текст пишется во временный каталог, модель получает голову и
+  путь. `read`, `write`, `edit`, `execute` и инструменты комплекта не урезаются.
+
+Guard fail-open: ошибка хука не ломает запрос и не портит результат. Отключается
+флагами `enabled`:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "opencode-orchestrator-uni",
+      "options": {
+        "sessionGuard": { "enabled": true, "promptTokensSoft": 150000, "maxCompactions": 1 },
+        "toolOutputGuard": {
+          "enabled": true,
+          "maxChars": 20000,
+          "headChars": 4000,
+          "tools": ["shell", "bash", "webfetch"]
+        }
+      }
+    }
+  ]
+}
+```
+
+Метрики среза — `orch_uni_session_stats`; закрытие среза — команда `/handoff`.
 
 ## Модели
 

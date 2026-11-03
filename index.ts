@@ -53,6 +53,7 @@ import { fileURLToPath } from "node:url"
 import type { Agent, Model, Plugin, Reference } from "@opencode/plugin"
 import matter from "gray-matter"
 import { registerKitCommands } from "./lib/commands"
+import { createSessionBudget, readSessionBudgetOptions } from "./lib/session-budget"
 import { registerAuditTools } from "./lib/tools"
 
 /** Stable plugin id: diagnostics, enable/disable selectors, storage scope. */
@@ -118,10 +119,12 @@ function localeCandidates(): string[] {
 const REFERENCE_DESCRIPTIONS: Record<Locale, string> = {
   ru:
     "Процессные документы комплекта оркестратора (аудиторский цикл): call-mechanics.md, " +
-    "process-ready-loop.md, root-runbook.md, instruction-other-session.md, context-efficiency.md.",
+    "process-ready-loop.md, root-runbook.md, instruction-other-session.md, context-efficiency.md, " +
+    "session-discipline.md.",
   en:
     "Process documents of the orchestrator agent kit (audit loop): call-mechanics.md, " +
-    "process-ready-loop.md, root-runbook.md, instruction-other-session.md, context-efficiency.md.",
+    "process-ready-loop.md, root-runbook.md, instruction-other-session.md, context-efficiency.md, " +
+    "session-discipline.md.",
 }
 
 /** Frontmatter keys this loader understands; anything else is reported and ignored. */
@@ -408,25 +411,38 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   })
 
   // Deterministic, read-only audit tools: `orch_uni_validate_report`,
-  // `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions` (see
-  // `lib/tools.ts` and README «Tools»). The tools cleanup only stops the
-  // background session-index subscription; the commands cleanup disposes the
-  // command transform registration. A failure after the tools are registered
-  // must abort that subscription too — otherwise a half-registered plugin leaks
-  // an event listener for the lifetime of the server.
-  const toolsCleanup = await registerAuditTools(ctx)
+  // `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions`,
+  // `orch_uni_session_stats` (see `lib/tools.ts` and README «Tools»). The session
+  // budget registers the protocol hooks (context/compaction/tool output); the
+  // tools cleanup stops the background session-index subscription; the commands
+  // cleanup disposes the command transform registration. A failure after the
+  // tools are registered must abort that subscription too — otherwise a
+  // half-registered plugin leaks an event listener for the lifetime of the server.
+  const sessionBudget = await createSessionBudget(ctx, readSessionBudgetOptions(ctx.options, warn), locale, warn)
+  let toolsCleanup: () => void
+  try {
+    toolsCleanup = await registerAuditTools(ctx, { sessionBudget })
+  } catch (error) {
+    await sessionBudget.cleanup()
+    throw error
+  }
   let commandsCleanup: Plugin.Cleanup
   try {
     commandsCleanup = await registerKitCommands(ctx, locale)
   } catch (error) {
     toolsCleanup()
+    await sessionBudget.cleanup()
     throw error
   }
   return async () => {
     try {
       await commandsCleanup()
     } finally {
-      toolsCleanup()
+      try {
+        toolsCleanup()
+      } finally {
+        await sessionBudget.cleanup()
+      }
     }
   }
 }

@@ -5,6 +5,8 @@
 - **Root (the primary agent)** — does not audit: forms the brief, launches subagents, consolidates the reports; for the "unprovable" — the owner's decision: the root frames the question, records the risk and escalates. Maintains the registry of accepted risks, makes fixes as separate commits, decides on "ship".
 - **Subagents** (read-only): `factcheck`, `empiric`, `invariant`, `arbiter`, (at the gates) `redteam`, `meta`.
 
+Slice session hygiene — boundaries, context budget (≤150k tokens, ≤1 compaction) and the handoff — in `session-discipline.md`.
+
 ## Brief template `case-<id>.md` (common to all steps)
 
 ```
