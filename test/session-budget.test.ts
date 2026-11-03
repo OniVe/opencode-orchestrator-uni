@@ -1014,13 +1014,13 @@ describe("hooks", () => {
     const hook = harness.hooks.get("tool.execute.after") as HookCallback
     const s = sessionFor("kit_tool")
 
-    for (const tool of ["orch_uni.session_stats", "orch_uni_session_stats"]) {
+    for (const tool of ["orch_uni.session_stats", "orch_uni_session_stats", "session_stats"]) {
       const result: Record<string, unknown> = { content: "q".repeat(500), metadata: {} }
       await hook(toolCall(s, `call_${tool}`, tool, result))
       expect(result.content).toHaveLength(500)
       expect(result.metadata).toEqual({})
     }
-    expect(budget.stats(s)).toMatchObject({ toolCalls: 2, outputsCapped: 0, errors: 0 })
+    expect(budget.stats(s)).toMatchObject({ toolCalls: 3, outputsCapped: 0, errors: 0 })
     await budget.cleanup()
   })
 
@@ -1237,6 +1237,62 @@ describe("hooks", () => {
     pending.shift()?.({ done: false, value: { type: "session.created", data: { sessionID: "ses_late_event" } } })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(budget.tracked("ses_late_event")).toBe(false)
+  })
+
+  test("a subscription that is not an async iterable degrades to the hook", async () => {
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown) => rejections.push(reason)
+    process.on("unhandledRejection", onRejection)
+    try {
+      for (const stream of [{}, Promise.resolve({})]) {
+        const harness = createBudgetHarness({ stream: stream as unknown as AsyncIterable<unknown> })
+        // Setup must not throw: a broken host degrades to the always-registered hook.
+        const budget = await createSessionBudget(harness.ctx, config(), "ru")
+        expect(harness.subscribed()).toBe(true)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(budget.guard()).toMatchObject({
+          compactionSource: "hook",
+          eventLive: false,
+          streamFailures: 1,
+        })
+        expect([...harness.hooks.keys()].sort()).toEqual([
+          "session.compaction",
+          "session.context",
+          "tool.execute.after",
+        ])
+        const s = sessionFor("no_iterator")
+        const input = contextInput(s, 100_000)
+        await (harness.hooks.get("session.context") as HookCallback)(input)
+        expect(budget.stats(s).requests).toBe(1)
+        await budget.cleanup()
+      }
+      // Nothing escaped into the process: the fire-and-forget task handled it.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(rejections).toEqual([])
+    } finally {
+      process.off("unhandledRejection", onRejection)
+    }
+  })
+
+  test("cleanup finalizes the host iterator", async () => {
+    let finalized = false
+    const stream: AsyncIterable<unknown> = {
+      [Symbol.asyncIterator]: () => ({
+        next: () => new Promise<IteratorResult<unknown>>(() => {}),
+        return: async () => {
+          finalized = true
+          return { done: true, value: undefined }
+        },
+      }),
+    }
+    const harness = createBudgetHarness({ stream })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    expect(budget.guard().eventLive).toBe(true)
+
+    await budget.cleanup()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(finalized).toBe(true)
+    expect(budget.guard()).toMatchObject({ eventLive: false, compactionSource: "hook", streamFailures: 0 })
   })
 
   test("undefined or null hook input is ignored without throwing or counting", async () => {
