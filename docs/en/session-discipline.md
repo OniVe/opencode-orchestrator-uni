@@ -121,21 +121,27 @@ set of bans:
   not on every request; within a level the text is stable, so the prefix cache is
   not broken.
 - compaction events — the `session.compaction` hook is registered on every host:
-  it counts attempts (`compactionAttempts`) and sets a tentative reminder so the
-  nearest request gets the lossy note when the event is delayed. Only
-  `session.compaction.ended` confirms a compaction (deduplicated by `event.id` or
-  the durable position); only it moves `compactions` and the limit.
-  `session.compaction.failed` increments `compactionFailures` and drops the
-  tentative note. When the event stream ends or throws, the guard reports
-  `eventLive: false` and `compactionSource: "hook"` (the failure is visible in
-  `errors`); the hook is already registered, so attempts keep counting, while no
-  confirmed compaction or stop signal is invented — no false "limit reached" and
-  no lossy note on that path. `guard` exposes the source and liveness.
+  it counts attempts (`compactionAttempts`) and sends a tentative note to the
+  nearest request when the terminal event is delayed; the note names no
+  compaction number and claims no limit. Only `session.compaction.ended`
+  confirms a compaction (deduplicated by `event.id` or the durable position);
+  only it moves `compactions` and the limit. `session.compaction.failed`
+  increments `compactionFailures`, drops the tentative note and keeps a
+  confirmed note that is still waiting for delivery. When the event stream ends
+  or throws, the guard reports `eventLive: false`, `compactionSource: "hook"` and
+  `streamFailures: 1` (the per-session `errors` stays `0`); the hook is already
+  registered, so attempts keep counting, while no confirmed compaction or stop
+  signal is invented — no false "limit reached" on that path. `guard` exposes
+  the source, liveness and stream failures.
 - `tool.execute.after` — caps the output of the configured tools and stores the
   full text in `os.tmpdir()/opencode-tool-output/` (POSIX modes 0700 for the
-  directory and 0600 for the file; Windows ignores mode). The files are not
-  cleaned up automatically — remove them yourself; if `TMPDIR` points inside the
-  workspace, they land there.
+  directory and 0600 for the file; Windows ignores mode). The root is trusted
+  only as a real directory: a symlink/junction at `opencode-tool-output` is
+  refused, its `realpath` must equal `<real tmpdir>/opencode-tool-output`, and
+  every session directory is `lstat`ed and proven inside the root; the file is
+  written by the resolved path. The files are not cleaned up automatically —
+  remove them yourself; if `TMPDIR` points inside the workspace, they land
+  there.
 
 Configuration (defaults):
 
@@ -156,10 +162,13 @@ Configuration (defaults):
 ```
 
 `maxCompactions: 0` disables the compaction limit. In the counters, `toolCalls`
-includes nested Code Mode calls, and `outputCharsSaved` is an upper estimate in
-characters (the injected stub is subtracted). `toolCallsByTool` and
-`toolOutputsCappedByTool` split calls and capped outputs by the normalized tool
-name (namespace stripped, lower-case).
+and the per-tool counters include nested Code Mode calls, and `outputCharsSaved`
+is an upper estimate in characters (the injected stub is subtracted).
+`toolCallsByTool` and `toolOutputsCappedByTool` split calls and capped outputs by
+the normalized tool name (namespace stripped, lower-case). Duplicate compaction
+events are counted once only when the host supplies `event.id` or a durable
+position; without either identity a re-delivered event may be counted again
+(fail-open in the direction of counting).
 
 The guard is fail-open: a hook error neither breaks the request nor corrupts the
 tool result. It writes nothing to the working tree (except when `TMPDIR` points

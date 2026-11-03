@@ -450,7 +450,7 @@ describe("hooks", () => {
     await budget.cleanup()
   })
 
-  test("without an event stream the hook counts attempts but confirms no compaction", async () => {
+  test("without an event stream the hook counts attempts and sends only a tentative note", async () => {
     const harness = createBudgetHarness()
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
     expect(harness.subscribed()).toBe(false)
@@ -468,10 +468,20 @@ describe("hooks", () => {
     expect(stats.compactionSource).toBe("hook")
     expect(compactionLimitReached(budget.config, stats.compactions)).toBe(false)
 
-    // No success is known on this host, so no lossy note and no false stop.
+    // No success is known on this host: the only note is the tentative one, which
+    // names no compaction number and claims no limit.
     const after = contextInput(s, 100)
     await context(after)
-    expect(after.system).toHaveLength(0)
+    expect(after.system).toHaveLength(1)
+    expect(after.system[0]?.text).toContain("подтверждение ожидается")
+    expect(after.system[0]?.text).not.toContain("Лимит исчерпан")
+    expect(after.system[0]?.text).not.toContain("Компакция #")
+
+    // One-shot: the next request carries nothing.
+    const next = contextInput(s, 100)
+    await context(next)
+    expect(next.system).toHaveLength(0)
+
     expect(budget.guard()).toMatchObject({
       available: true,
       hooksRegistered: true,
@@ -479,6 +489,7 @@ describe("hooks", () => {
       toolOutputEnabled: true,
       compactionSource: "hook",
       eventLive: false,
+      streamFailures: 0,
     })
     await budget.cleanup()
   })
@@ -543,7 +554,7 @@ describe("hooks", () => {
     await budget.cleanup()
   })
 
-  test("a hook attempt between events puts a tentative note on the nearest request", async () => {
+  test("a hook attempt between events sends a tentative note, then the confirmed one", async () => {
     const harness = createBudgetHarness({ events: true })
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
     const s = sessionFor("race")
@@ -555,7 +566,9 @@ describe("hooks", () => {
     const race = contextInput(s, 100)
     await (harness.hooks.get("session.context") as HookCallback)(race)
     expect(race.system).toHaveLength(1)
-    expect(race.system[0]?.text).toContain("Компакция #1")
+    expect(race.system[0]?.text).toContain("подтверждение ожидается")
+    expect(race.system[0]?.text).not.toContain("Компакция #")
+    expect(race.system[0]?.text).not.toContain("Лимит исчерпан")
 
     // The event confirms the compaction; the next request carries the real note.
     harness.events.push({ id: "evt_race", type: "session.compaction.ended", data: { sessionID: s } })
@@ -588,6 +601,123 @@ describe("hooks", () => {
     await budget.cleanup()
   })
 
+  test("(a) a tentative note never claims a compaction number or the limit", async () => {
+    for (const [locale, pending, limit, compaction] of [
+      ["ru", "подтверждение ожидается", "Лимит исчерпан", "Компакция #"],
+      ["en", "confirmation pending", "Limit reached", "Compaction #"],
+    ] as const) {
+      const harness = createBudgetHarness({ events: true })
+      const budget = await createSessionBudget(
+        harness.ctx,
+        config({ session: { ...DEFAULT_SESSION_GUARD, maxCompactions: 1 } }),
+        locale,
+      )
+      const s = sessionFor(`tent_${locale}`)
+      await (harness.hooks.get("session.compaction") as HookCallback)({ sessionID: s, system: [], messages: [] })
+
+      const input = contextInput(s, 100)
+      await (harness.hooks.get("session.context") as HookCallback)(input)
+      const note = input.system[0]?.text ?? ""
+      expect(note).toContain(pending)
+      expect(note).not.toContain(limit)
+      expect(note).not.toContain(compaction)
+
+      const stats = budget.stats(s)
+      expect(stats).toMatchObject({ compactions: 0, compactionAttempts: 1 })
+      expect(compactionLimitReached(budget.config, stats.compactions)).toBe(false)
+      await budget.cleanup()
+    }
+  })
+
+  test("(b) a failed attempt after the tentative note leaves no confirmed note", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const s = sessionFor("tent_failed")
+    const compaction = harness.hooks.get("session.compaction") as HookCallback
+    const context = harness.hooks.get("session.context") as HookCallback
+
+    await compaction({ sessionID: s, system: [], messages: [] })
+    await context(contextInput(s, 100)) // the tentative note is delivered and cleared
+    harness.events.push({ id: "evt_tent_failed", type: "session.compaction.failed", data: { sessionID: s } })
+    await drain(harness)
+
+    expect(budget.stats(s)).toMatchObject({ compactions: 0, compactionFailures: 1 })
+    const after = contextInput(s, 100)
+    await context(after)
+    expect(after.system).toHaveLength(0)
+    await budget.cleanup()
+  })
+
+  test("(c) an ended event delivers the confirmed note and the limit", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const s = sessionFor("conf_limit")
+    harness.events.push({ id: "evt_conf_c", type: "session.compaction.ended", data: { sessionID: s } })
+    await drain(harness)
+
+    const input = contextInput(s, 100)
+    await (harness.hooks.get("session.context") as HookCallback)(input)
+    const note = input.system[0]?.text ?? ""
+    expect(note).toContain("Компакция #1")
+    expect(note).toContain("Лимит исчерпан")
+    expect(compactionLimitReached(budget.config, budget.stats(s).compactions)).toBe(true)
+    await budget.cleanup()
+  })
+
+  test("(d) ended → hook → failed keeps the confirmed note", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const s = sessionFor("conf_keep")
+    harness.events.push({ id: "evt_conf_d1", type: "session.compaction.ended", data: { sessionID: s } })
+    await drain(harness)
+    await (harness.hooks.get("session.compaction") as HookCallback)({ sessionID: s, system: [], messages: [] })
+    harness.events.push({ id: "evt_conf_d2", type: "session.compaction.failed", data: { sessionID: s } })
+    await drain(harness)
+    expect(budget.stats(s)).toMatchObject({ compactions: 1, compactionFailures: 1, compactionAttempts: 1 })
+
+    const input = contextInput(s, 100)
+    await (harness.hooks.get("session.context") as HookCallback)(input)
+    expect(input.system[0]?.text).toContain("Компакция #1")
+    await budget.cleanup()
+  })
+
+  test("(e) ended → hook delivers note #1, not #2", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const s = sessionFor("conf_once")
+    harness.events.push({ id: "evt_conf_e", type: "session.compaction.ended", data: { sessionID: s } })
+    await drain(harness)
+    await (harness.hooks.get("session.compaction") as HookCallback)({ sessionID: s, system: [], messages: [] })
+
+    const input = contextInput(s, 100)
+    await (harness.hooks.get("session.context") as HookCallback)(input)
+    expect(input.system[0]?.text).toContain("Компакция #1")
+    expect(input.system[0]?.text).not.toContain("Компакция #2")
+
+    const next = contextInput(s, 100)
+    await (harness.hooks.get("session.context") as HookCallback)(next)
+    expect(next.system).toHaveLength(0)
+    await budget.cleanup()
+  })
+
+  test("(f) a confirmed note survives the event stream dying", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const s = sessionFor("conf_dead")
+    harness.events.push({ id: "evt_conf_f", type: "session.compaction.ended", data: { sessionID: s } })
+    await drain(harness)
+
+    harness.events.close()
+    await waitFor(() => !budget.guard().eventLive, "stream death after a confirmed compaction")
+    expect(budget.guard()).toMatchObject({ compactionSource: "hook", streamFailures: 1 })
+
+    const input = contextInput(s, 100)
+    await (harness.hooks.get("session.context") as HookCallback)(input)
+    expect(input.system[0]?.text).toContain("Компакция #1")
+    expect(budget.stats(s).errors).toBe(0)
+    await budget.cleanup()
+  })
+
   test("an ended or throwing event stream flips the guard to the hook without inventing compactions", async () => {
     for (const [label, stream] of [
       ["empty", emptyStream],
@@ -597,7 +727,12 @@ describe("hooks", () => {
       const budget = await createSessionBudget(harness.ctx, config(), "ru")
       expect(harness.subscribed()).toBe(true)
       await waitFor(() => !budget.guard().eventLive, `${label} stream death`)
-      expect(budget.guard()).toMatchObject({ eventLive: false, compactionSource: "hook", available: true })
+      expect(budget.guard()).toMatchObject({
+        eventLive: false,
+        compactionSource: "hook",
+        available: true,
+        streamFailures: 1,
+      })
       expect(harness.hooks.has("session.compaction")).toBe(true)
 
       const s = sessionFor(`dead_${label}`)
@@ -605,11 +740,14 @@ describe("hooks", () => {
       const stats = budget.stats(s)
       expect(stats.compactionAttempts).toBe(1)
       expect(stats.compactions).toBe(0)
-      expect(stats.errors).toBe(1)
+      // The stream failure belongs to the guard, not to the per-session hook errors.
+      expect(stats.errors).toBe(0)
       expect(compactionLimitReached(budget.config, stats.compactions)).toBe(false)
       const input = contextInput(s, 100)
       await (harness.hooks.get("session.context") as HookCallback)(input)
-      expect(input.system).toHaveLength(0)
+      expect(input.system).toHaveLength(1)
+      expect(input.system[0]?.text).toContain("подтверждение ожидается")
+      expect(input.system[0]?.text).not.toContain("Лимит исчерпан")
       await budget.cleanup()
     }
   })
@@ -792,6 +930,39 @@ describe("hooks", () => {
     await budget.cleanup()
   })
 
+  test("tool names that shadow Object.prototype do not corrupt the per-tool counters", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({
+        toolOutput: {
+          ...DEFAULT_TOOL_OUTPUT_GUARD,
+          tools: ["constructor", "__proto__"],
+          maxChars: 100,
+          headChars: 10,
+        },
+      }),
+      "ru",
+    )
+    const hook = harness.hooks.get("tool.execute.after") as HookCallback
+    const s = sessionFor("proto")
+
+    await hook(toolCall(s, "proto_1", "constructor", { content: "c".repeat(500), metadata: {} }))
+    await hook(toolCall(s, "proto_2", "__proto__", { content: "short", metadata: {} }))
+
+    const stats = budget.stats(s)
+    expect(stats.toolCalls).toBe(2)
+    expect(stats.toolCallsByTool["constructor"]).toBe(1)
+    expect(stats.toolCallsByTool["__proto__"]).toBe(1)
+    expect(stats.toolOutputsCappedByTool["constructor"]).toBe(1)
+    expect(stats.toolOutputsCappedByTool["__proto__"]).toBe(0)
+    // The exposed maps are ordinary objects with own data properties.
+    expect(Object.getPrototypeOf(stats.toolCallsByTool)).toBe(Object.prototype)
+    expect(JSON.stringify(stats.toolCallsByTool)).toBe('{"constructor":1,"__proto__":1}')
+    expect(JSON.stringify(stats.toolOutputsCappedByTool)).toBe('{"constructor":1,"__proto__":0}')
+    await budget.cleanup()
+  })
+
   test("a namespaced tool name in the config is normalized to the runtime tool", async () => {
     const warnings: string[] = []
     const parsed = readSessionBudgetOptions(
@@ -850,6 +1021,7 @@ describe("hooks", () => {
       toolOutputEnabled: true,
       compactionSource: "hook",
       eventLive: false,
+      streamFailures: 0,
     })
     expect(budget.stats("ses_missing")).toMatchObject({
       sessionID: "ses_missing",
@@ -902,6 +1074,7 @@ describe("hooks", () => {
       toolOutputEnabled: false,
       compactionSource: "hook",
       eventLive: false,
+      streamFailures: 0,
     })
     await budget.cleanup()
   })
@@ -919,6 +1092,41 @@ describe("hooks", () => {
     await drain(harness)
     expect(budget.tracked(s)).toBe(false)
     expect(budget.stats(s).requests).toBe(0)
+    await budget.cleanup()
+  })
+
+  test("a late event or hook after session.deleted does not resurrect the session", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const s = sessionFor("tombstone")
+
+    harness.events.push({ type: "session.created", data: { sessionID: s } })
+    harness.events.push({ id: "evt_before_delete", type: "session.compaction.ended", data: { sessionID: s } })
+    harness.events.push({ type: "session.deleted", data: { sessionID: s } })
+    await drain(harness)
+    expect(budget.tracked(s)).toBe(false)
+    expect(budget.stats(s)).toMatchObject({ requests: 0, compactions: 0 })
+
+    // Late events for the deleted id are ignored, not counted into a fresh state.
+    harness.events.push({ id: "evt_after_delete", type: "session.compaction.ended", data: { sessionID: s } })
+    harness.events.push({ id: "evt_after_delete_failed", type: "session.compaction.failed", data: { sessionID: s } })
+    await drain(harness)
+    expect(budget.tracked(s)).toBe(false)
+    expect(budget.stats(s)).toMatchObject({ compactions: 0, compactionFailures: 0 })
+
+    // Hooks for the deleted id are ignored too.
+    const context = harness.hooks.get("session.context") as HookCallback
+    await (harness.hooks.get("session.compaction") as HookCallback)({ sessionID: s, system: [], messages: [] })
+    await context(contextInput(s, 100))
+    expect(budget.tracked(s)).toBe(false)
+    expect(budget.stats(s)).toMatchObject({ requests: 0, compactionAttempts: 0 })
+
+    // `session.created` lifts the tombstone: a reused id starts clean.
+    harness.events.push({ type: "session.created", data: { sessionID: s } })
+    await drain(harness)
+    expect(budget.tracked(s)).toBe(true)
+    await context(contextInput(s, 100))
+    expect(budget.stats(s).requests).toBe(1)
     await budget.cleanup()
   })
 
@@ -1035,6 +1243,54 @@ describe("temp output paths", () => {
       await rm(outside, { recursive: true, force: true })
     }
   })
+  test.skipIf(linkStyle === undefined)("a symlink or junction at the output root is refused", async () => {
+    // A redirect at the root itself moves every session directory; the guard must
+    // trust the real temp anchor, not the lexical path. TMPDIR/TEMP/TMP are
+    // pointed at a private base so the shared output root is never re-pointed.
+    const base = await mkdtemp(path.join(tmpdir(), "audit-root-"))
+    const outside = await mkdtemp(path.join(tmpdir(), "audit-root-outside-"))
+    const root = path.join(base, "opencode-tool-output")
+    const previous = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP }
+    try {
+      if (linkStyle === "junction") {
+        const proc = Bun.spawnSync(["cmd", "/c", "mklink", "/J", root, outside])
+        expect(proc.exitCode).toBe(0)
+      } else {
+        await symlink(outside, root, "dir")
+      }
+      process.env.TMPDIR = base
+      process.env.TMP = base
+      process.env.TEMP = base
+      expect(path.resolve(tmpdir())).toBe(base)
+
+      const harness = createBudgetHarness()
+      const budget = await createSessionBudget(
+        harness.ctx,
+        config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 100, headChars: 10 } }),
+        "ru",
+      )
+      const s = sessionFor("rootlink")
+      const result: Record<string, unknown> = { content: "r".repeat(5000), metadata: { previous: true } }
+      await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(s, "call_rootlink", "shell", result))
+
+      // Refused fail-open: the result is untouched and nothing lands outside.
+      expect(result.content).toBe("r".repeat(5000))
+      expect(result.metadata).toEqual({ previous: true })
+      await expect(readFile(path.join(outside, s, "call_rootlink.txt"), "utf8")).rejects.toThrow()
+      expect(budget.stats(s).errors).toBe(1)
+      expect(budget.stats(s).outputsCapped).toBe(0)
+      await budget.cleanup()
+    } finally {
+      for (const key of ["TMPDIR", "TMP", "TEMP"] as const) {
+        const value = previous[key]
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+      await rm(root, { recursive: true, force: true })
+      await rm(base, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("toolResultText", () => {
@@ -1078,6 +1334,7 @@ describe("orch_uni_session_stats", () => {
     toolOutputEnabled: true,
     compactionSource: "event" as const,
     eventLive: true,
+    streamFailures: 0,
   }
 
   function report(overrides: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
@@ -1110,6 +1367,7 @@ describe("orch_uni_session_stats", () => {
       toolOutputEnabled: true,
       compactionSource: "event",
       eventLive: true,
+      streamFailures: 0,
     })
     expect(body.schema).toBeUndefined()
     expect(body.counters).toMatchObject({
@@ -1229,6 +1487,72 @@ describe("orch_uni_session_stats", () => {
     expect(body.tracked).toBe(false)
     expect(body.toolsPerTurn).toBe(0)
     expect((body.session as { sessionID?: string }).sessionID).toBe("ses_known")
+    harness.dispose()
+  })
+
+  test("a typed not-found error (empty message) is E_NOT_FOUND; unknown database/host stays E_INTERNAL", async () => {
+    const cases: { readonly label: string; readonly make: () => unknown; readonly code: string }[] = [
+      {
+        label: "tagged empty",
+        make: () => Object.assign(new Error(""), { _tag: "Session.NotFoundError" }),
+        code: "E_NOT_FOUND",
+      },
+      {
+        label: "named empty",
+        make: () => Object.assign(new Error(""), { name: "SessionNotFoundError" }),
+        code: "E_NOT_FOUND",
+      },
+      {
+        label: "ENOENT",
+        make: () => Object.assign(new Error("no such file"), { code: "ENOENT" }),
+        code: "E_NOT_FOUND",
+      },
+      { label: "session not found", make: () => new Error("session not found"), code: "E_NOT_FOUND" },
+      { label: "unknown database", make: () => new Error("unknown database"), code: "E_INTERNAL" },
+      { label: "unknown host", make: () => new Error("unknown host"), code: "E_INTERNAL" },
+    ]
+    for (const item of cases) {
+      const harness = await createHarness({
+        sessions: {
+          get: async () => {
+            throw item.make()
+          },
+        },
+        sessionBudget: report(),
+      })
+      const body = JSON.parse(
+        String(
+          (
+            await harness.tools
+              .get("orch_uni_session_stats")
+              ?.execute({ sessionID: "ses_unknown" }, { sessionID: "ses_caller", signal: new AbortController().signal })
+          )?.content,
+        ),
+      ) as Record<string, unknown>
+      expect(body.code, item.label).toBe(item.code)
+      harness.dispose()
+    }
+  })
+
+  test("session.get() returning undefined for an untracked session is E_NOT_FOUND", async () => {
+    const harness = await createHarness({
+      sessions: { get: async () => undefined },
+      sessionBudget: report(),
+    })
+    const body = JSON.parse(
+      String(
+        (
+          await harness.tools.get("orch_uni_session_stats")?.execute(
+            { sessionID: "ses_unknown" },
+            {
+              sessionID: "ses_caller",
+              signal: new AbortController().signal,
+            },
+          )
+        )?.content,
+      ),
+    ) as Record<string, unknown>
+    expect(body).toMatchObject({ ok: false, code: "E_NOT_FOUND" })
     harness.dispose()
   })
 

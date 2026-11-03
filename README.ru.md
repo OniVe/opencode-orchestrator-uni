@@ -287,7 +287,8 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
   "overBudget": true, "compactionLimitReached": true, "toolsPerTurn": 2.58,
   "tracked": true,
   "guard": { "available": true, "hooksRegistered": true, "sessionEnabled": true,
-             "toolOutputEnabled": true, "compactionSource": "event", "eventLive": true } }
+             "toolOutputEnabled": true, "compactionSource": "event", "eventLive": true,
+             "streamFailures": 0 } }
 ```
 
 `sessionID` может называть **любую сессию на этом сервере**, не только дочернюю
@@ -295,8 +296,8 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
 Счётчики принадлежат инстансу плагина, а `tracked` равен `true`, как только сессию
 наблюдало любое событие или хук; событие `session.deleted` её забывает. `band` —
 максимум достигнутого уровня бюджета (`0` ниже мягкого порога);
-`promptTokensMedian` — медиана по окну последних 256 запросов; `toolCalls`
-включает вложенные вызовы Code Mode; `toolCallsByTool` и
+`promptTokensMedian` — медиана по окну последних 256 запросов; `toolCalls` и
+per-tool счётчики включают вложенные вызовы Code Mode; `toolCallsByTool` и
 `toolOutputsCappedByTool` разносят вызовы и урезанные выводы по нормализованному
 имени инструмента (namespace снят, регистр нижний); `outputCharsSaved` — число
 символов, не байтов, и верхняя оценка (внедрённая заглушка вычитается).
@@ -304,9 +305,18 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
 `compactionAttempts` — каждый вызов хука `session.compaction`, поэтому на хосте с
 умершим или отсутствующим потоком событий попытки растут, а `compactions` и
 `compactionLimitReached` стоят (неудачная попытка не становится стоп-сигналом).
-Сессия, которую не отдаёт хранилище и не наблюдал этот инстанс, — `E_NOT_FOUND`;
-transient-ошибка `session.get` — `E_INTERNAL`; известная сессия без запросов —
-валидный отчёт с `tracked: false`. Без `session.get` ненаблюдаемая сессия —
+Умерший поток событий один раз виден в `guard.streamFailures`; per-session
+`errors` считает только ошибки хуков, поэтому транспортная авария не
+приписывается каждой сессии. Дубликаты событий компакции считаются один раз
+только при наличии `event.id` или durable-позиции; без identity повторная
+доставка может пересчитать событие (fail-open в сторону счёта).
+Сессия, которую не отдаёт хранилище и не наблюдал этот инстанс, — `E_NOT_FOUND`
+(распознаётся по типизированным `_tag`/`name`/`code` — `Session.NotFoundError`,
+`SessionNotFoundError`, `NotFoundError`, `ENOENT` — с узким fallback по сообщению);
+`session.get`, вернувший `undefined` для ненаблюдаемой сессии, — тот же ответ
+«не найдено»; transient-ошибка `session.get` (блокировка, права, `unknown
+database`) — `E_INTERNAL`; известная сессия без запросов — валидный отчёт с
+`tracked: false`. Без `session.get` ненаблюдаемая сессия —
 `E_NO_API`, наблюдаемая — `ok` с `session: null` и записью в `limitations`.
 Коды: `E_INPUT`, `E_NOT_FOUND`, `E_INTERNAL`, `E_NO_API`, `E_UNAVAILABLE`
 (guard не зарегистрирован или его хуки не установились), `E_ABORTED`.
@@ -325,17 +335,23 @@ Runtime-часть — три хука (`session.context`, `session.compaction`,
   инжектится **один раз при переходе уровня**, а не в каждом запросе; внутри
   уровня текст стабилен, поэтому префикс-кэш не рвётся.
 - события компакции — хук `session.compaction` регистрируется **всегда**: он
-  считает попытки (`compactionAttempts`) и ставит tentative lossy-note ближайшему
-  запросу. Подтверждает компакцию только `session.compaction.ended` (дедуп по
-  `event.id` или durable-позиции); `session.compaction.failed` увеличивает
-  `compactionFailures` и снимает tentative-note. Если поток событий завершился или
-  упал, `guard.eventLive` становится `false`, а `guard.compactionSource` —
-  `"hook"` (ошибка один раз видна в `errors`); хук продолжает считать попытки, но
-  подтверждённых компакций, lossy-note и ложного «лимит исчерпан» на этом пути
-  нет.
+  считает попытки (`compactionAttempts`) и отдаёт tentative-напоминание ближайшему
+  запросу; напоминание не называет номер компакции и не заявляет лимит.
+  Подтверждает компакцию только `session.compaction.ended` (дедуп по `event.id`
+  или durable-позиции) и выставляет confirmed-note с номером и лимитом;
+  `session.compaction.failed` увеличивает `compactionFailures`, снимает
+  tentative-note и сохраняет confirmed-note, ещё ждущий доставки. Если поток
+  событий завершился или упал, `guard.eventLive` становится `false`,
+  `guard.compactionSource` — `"hook"`, а `guard.streamFailures` — `1`
+  (per-session `errors` остаётся `0`); хук продолжает считать попытки, но
+  подтверждённых компакций и ложного «лимит исчерпан» на этом пути нет.
 - `tool.execute.after` — для `shell`, `bash`, `webfetch` урезает вывод больше
   `maxChars`: полный текст пишется в `os.tmpdir()/opencode-tool-output/` (права
   0700/0600 на POSIX; Windows их игнорирует), модель получает голову и путь.
+  Корень доверяется только как настоящий каталог: symlink/junction на
+  `opencode-tool-output` отклоняется, его `realpath` обязан совпасть с
+  `<real tmpdir>/opencode-tool-output`, каждый каталог сессии проходит `lstat` и
+  проверку вложенности в корень; файл пишется по разрешённому пути.
   Эти файлы **автоматически не чистятся** — удаляйте их сами. Если `TMPDIR`
   указывает внутрь воркспейса, файлы попадут туда. `read`, `write`, `edit`,
   `execute` и инструменты комплекта не урезаются.
@@ -515,7 +531,7 @@ npm run lint:fix     # biome check --write . (применяет безопас�
 
 Команды `check:locales` и `verify:kit` требуют git-чекаута комплекта — в npm-пакете каталог `tools/` не поставляется, поэтому в установленном пакете они недоступны (`stand: unavailable` и собственные воспроизводимые проверки).
 
-`npm test` сканирует только `./test/` — поставляемый набор (386 тестов в 10 файлах;
+`npm test` сканирует только `./test/` — поставляемый набор (397 тестов в 10 файлах;
 до стражей идентификаторов было 72 в 5). Голый `bun test` из корня репозитория
 красный по замыслу: позиционный аргумент `bun test` — это фильтр-подстрока пути,
 поэтому голая команда подхватывает и специально падающие фикстуры в
