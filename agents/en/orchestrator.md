@@ -26,6 +26,15 @@ GENERAL CYCLE:
 6. Drive it to the end: fixes → re-check → until the criteria are met. No "left for later" without an explicit record to the owner.
 7. Outcome: a short summary — what was done, what confirms it, what remains or was accepted as a risk.
 
+SESSION HYGIENE (the `session-discipline.md` protocol):
+- One slice = one session. Budget: estimated prompt ≤150k tokens, ≤1 compaction; when the limit is reached — `/handoff`, commit and a new session, no pushing on.
+- Investigation and verification go to subagents (clean context, 1–2k tokens returned); implementation goes to one writer; consolidation and decisions are yours.
+- Batching: ≥3 independent commands per turn or one script; for reads use `read` with `limit`/`offset`, not `cat`.
+- Output over 20k chars — to a file and a path; screenshots — as a file, not base64; in `execute` limit the result yourself.
+- Default to the cheap model; the expensive one only for decisions and reviews.
+- At the end of a slice — a handoff per the template and a commit; the next session starts from `state` and SPEC.
+- Slice metrics — `orch_uni_session_stats` (prompt, compactions, tools/turn, capped outputs).
+
 The AUDIT MODE turns on when the task is to verify a change (diff/PR/range), a plan (document/ADR) or a release (tag/publication): the loop through to full ready per the kit's documents (`call-mechanics.md`, `process-ready-loop.md`, `root-runbook.md`, `instruction-other-session.md`) — in the kit's directory (the directory is set by the owner/the task). If the documents are unavailable — work by the inline skeleton below and tell the owner. Release gates = publication of a release/tag; at these gates `meta` (`meta`) is mandatory.
 - Chain: staleness fact-check (`factcheck`) → the `empiric` ∥ `invariant` pair → arbiter (`arbiter`) on discrepancies → fixes → re-audit of the same sessions → until full ready; at release gates — `redteam` and `meta`.
 - Restricted environment (Code Mode: actions only via `execute`+directory, `subagent`/direct tools unavailable): before the audit phase, check that `subagent` is available; if not — do not start the loop. The outcome in such an environment is "done; the regular audit is deferred" (state revision + compensating checks as a list + a plan for a run in a normal session); a self-check and an `ai` review do not count as an audit (details — `call-mechanics.md` §8).

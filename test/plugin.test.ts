@@ -118,6 +118,7 @@ function createHarness(
         prompts.push(input)
         return { id: "msg_test" }
       },
+      hook: async () => ({ dispose: async () => {} }),
     },
     command: {
       transform: async (callback: (editor: typeof commandEditor) => void) => {
@@ -132,6 +133,7 @@ function createHarness(
       list: async () => ({ location: { directory: process.cwd() }, data: [...commands.values()] }),
     },
     tool: {
+      hook: async () => ({ dispose: async () => {} }),
       transform: async (callback: (editor: unknown) => void) => {
         callback({
           namespace: () => {},
@@ -393,6 +395,7 @@ describe("opencode-orchestrator-uni", () => {
     expect(warnings).toEqual([])
     expect([...tools.keys()].sort()).toEqual([
       "orch_uni_context_lint",
+      "orch_uni_session_stats",
       "orch_uni_sessions",
       "orch_uni_snapshot",
       "orch_uni_validate_report",
@@ -402,7 +405,7 @@ describe("opencode-orchestrator-uni", () => {
   test("setup registers both slash commands", async () => {
     const { commands, warnings } = await runSetup({ locale: "ru" })
     expect(warnings).toEqual([])
-    expect([...commands.keys()].sort()).toEqual(["agents-md", "spec"])
+    expect([...commands.keys()].sort()).toEqual(["agents-md", "handoff", "spec"])
     expect(commands.get("agents-md")?.description).toContain("AGENTS.md")
   })
 

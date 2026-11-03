@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode/plugin"
 import { lintContext } from "./context-lint"
 import { checkReport, type JsonSchemaNode, type ValidationCode } from "./report-schema"
+import type { SessionBudgetReport } from "./session-budget"
 import { DEFAULT_EXCLUDE, isSnapshotFailure, snapshotTree } from "./snapshot"
 
 /** Tool namespace; effective names become `orch_uni_<name>`. */
@@ -39,6 +40,7 @@ export const TOOL_IDS: readonly string[] = [
   "orch_uni_context_lint",
   "orch_uni_snapshot",
   "orch_uni_sessions",
+  "orch_uni_session_stats",
 ]
 
 /** Directory holding the shipped report schemas (`schemas/*.json`). */
@@ -204,6 +206,14 @@ const SESSIONS_INPUT = {
   properties: {
     sessionID: { type: "string", description: "Parent session id. Default: the calling session." },
     recursive: { type: "boolean", description: "Walk the whole subtree instead of direct children only." },
+  },
+} as const
+
+/** `session_stats` input contract. */
+const SESSION_STATS_INPUT = {
+  type: "object",
+  properties: {
+    sessionID: { type: "string", description: "Session to report. Default: the calling session." },
   },
 } as const
 
@@ -389,10 +399,12 @@ export function resolveRoot(directory: string, input: string): string {
   return path.isAbsolute(input) ? path.normalize(input) : path.resolve(directory, input)
 }
 
-/** Optional seams for tests; the plugin calls this with no options. */
+/** Optional seams for tests; the plugin calls this with the session-budget report. */
 export interface RegisterAuditToolsOptions {
   /** Directory to read `schemas/*.json` from. Defaults to the shipped `schemas/`. */
   readonly schemasDirectory?: string
+  /** Session counters from the runtime session guard; absent in isolation. */
+  readonly sessionBudget?: SessionBudgetReport
 }
 
 /**
@@ -653,6 +665,51 @@ export async function registerAuditTools(
     }
   }
 
+  const sessionStatsTool = async (
+    input: unknown,
+    toolContext: { readonly signal: AbortSignal; readonly sessionID: string },
+  ): Promise<{ content: string }> => {
+    const record = input === undefined ? {} : asRecord(input)
+    if (record === undefined) return failure("E_INPUT", "input must be an object ({sessionID?})")
+    const { sessionID } = record
+    if (sessionID !== undefined && (typeof sessionID !== "string" || sessionID === "")) {
+      return failure("E_INPUT", '"sessionID" must be a non-empty string')
+    }
+    if (toolContext.signal.aborted) return failure("E_ABORTED", "report aborted")
+    const target = (sessionID as string | undefined) ?? toolContext.sessionID
+    const budget = options.sessionBudget
+    if (budget === undefined) {
+      return failure("E_UNAVAILABLE", "the session guard is not registered in this plugin instance", {
+        sessionID: target,
+      })
+    }
+    const counters = budget.stats(target)
+    const { session: sessionConfig, toolOutput } = budget.config
+    const getFn = sessionMethod<SessionGetFn>(session, "get")
+    let info: Record<string, unknown> | undefined
+    if (getFn !== undefined) {
+      try {
+        info = sessionSummary(await getFn({ sessionID: target }))
+      } catch {
+        info = undefined
+      }
+    }
+    return json({
+      schema: "orch_uni/session_stats/v1",
+      ok: true,
+      sessionID: target,
+      counters,
+      limits: {
+        promptTokensSoft: sessionConfig.promptTokensSoft,
+        maxCompactions: sessionConfig.maxCompactions,
+        maxToolOutputChars: toolOutput.maxChars,
+      },
+      overBudget: counters.promptTokensMax > sessionConfig.promptTokensSoft,
+      compactionLimitReached: counters.compactions >= sessionConfig.maxCompactions,
+      ...(info === undefined ? {} : { session: info }),
+    })
+  }
+
   await context.tool.transform((editor) => {
     editor.namespace({
       name: TOOL_NAMESPACE,
@@ -706,6 +763,17 @@ export async function registerAuditTools(
       input: SESSIONS_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },
       execute: sessionsTool,
+    })
+    editor.add({
+      name: "session_stats",
+      description:
+        "Session protocol counters of a session: requests, estimated prompt tokens (last/max), budget band, compactions, " +
+        "reminders injected, tool calls, capped tool outputs and bytes kept out of context, plus the configured limits. " +
+        "Read-only; counters belong to this plugin instance. Returns JSON {schema, ok, sessionID, counters, limits, " +
+        "overBudget, compactionLimitReached, session?} or a typed code (E_INPUT|E_UNAVAILABLE|E_ABORTED).",
+      input: SESSION_STATS_INPUT,
+      options: { namespace: TOOL_NAMESPACE, codemode: true },
+      execute: sessionStatsTool,
     })
   })
 

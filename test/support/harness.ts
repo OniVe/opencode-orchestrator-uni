@@ -10,6 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
+import type { SessionBudgetReport } from "../../lib/session-budget"
 import { registerAuditTools, SESSION_INDEX_KEY } from "../../lib/tools"
 
 export interface ToolRecord {
@@ -32,6 +33,8 @@ export interface HarnessOptions {
   readonly sessionID?: string
   /** Directory to read `schemas/*.json` from (defaults to the shipped schemas). */
   readonly schemasDirectory?: string
+  /** Session-budget report wired into `orch_uni_session_stats` (absent = E_UNAVAILABLE). */
+  readonly sessionBudget?: SessionBudgetReport
 }
 
 export interface Harness {
@@ -153,10 +156,10 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     },
   } as unknown as Plugin.Context
 
-  const cleanup = await registerAuditTools(
-    context,
-    options.schemasDirectory === undefined ? {} : { schemasDirectory: options.schemasDirectory },
-  )
+  const cleanup = await registerAuditTools(context, {
+    ...(options.schemasDirectory === undefined ? {} : { schemasDirectory: options.schemasDirectory }),
+    ...(options.sessionBudget === undefined ? {} : { sessionBudget: options.sessionBudget }),
+  })
 
   return {
     directory,

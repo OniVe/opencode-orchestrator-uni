@@ -12,10 +12,10 @@ ships the **orchestrator agent kit**:
 - `fix-runner` — the only writing subagent (applies the "to close" list);
 - the kit's process documents, exposed as the **`audit-kit` reference**
   (`call-mechanics.md`, `process-ready-loop.md`, `root-runbook.md`,
-  `instruction-other-session.md`, `context-efficiency.md`);
-- four deterministic, read-only tools — `orch_uni_validate_report`, `orch_uni_context_lint`,
-  `orch_uni_snapshot`, `orch_uni_sessions` (see [Tools](#tools));
-- two slash commands — `/agents-md` and `/spec` (see [Commands](#commands)).
+  `instruction-other-session.md`, `context-efficiency.md`, `session-discipline.md`);
+- five deterministic, read-only tools — `orch_uni_validate_report`, `orch_uni_context_lint`,
+  `orch_uni_snapshot`, `orch_uni_sessions`, `orch_uni_session_stats` (see [Tools](#tools));
+- three slash commands — `/agents-md`, `/spec` and `/handoff` (see [Commands](#commands)).
 
 Read-only audit agents are enforced by `edit: deny` plus the prompt ban; their shell
 permission stays allowed so they can run verification commands (an accepted risk, no
@@ -55,8 +55,8 @@ directory (see [Locale](#locale)). OpenCode lists it in session context as an
 additional local directory, so the orchestrator (and any other agent) can read
 the process documents directly, for example `<reference path>/call-mechanics.md`.
 
-The plugin also registers four deterministic, **read-only** tools in the `orch_uni`
-namespace and two slash commands — see [Tools](#tools) and [Commands](#commands).
+The plugin also registers five deterministic, **read-only** tools in the `orch_uni`
+namespace and three slash commands — see [Tools](#tools) and [Commands](#commands).
 
 ## Commands
 
@@ -64,6 +64,7 @@ namespace and two slash commands — see [Tools](#tools) and [Commands](#command
 | --- | --- |
 | `/agents-md` | Injects the AGENTS.md audit/draft workflow: `context-efficiency.md` template, `orch_uni_context_lint`, `context-lint`, approval before writing. |
 | `/spec` | Injects the SPEC.md workflow: brief, clarifying questions, EARS/AC/traceability, `orch_uni_context_lint`, `context-lint`, approval before writing. |
+| `/handoff` | Injects the slice-closing workflow: session and working-tree facts, the `session-discipline.md` handoff template, writes `docs/planning/handoff-<date>.md`. |
 
 A command is a prompt, not a writer: its handler injects a workflow prompt into the
 current session. The orchestrator then follows the usual evidence and approval rules.
@@ -76,10 +77,11 @@ current session. The orchestrator then follows the usual evidence and approval r
 | `orch_uni_context_lint`     | yes       | Deterministic audit of AGENTS.md/SPEC.md: budget, vague phrases, links, sections |
 | `orch_uni_snapshot`         | yes       | Deterministic revision of a directory tree (per-file sha256 + aggregate hash)  |
 | `orch_uni_sessions`         | yes       | Child sessions of a session: agent, model, cost, tokens, time                  |
+| `orch_uni_session_stats`    | yes       | Session protocol counters: prompt, compactions, tools/turn, capped outputs      |
 
 Every tool answers with a JSON text body. Failures are **typed codes** inside the body
 (`E_INPUT`, `E_NO_JSON`, …) instead of thrown tool errors, so an agent can branch on the
-code without parsing prose. None of the four writes to the workspace, the session store
+code without parsing prose. None of the five writes to the workspace, the session store
 or the configuration.
 
 ### `orch_uni_validate_report`
@@ -260,6 +262,47 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
 
 `E_INPUT` for malformed arguments, `E_NOT_FOUND` when the parent session does not exist,
 `E_ABORTED` when the session is stopped.
+
+## Session hygiene
+
+The plugin implements the [`session-discipline.md`](./docs/en/session-discipline.md)
+protocol: a session is one slice, the prompt budget is ≤150k tokens, at most one
+compaction, tool output goes to a file, and a slice ends with a handoff.
+
+The runtime part is three hooks:
+
+- `session.context` — estimates the prompt (system + messages) and, when it crosses
+  a budget level, adds one short reminder; the text is stable within a level, so the
+  prefix cache is not broken on every turn.
+- `session.compaction` — counts compactions; the next request reminds that the
+  summary is lossy and decisions must be pinned to a file.
+- `tool.execute.after` — for `shell`, `bash`, `webfetch` it caps output over
+  `maxChars`: the full text goes to a temp directory, the model gets a head and the
+  path. `read`, `write`, `edit`, `execute` and the kit's own tools are not capped.
+
+The guard is fail-open: a hook error neither breaks the request nor corrupts the
+result. Either part can be disabled with its `enabled` flag:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "opencode-orchestrator-uni",
+      "options": {
+        "sessionGuard": { "enabled": true, "promptTokensSoft": 150000, "maxCompactions": 1 },
+        "toolOutputGuard": {
+          "enabled": true,
+          "maxChars": 20000,
+          "headChars": 4000,
+          "tools": ["shell", "bash", "webfetch"]
+        }
+      }
+    }
+  ]
+}
+```
+
+Slice metrics — `orch_uni_session_stats`; closing a slice — the `/handoff` command.
 
 ## Models
 
