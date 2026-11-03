@@ -67,7 +67,7 @@ Reference `audit-kit` указывает на per-locale каталог `docs/<l
 | --- | --- |
 | `/agents-md` | Вставляет workflow аудита/черновика AGENTS.md: шаблон `context-efficiency.md`, `orch_uni_context_lint`, `context-lint`, подтверждение перед записью. |
 | `/spec` | Вставляет workflow SPEC.md: бриф, уточняющие вопросы, EARS/AC/трассировка, `orch_uni_context_lint`, `context-lint`, подтверждение перед записью. |
-| `/handoff` | Вставляет workflow закрытия среза: факты сессии и рабочего дерева, шаблон handoff из `session-discipline.md`, запись `docs/planning/handoff-<дата>.md`. |
+| `/handoff` | Вставляет workflow закрытия среза: факты сессии и рабочего дерева, шаблон handoff из `session-discipline.md`, запись `docs/planning/handoff-<YYYY-MM-DD>.md`. |
 
 Команда — это промпт, а не писатель: обработчик вставляет workflow-промпт в
 текущую сессию. Дальше оркестратор работает по обычным правилам evidence и
@@ -277,26 +277,39 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
   "counters": {
     "requests": 12, "promptTokensLast": 151204, "promptTokensMax": 161002,
     "promptTokensMedian": 148900, "band": 1, "compactions": 1,
-    "compactionFailures": 0, "compactionSource": "event",
+    "compactionAttempts": 1, "compactionFailures": 0, "compactionSource": "event",
     "reminders": 2, "toolCalls": 31, "outputsCapped": 1,
-    "outputCharsSaved": 18422, "errors": 0
+    "outputCharsSaved": 18422, "errors": 0,
+    "toolCallsByTool": { "shell": 18, "bash": 6, "webfetch": 2, "read": 5 },
+    "toolOutputsCappedByTool": { "shell": 1, "bash": 0, "webfetch": 0, "read": 0 }
   },
   "limits": { "promptTokensSoft": 150000, "maxCompactions": 1, "maxToolOutputChars": 20000 },
   "overBudget": true, "compactionLimitReached": true, "toolsPerTurn": 2.58,
-  "tracked": true, "guard": { "available": true, "hooksRegistered": true } }
+  "tracked": true,
+  "guard": { "available": true, "hooksRegistered": true, "sessionEnabled": true,
+             "toolOutputEnabled": true, "compactionSource": "event", "eventLive": true } }
 ```
 
 `sessionID` может называть **любую сессию на этом сервере**, не только дочернюю
 вызывающего; это осознанно — по отчёту оркестратор контролирует все свои срезы.
-Счётчики принадлежат инстансу плагина, а `tracked` равен `true` только для
-сессии, которую этот инстанс наблюдал. `band` — максимум достигнутого уровня
-бюджета (`0` ниже мягкого порога); `promptTokensMedian` — медиана по окну
-последних 256 запросов; `toolCalls` включает вложенные вызовы Code Mode;
-`outputCharsSaved` — число символов, не байтов, и верхняя оценка (внедрённая
-заглушка вычитается). Сессия, которую не отдаёт хранилище и не наблюдал этот
-инстанс, — `E_NOT_FOUND`; известная сессия без запросов — валидный отчёт с
-`tracked: false`. Коды: `E_INPUT`, `E_NOT_FOUND`, `E_UNAVAILABLE` (guard не
-зарегистрирован или его хуки не установились), `E_ABORTED`.
+Счётчики принадлежат инстансу плагина, а `tracked` равен `true`, как только сессию
+наблюдало любое событие или хук; событие `session.deleted` её забывает. `band` —
+максимум достигнутого уровня бюджета (`0` ниже мягкого порога);
+`promptTokensMedian` — медиана по окну последних 256 запросов; `toolCalls`
+включает вложенные вызовы Code Mode; `toolCallsByTool` и
+`toolOutputsCappedByTool` разносят вызовы и урезанные выводы по нормализованному
+имени инструмента (namespace снят, регистр нижний); `outputCharsSaved` — число
+символов, не байтов, и верхняя оценка (внедрённая заглушка вычитается).
+`compactions` считает только подтверждённые `session.compaction.ended`;
+`compactionAttempts` — каждый вызов хука `session.compaction`, поэтому на хосте с
+умершим или отсутствующим потоком событий попытки растут, а `compactions` и
+`compactionLimitReached` стоят (неудачная попытка не становится стоп-сигналом).
+Сессия, которую не отдаёт хранилище и не наблюдал этот инстанс, — `E_NOT_FOUND`;
+transient-ошибка `session.get` — `E_INTERNAL`; известная сессия без запросов —
+валидный отчёт с `tracked: false`. Без `session.get` ненаблюдаемая сессия —
+`E_NO_API`, наблюдаемая — `ok` с `session: null` и записью в `limitations`.
+Коды: `E_INPUT`, `E_NOT_FOUND`, `E_INTERNAL`, `E_NO_API`, `E_UNAVAILABLE`
+(guard не зарегистрирован или его хуки не установились), `E_ABORTED`.
 
 ## Гигиена сессии
 
@@ -304,17 +317,22 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
 сессия = один срез, бюджет промпта ≤150k токенов, ≤1 компакция, вывод инструментов
 — в файл, в конце среза — handoff.
 
-Runtime-часть — два хука и подписка на события компакции:
+Runtime-часть — три хука (`session.context`, `session.compaction`,
+`tool.execute.after`) и подписка на события компакции:
 
 - `session.context` — оценивает промпт (system + messages) и при переходе на
   новый уровень бюджета добавляет одно короткое напоминание. Напоминание
   инжектится **один раз при переходе уровня**, а не в каждом запросе; внутри
   уровня текст стабилен, поэтому префикс-кэш не рвётся.
-- события компакции — `session.compaction.ended` считает компакцию, и следующий
-  запрос напоминает, что пересказ lossy и решения надо закрепить в файле;
-  `session.compaction.failed` только увеличивает `compactionFailures`. На хосте
-  без потока событий фолбэк — хук `session.compaction`, а
-  `counters.compactionSource` показывает, какой источник работает.
+- события компакции — хук `session.compaction` регистрируется **всегда**: он
+  считает попытки (`compactionAttempts`) и ставит tentative lossy-note ближайшему
+  запросу. Подтверждает компакцию только `session.compaction.ended` (дедуп по
+  `event.id` или durable-позиции); `session.compaction.failed` увеличивает
+  `compactionFailures` и снимает tentative-note. Если поток событий завершился или
+  упал, `guard.eventLive` становится `false`, а `guard.compactionSource` —
+  `"hook"` (ошибка один раз видна в `errors`); хук продолжает считать попытки, но
+  подтверждённых компакций, lossy-note и ложного «лимит исчерпан» на этом пути
+  нет.
 - `tool.execute.after` — для `shell`, `bash`, `webfetch` урезает вывод больше
   `maxChars`: полный текст пишется в `os.tmpdir()/opencode-tool-output/` (права
   0700/0600 на POSIX; Windows их игнорирует), модель получает голову и путь.
@@ -497,7 +515,7 @@ npm run lint:fix     # biome check --write . (применяет безопас�
 
 Команды `check:locales` и `verify:kit` требуют git-чекаута комплекта — в npm-пакете каталог `tools/` не поставляется, поэтому в установленном пакете они недоступны (`stand: unavailable` и собственные воспроизводимые проверки).
 
-`npm test` сканирует только `./test/` — поставляемый набор (368 тестов в 10 файлах;
+`npm test` сканирует только `./test/` — поставляемый набор (386 тестов в 10 файлах;
 до стражей идентификаторов было 72 в 5). Голый `bun test` из корня репозитория
 красный по замыслу: позиционный аргумент `bun test` — это фильтр-подстрока пути,
 поэтому голая команда подхватывает и специально падающие фикстуры в

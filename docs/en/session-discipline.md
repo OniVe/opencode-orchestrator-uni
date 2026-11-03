@@ -77,7 +77,9 @@ the number of small steps.
 
 ## 5. State in files
 
-- `handoff` — the required output of a slice (template below).
+- `handoff` — the required output of a slice (template below); default path
+  `docs/planning/handoff-<YYYY-MM-DD>.md`, the project root when the directory
+  does not exist.
 - `decisions` — decisions and reasons; one decision per entry; default path
   `docs/planning/decisions-<YYYY-MM-DD>.md`.
 - `state` — branch, gates, open risks, the next three steps; refreshed before a
@@ -102,7 +104,7 @@ the number of small steps.
 | Estimated prompt (median) | ≤ 150k | `orch_uni_session_stats` |
 | Compactions per slice | ≤ 1 | `orch_uni_session_stats` |
 | Tools per turn (`toolCalls/requests`, reported as `toolsPerTurn`) | ≥ 2 | `orch_uni_session_stats` |
-| Share of outputs over 20k chars among `shell`/`bash`/`webfetch` (the only tools the cap applies to), not among all calls | < 5% | `orch_uni_session_stats` |
+| Share of capped outputs among the tool's calls (`toolOutputsCappedByTool.shell / toolCallsByTool.shell`; likewise `bash`, `webfetch`) | < 5% | `orch_uni_session_stats` |
 | Handoff at slice end | present | working tree |
 
 `orch_uni_session_stats` reports the counters of the current plugin instance and
@@ -118,12 +120,17 @@ set of bans:
   crosses a budget level. The reminder is injected once at a level transition,
   not on every request; within a level the text is stable, so the prefix cache is
   not broken.
-- compaction events — `session.compaction.ended` counts the compaction and the
-  next request carries a reminder that the summary is lossy and decisions must be
-  pinned to a file; `session.compaction.failed` only increments
-  `compactionFailures`. A host without an event stream falls back to the
-  `session.compaction` hook; the live source is visible in
-  `counters.compactionSource`.
+- compaction events — the `session.compaction` hook is registered on every host:
+  it counts attempts (`compactionAttempts`) and sets a tentative reminder so the
+  nearest request gets the lossy note when the event is delayed. Only
+  `session.compaction.ended` confirms a compaction (deduplicated by `event.id` or
+  the durable position); only it moves `compactions` and the limit.
+  `session.compaction.failed` increments `compactionFailures` and drops the
+  tentative note. When the event stream ends or throws, the guard reports
+  `eventLive: false` and `compactionSource: "hook"` (the failure is visible in
+  `errors`); the hook is already registered, so attempts keep counting, while no
+  confirmed compaction or stop signal is invented — no false "limit reached" and
+  no lossy note on that path. `guard` exposes the source and liveness.
 - `tool.execute.after` — caps the output of the configured tools and stores the
   full text in `os.tmpdir()/opencode-tool-output/` (POSIX modes 0700 for the
   directory and 0600 for the file; Windows ignores mode). The files are not
@@ -150,7 +157,9 @@ Configuration (defaults):
 
 `maxCompactions: 0` disables the compaction limit. In the counters, `toolCalls`
 includes nested Code Mode calls, and `outputCharsSaved` is an upper estimate in
-characters (the injected stub is subtracted).
+characters (the injected stub is subtracted). `toolCallsByTool` and
+`toolOutputsCappedByTool` split calls and capped outputs by the normalized tool
+name (namespace stripped, lower-case).
 
 The guard is fail-open: a hook error neither breaks the request nor corrupts the
 tool result. It writes nothing to the working tree (except when `TMPDIR` points
@@ -161,6 +170,8 @@ output. Either part can be disabled with its `enabled` flag.
 
 ```md
 # Handoff: <slice> — <YYYY-MM-DD>
+
+<!-- File: docs/planning/handoff-<YYYY-MM-DD>.md; use the project root when the directory is absent. -->
 
 ## Goal and DoD
 One sentence of the goal and a verifiable definition of done.
