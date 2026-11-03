@@ -702,22 +702,40 @@ function eventSubscriber(ctx: Plugin.Context): EventSubscribe | undefined {
 
 /**
  * The host contract says `event.subscribe` returns an `AsyncIterable`. A version
- * skew can return `undefined`, a `Promise` or a plain object instead; the guard
- * treats that as a dead stream (hook fallback) instead of throwing during setup.
+ * skew can return `undefined`, a `Promise`, a plain object or a factory that
+ * yields garbage; the guard treats all of that as a dead stream (hook fallback)
+ * instead of throwing during setup.
+ *
+ * Exported for the test seam: this is the first of the two independent lines that
+ * keep a broken host from leaving the guard lying (the second is the `.catch`
+ * barrier on the subscription task). A single mutation of either line still
+ * degrades correctly, so the suite pins each line on its own here and in
+ * `closeIteratorQuietly`.
  */
-function asyncIteratorOf(stream: unknown): AsyncIterator<unknown> {
+export function asyncIteratorOf(stream: unknown): AsyncIterator<unknown> {
   const factory = (stream as { [Symbol.asyncIterator]?: unknown } | null | undefined)?.[Symbol.asyncIterator]
   if (typeof factory !== "function") {
     throw new TypeError("event.subscribe did not return an async iterable")
   }
-  return (factory as () => AsyncIterator<unknown>).call(stream)
+  const iterator = (factory as () => unknown).call(stream)
+  if (typeof iterator !== "object" || iterator === null) {
+    throw new TypeError("event.subscribe returned an async iterable without an iterator")
+  }
+  return iterator as AsyncIterator<unknown>
 }
 
-/** Best effort: close a host iterator so its own resources (socket, timer) are released. */
-function closeIteratorQuietly(iterator: AsyncIterator<unknown>): void {
-  const close = iterator.return
-  if (typeof close !== "function") return
+/**
+ * Best effort: close a host iterator so its own resources (socket, timer) are
+ * released. The whole body is guarded: a hostile host can expose a throwing
+ * `return` getter, and this helper runs inside the subscription task's `finally`,
+ * which must stay total.
+ *
+ * Exported for the test seam (see `asyncIteratorOf`).
+ */
+export function closeIteratorQuietly(iterator: AsyncIterator<unknown> | null | undefined): void {
   try {
+    const close = iterator?.return
+    if (typeof close !== "function") return
     void Promise.resolve(close.call(iterator)).catch(() => {})
   } catch {
     // best effort: a failing close must not affect the guard state
@@ -870,9 +888,10 @@ export async function createSessionBudget(
             }
             signal.addEventListener("abort", () => resolve("aborted"), { once: true })
           })
-          // The iterator is created inside the try on purpose: a host that returns
-          // something that is not an async iterable must degrade to the hook, not
-          // reject this fire-and-forget task.
+          // Two independent lines keep a broken host from leaving the guard lying:
+          // the iterator is built inside this try, and the task carries a `.catch`
+          // barrier (below). A single mutation of either line still degrades
+          // correctly on purpose; each line has its own witness in the unit tests.
           let iterator: AsyncIterator<unknown> | undefined
           try {
             iterator = asyncIteratorOf(stream)
@@ -925,7 +944,7 @@ export async function createSessionBudget(
           } finally {
             // Best effort, whatever the exit path (done or abort): the host may hold
             // a socket, a timer or an unsubscribe callback in `return()`.
-            if (iterator !== undefined) closeIteratorQuietly(iterator)
+            closeIteratorQuietly(iterator)
             eventLive = false
             compactionSource = "hook"
             if (!compactionSubscription.signal.aborted) streamFailures = 1
