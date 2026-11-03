@@ -31,8 +31,8 @@
  * session it tries to protect. Counters are in-memory and scoped to one plugin
  * instance; `orch_uni_session_stats` exposes them to the orchestrator.
  */
-import { randomBytes } from "node:crypto"
-import { lstat, mkdir, realpath, rm, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { lstat, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
@@ -152,6 +152,17 @@ export interface SessionBudgetReport {
 export interface SessionBudget extends SessionBudgetReport {
   readonly cleanup: Plugin.Cleanup
 }
+
+/**
+ * Test seam for the private output root: a failing factory simulates an unusable
+ * temp directory (`mkdtemp` throws), and a factory returning a known path lets a
+ * test inspect modes and cleanup. Production always uses the default.
+ */
+export interface SessionBudgetRuntime {
+  readonly createOutputRoot?: () => Promise<string>
+}
+
+const DEFAULT_RUNTIME: SessionBudgetRuntime = {}
 
 const DEFAULT_CONFIG: SessionBudgetConfig = {
   session: DEFAULT_SESSION_GUARD,
@@ -446,20 +457,10 @@ function cappedContent(
   return [{ type: "text", text: stub }, ...files]
 }
 
-const OUTPUT_DIRECTORY = "opencode-tool-output"
+/** Prefix of the per-process private root; `mkdtemp` appends its own random suffix. */
+const OUTPUT_ROOT_PREFIX = "opencode-tool-output-"
 
-/** Windows reserves these device names even with an extension (`CON.txt`). */
-const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i
-
-/** One path component: no separators, no leading dots, no reserved device names. */
-function safeSegment(value: string): string {
-  let segment = value.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 96)
-  segment = segment.replace(/^\.+/, "")
-  if (segment === "") segment = "x"
-  if (WINDOWS_RESERVED.test(segment)) segment = `_${segment}`
-  return segment
-}
-
+/** One path inside the root? `path.relative` also catches `..` escapes. */
 function isInside(root: string, target: string): boolean {
   const relative = path.relative(root, target)
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
@@ -500,17 +501,6 @@ function cappedStub(head: string, text: string, file: string): string {
   return `${head}\n\n[... ${text.length} chars total; showing first ${head.length}; full output: ${file}]\n`
 }
 
-function outputRoot(): string {
-  return path.resolve(tmpdir(), OUTPUT_DIRECTORY)
-}
-
-/** Compare two resolved paths; Windows paths are case-insensitive. */
-function samePath(left: string, right: string): boolean {
-  const a = path.normalize(left)
-  const b = path.normalize(right)
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b
-}
-
 /** Reject a symlink or an NTFS junction planted at a path the guard writes through. */
 async function assertNotLink(target: string, what: string): Promise<void> {
   const entry = await lstat(target)
@@ -520,56 +510,69 @@ async function assertNotLink(target: string, what: string): Promise<void> {
 }
 
 /**
- * Resolve the session output directory and prove it stays inside the temp root.
- *
- * A lexical check on the joined path is not enough: the trust anchor is the
- * directory `realpath(os.tmpdir())/opencode-tool-output`, not the lexical path.
- * A symlink or an NTFS junction planted at the root itself also redirects every
- * write, so the root is `lstat`ed (created with 0700 when absent) and its
- * `realpath` must equal the anchor; `realpath(tmpdir())` keeps a symlinked
- * `TMPDIR` such as macOS `/tmp` working. The session directory is checked the
- * same way and must resolve inside the root. The caller writes to the returned
- * real path, so the checked location is the written one. Both checks are
- * fail-open at the call site: a throw leaves the tool result untouched.
+ * Create the per-process private root: a fresh directory under `os.tmpdir()`
+ * with a random name (`mkdtemp` appends its own suffix, mode 0700 on POSIX).
+ * A pre-created `opencode-tool-output` directory or junction is never looked at.
  */
-async function containedOutputDirectory(root: string, directory: string): Promise<string> {
-  const expectedRoot = path.join(await realpath(tmpdir()), OUTPUT_DIRECTORY)
-  try {
-    await assertNotLink(root, "output root")
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-    await mkdir(root, { recursive: true, mode: 0o700 })
-    await assertNotLink(root, "output root")
+async function createPrivateOutputRoot(): Promise<string> {
+  return await mkdtemp(path.join(tmpdir(), OUTPUT_ROOT_PREFIX))
+}
+
+/**
+ * POSIX: the private root must belong to this user and be closed to group and
+ * other. A root that fails the check is never used — the caller disables the
+ * tool-output guard instead of writing through a shared directory. Windows has
+ * no POSIX ownership/mode bits here, so the check is skipped there.
+ */
+async function assertPrivateRoot(root: string): Promise<void> {
+  if (process.platform === "win32") return
+  const entry = await stat(root)
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined
+  if (uid !== undefined && entry.uid !== uid) {
+    throw new Error(`output root ${root} is owned by uid ${entry.uid}, expected ${uid}`)
   }
-  const realRoot = await realpath(root)
-  if (!samePath(realRoot, expectedRoot)) {
-    throw new Error(`refusing to write a capped tool output: ${root} resolves to ${realRoot}, expected ${expectedRoot}`)
+  if ((entry.mode & 0o077) !== 0) {
+    throw new Error(`output root ${root} mode ${(entry.mode & 0o777).toString(8)} grants group/other access`)
   }
-  await mkdir(directory, { recursive: true, mode: 0o700 })
+}
+
+/**
+ * Reuse the session directory from the cache or create one random 0700 directory
+ * inside the root. The directory is `lstat`ed (a symlink/junction is refused) and
+ * its `realpath` must stay inside the real root. The returned path is the written
+ * one. Fail-open at the call site: a throw leaves the tool result untouched.
+ */
+async function sessionOutputDirectory(root: string, sessionID: string, cache: Map<string, string>): Promise<string> {
+  const cached = cache.get(sessionID)
+  if (cached !== undefined) return cached
+  const directory = path.join(root, `s-${randomUUID()}`)
+  await mkdir(directory, { mode: 0o700 })
   await assertNotLink(directory, "session directory")
   const realDirectory = await realpath(directory)
-  if (!isInside(realRoot, realDirectory)) {
-    throw new Error(`refusing to write a capped tool output outside ${realRoot} (got ${realDirectory})`)
+  if (!isInside(root, realDirectory)) {
+    throw new Error(`refusing to write a capped tool output outside ${root} (got ${realDirectory})`)
   }
+  cache.set(sessionID, realDirectory)
   return realDirectory
 }
 
-/** Write the full output with `wx`; one retry with a random suffix on `EEXIST`. */
-async function writeOutput(file: string, text: string): Promise<string> {
-  const realDirectory = await containedOutputDirectory(outputRoot(), path.dirname(file))
-  // The checked directory is the written one: a lexical path could still name a
-  // reparse point that realpath resolved away.
-  const target = path.join(realDirectory, path.basename(file))
-  try {
+/**
+ * Write the full output under a random `c-<uuid>.txt` name with `wx` and mode
+ * 0600. A name collision is practically impossible; one retry with a fresh random
+ * name is kept as a fallback.
+ */
+async function writeCappedOutput(directory: string, text: string): Promise<string> {
+  const attempt = async (): Promise<string> => {
+    const target = path.join(directory, `c-${randomUUID()}.txt`)
     await writeFile(target, text, { encoding: "utf8", mode: 0o600, flag: "wx" })
     return target
+  }
+  try {
+    return await attempt()
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
   }
-  const extension = ".txt"
-  const retry = `${target.slice(0, -extension.length)}-${randomBytes(4).toString("hex")}${extension}`
-  await writeFile(retry, text, { encoding: "utf8", mode: 0o600, flag: "wx" })
-  return retry
+  return await attempt()
 }
 
 /** Median of a small sample window; `0` for an empty window. */
@@ -578,16 +581,6 @@ function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
   const middle = Math.floor(sorted.length / 2)
   return sorted.length % 2 === 0 ? Math.round((sorted[middle - 1]! + sorted[middle]!) / 2) : sorted[middle]!
-}
-
-/** Where a capped output is stored: a temp directory, never the workspace. */
-export function outputPath(sessionID: string, callID: string): string {
-  const root = outputRoot()
-  const file = path.resolve(root, safeSegment(sessionID), `${safeSegment(callID)}.txt`)
-  if (file === root || !isInside(root, file)) {
-    throw new Error(`refusing to write a capped tool output outside ${root}`)
-  }
-  return file
 }
 
 interface SessionDurableEnvelopeLike {
@@ -652,16 +645,22 @@ function eventSubscriber(ctx: Plugin.Context): EventSubscribe | undefined {
  * `session.compaction.failed` drops the tentative note. If the stream ends or
  * throws, `compactionSource` flips to `hook` and `guard` exposes `eventLive: false`
  * plus `streamFailures: 1`, so a dead stream is visible instead of silently
- * freezing the count. The returned `stats` reports one session's counters;
- * `cleanup` aborts the subscription and disposes every registration (safe to call
- * twice). A host without the V2 hook domains degrades to counters only: the guard
- * is a policy layer, it must never be the reason a plugin fails to load.
+ * freezing the count. The tool-output guard writes into one private root per
+ * plugin instance (`mkdtemp(os.tmpdir()/opencode-tool-output-)`), never into a
+ * fixed, guessable name; a root that cannot be created or is not private (POSIX
+ * owner/mode) disables that guard with a warning instead of failing calls. The
+ * returned `stats` reports one session's counters; `cleanup` aborts the
+ * subscription, disposes every registration (safe to call twice) and removes the
+ * private root best-effort. A host without the V2 hook domains degrades to
+ * counters only: the guard is a policy layer, it must never be the reason a
+ * plugin fails to load.
  */
 export async function createSessionBudget(
   ctx: Plugin.Context,
   config: SessionBudgetConfig = DEFAULT_CONFIG,
   locale: Locale = "en",
   warn: (message: string) => void = () => {},
+  runtime: SessionBudgetRuntime = DEFAULT_RUNTIME,
 ): Promise<SessionBudget> {
   const sessionHook = ctx.session?.hook
   const toolHook = ctx.tool?.hook
@@ -691,12 +690,33 @@ export async function createSessionBudget(
     if (isInside(path.resolve(workspace), temp)) {
       warn(
         `session guard: os.tmpdir() (${temp}) is inside the workspace (${path.resolve(workspace)}); ` +
-          "capped tool outputs will be written there and are not cleaned up automatically",
+          "capped tool outputs will be written there, the private root is removed when the plugin unloads",
       )
     }
   }
 
+  // One private root per plugin instance, created eagerly: a temp directory that
+  // cannot be created or is not private (POSIX owner/mode) disables the
+  // tool-output guard once, with a warning, instead of failing every capped call.
+  // A failure never breaks the session: the tool result is left untouched.
+  let outputRoot: string | undefined
+  if (config.toolOutput.enabled) {
+    try {
+      const created = await (runtime.createOutputRoot ?? createPrivateOutputRoot)()
+      await assertPrivateRoot(created)
+      outputRoot = await realpath(created)
+    } catch (error) {
+      warn(
+        `tool output guard disabled: no private temp root (${errorMessage(error)}); ` +
+          "tool results are left untouched",
+      )
+    }
+  }
+  const outputGuardEnabled = outputRoot !== undefined
+
   const states = new Map<string, MutableCounters>()
+  /** `sessionID → realpath` of its private directory, evicted with `session.deleted`. */
+  const sessionDirectories = new Map<string, string>()
   /** Ids whose `session.deleted` was observed: late events/hooks must not resurrect them. */
   const deletedSessions = new Set<string>()
   let compactionSource: CompactionSource = "hook"
@@ -759,6 +779,7 @@ export async function createSessionBudget(
               // `session.created` is the only event allowed to lift the tombstone.
               if (type === "session.deleted") {
                 states.delete(sessionID)
+                sessionDirectories.delete(sessionID)
                 deletedSessions.add(sessionID)
                 continue
               }
@@ -884,7 +905,7 @@ export async function createSessionBudget(
           state.toolCallsByTool[name] = (state.toolCallsByTool[name] ?? 0) + 1
           state.toolOutputsCappedByTool[name] ??= 0
           if (input.status !== "completed") return
-          if (!config.toolOutput.enabled) return
+          if (!outputGuardEnabled || outputRoot === undefined) return
           if (!config.toolOutput.tools.includes(name)) return
 
           const result = input.result as {
@@ -894,34 +915,35 @@ export async function createSessionBudget(
           const text = toolResultText(result.content)
           if (text.length <= config.toolOutput.maxChars) return
 
-          const file = outputPath(sessionID, String(input.id))
           const head = headOf(text, config.toolOutput.headChars)
-          const stub = cappedStub(head, text, file)
-          // Capping must shrink the context: a stub at least as long as the text
-          // would make the guard itself the problem, so the result stays untouched.
-          if (stub.length >= text.length) return
-
           let written: string
           try {
-            written = await writeOutput(file, text)
+            const directory = await sessionOutputDirectory(outputRoot, sessionID, sessionDirectories)
+            written = await writeCappedOutput(directory, text)
           } catch {
             state.errors += 1
             return
           }
-          const finalStub = written === file ? stub : cappedStub(head, text, written)
-          if (finalStub.length >= text.length) {
-            // A retry suffix can only lengthen the stub; never cap into a larger text.
-            await rm(written, { force: true })
+          const stub = cappedStub(head, text, written)
+          // Capping must shrink the context: a stub at least as long as the text
+          // would make the guard itself the problem, so the file is removed and the
+          // result stays untouched.
+          if (stub.length >= text.length) {
+            try {
+              await rm(written, { force: true })
+            } catch {
+              // best effort: a leftover temp file must not corrupt the result
+            }
             return
           }
-          result.content = cappedContent(result.content as string | ReadonlyArray<ToolContent>, finalStub)
+          result.content = cappedContent(result.content as string | ReadonlyArray<ToolContent>, stub)
           result.metadata = {
             ...(result.metadata ?? {}),
             toolOutputGuard: { chars: text.length, path: written },
           }
           state.outputsCapped += 1
           state.toolOutputsCappedByTool[name] = (state.toolOutputsCappedByTool[name] ?? 0) + 1
-          state.outputCharsSaved += Math.max(0, text.length - finalStub.length)
+          state.outputCharsSaved += Math.max(0, text.length - stub.length)
         } catch {
           if (state !== undefined) state.errors += 1
         }
@@ -955,13 +977,21 @@ export async function createSessionBudget(
         // A failing disposal must not prevent the other hooks from being removed.
       }
     }
+    sessionDirectories.clear()
+    if (outputRoot !== undefined) {
+      try {
+        await rm(outputRoot, { recursive: true, force: true })
+      } catch {
+        // best effort: a leftover temp root must not break plugin unload
+      }
+    }
   }
 
   const guard = (): SessionBudgetGuard => ({
     available,
     hooksRegistered,
     sessionEnabled: config.session.enabled,
-    toolOutputEnabled: config.toolOutput.enabled,
+    toolOutputEnabled: outputGuardEnabled,
     compactionSource,
     eventLive,
     streamFailures,

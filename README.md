@@ -344,15 +344,20 @@ The runtime part is three hooks (`session.context`, `session.compaction`,
   (the per-session `errors` stays `0`); the hook keeps counting attempts, but no
   confirmed compaction and no false "limit reached" is invented on that path.
 - `tool.execute.after` — for `shell`, `bash`, `webfetch` it caps output over
-  `maxChars`: the full text goes to `os.tmpdir()/opencode-tool-output/` (POSIX
-  modes 0700/0600; Windows ignores them), the model gets a head and the path.
-  The root is trusted only as a real directory: a symlink or junction at
-  `opencode-tool-output` is refused, its `realpath` must equal
-  `<real tmpdir>/opencode-tool-output`, and each session directory is `lstat`ed and
-  proven inside the root; the file is written by the resolved path.
-  Those files are **not cleaned up automatically** — remove them yourself. If
-  `TMPDIR` points inside the workspace, the files land there instead.
-  `read`, `write`, `edit`, `execute` and the kit's own tools are not capped.
+  `maxChars`: the full text goes to a private per-process root
+  `os.tmpdir()/opencode-tool-output-<random>/` (POSIX 0700 for the root and the
+  session directory, 0600 for the file; Windows ignores mode), the model gets a
+  head and the path. The root is created with `mkdtemp` at plugin setup, so a
+  pre-created `opencode-tool-output` directory or junction is never used; on POSIX
+  the root must belong to the current uid with no group/other access, otherwise
+  the guard disables itself with a warning (fail-open: results are untouched).
+  Session directories (`s-<uuid>`) and files (`c-<uuid>.txt`, written with `wx`)
+  are random, and each `realpath` is proven inside the root. The root is removed
+  when the plugin unloads (best effort). Residual risk accepted: a same-user
+  attacker can still swap a session directory between `realpath` and `writeFile`
+  (Node has no `openat`). If `TMPDIR` points inside the workspace, the files land
+  there instead. `read`, `write`, `edit`, `execute` and the kit's own tools are
+  not capped.
 
 `maxCompactions: 0` disables the compaction limit. The guard is fail-open: a hook
 error neither breaks the request nor corrupts the result. Either part can be
@@ -526,7 +531,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (397 tests in 10 files, up from
+`npm test` scans only `./test/` — the shipped suite (400 tests in 10 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`

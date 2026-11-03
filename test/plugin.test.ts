@@ -6,9 +6,40 @@
  * default agent shape — and the transform callback runs synchronously.
  * Real end-to-end loading is verified separately against a live server.
  */
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import plugin, { DOCS_DIRECTORY, type Locale, localeDirectory, PLUGIN_ID, REFERENCE_NAME } from "../index"
 import { agentFiles, docFiles } from "./support/locales"
+
+/**
+ * Every successful `setup` creates a per-process private tool-output root; the
+ * harness disposes each one after the test so the suite leaves no temp
+ * directories behind. Disposal is idempotent for the session guard, and a test
+ * that injects a failing dispose is already covered by the catch below.
+ */
+const pendingCleanups: (() => Promise<void> | void)[] = []
+
+function trackSetup(ctx: Parameters<typeof plugin.setup>[0]) {
+  const pending = plugin.setup(ctx)
+  pending.then(
+    (cleanup) => {
+      if (typeof cleanup === "function") pendingCleanups.push(cleanup)
+    },
+    () => {
+      // the test asserts the rejection; there is nothing to clean up
+    },
+  )
+  return pending
+}
+
+afterEach(async () => {
+  for (const cleanup of pendingCleanups.splice(0)) {
+    try {
+      await cleanup()
+    } catch {
+      // the test may already have disposed the plugin or injected a dispose fault
+    }
+  }
+})
 
 interface RuleDraft {
   action: string
@@ -205,7 +236,7 @@ async function runSetup(
     warnings.push(args.map((arg) => String(arg)).join(" "))
   }
   try {
-    await plugin.setup(harness.ctx)
+    await trackSetup(harness.ctx)
   } finally {
     console.warn = original
   }
@@ -377,7 +408,7 @@ describe("opencode-orchestrator-uni", () => {
     // Without options an existing definition stays fully untouched.
     const plain = createHarness()
     plain.agents.set("orchestrator", seedExistingAgent("orchestrator"))
-    await plugin.setup(plain.ctx)
+    await trackSetup(plain.ctx)
     const kept = plain.agents.get("orchestrator")!
     expect(kept.description).toBe("local override")
     expect(kept.system).toBe("local system")
@@ -387,7 +418,7 @@ describe("opencode-orchestrator-uni", () => {
     // With options the model is applied, the rest stays untouched.
     const withOptions = createHarness({ model: "deepseek/deepseek-flash" })
     withOptions.agents.set("orchestrator", seedExistingAgent("orchestrator"))
-    await plugin.setup(withOptions.ctx)
+    await trackSetup(withOptions.ctx)
     const updated = withOptions.agents.get("orchestrator")!
     expect(updated.model).toEqual({ providerID: "deepseek", id: "deepseek-flash" })
     expect(updated.description).toBe("local override")
@@ -417,7 +448,7 @@ describe("opencode-orchestrator-uni", () => {
   test("an existing reference is not overridden", async () => {
     const harness = createHarness()
     harness.references.set(REFERENCE_NAME, { type: "local", path: "C:/somewhere/else" })
-    await plugin.setup(harness.ctx)
+    await trackSetup(harness.ctx)
     expect(harness.references.get(REFERENCE_NAME)).toEqual({ type: "local", path: "C:/somewhere/else" })
   })
 
@@ -446,14 +477,14 @@ describe("opencode-orchestrator-uni", () => {
   test("a host without an event stream falls back to the compaction hook", async () => {
     const harness = createHarness({ locale: "ru" })
     delete (harness.ctx as unknown as { event?: unknown }).event
-    await plugin.setup(harness.ctx)
+    await trackSetup(harness.ctx)
     expect([...harness.sessionHooks.keys()].sort()).toEqual(["compaction", "context"])
     expect(harness.toolHooks.has("execute.after")).toBe(true)
   })
 
   test("cleanup aborts every guard event subscription", async () => {
     const harness = createHarness({ locale: "ru" })
-    const cleanup = await plugin.setup(harness.ctx)
+    const cleanup = await trackSetup(harness.ctx)
     expect(harness.subscriptionSignals).toHaveLength(2)
     expect(harness.subscriptionSignals.every((signal) => signal.aborted)).toBe(false)
     await cleanup?.()
@@ -475,7 +506,7 @@ describe("opencode-orchestrator-uni", () => {
       execute: async () => {},
     }
     harness.commands.set("spec", local)
-    await plugin.setup(harness.ctx)
+    await trackSetup(harness.ctx)
     expect(harness.commands.get("spec")?.description).toBe("local spec command")
     expect(harness.commands.has("agents-md")).toBe(true)
   })
@@ -544,7 +575,7 @@ describe("opencode-orchestrator-uni", () => {
 
   test("a failing command registration aborts the tools subscription", async () => {
     const harness = createHarness({ locale: "ru" }, { failingCommands: true })
-    await expect(plugin.setup(harness.ctx)).rejects.toThrow("command transform failed")
+    await expect(trackSetup(harness.ctx)).rejects.toThrow("command transform failed")
     expect(harness.aborted).toBe(true)
   })
 
@@ -559,7 +590,7 @@ describe("opencode-orchestrator-uni", () => {
 
   test("a failing command dispose still aborts the tools subscription", async () => {
     const harness = createHarness({ locale: "ru" }, { failingDispose: true })
-    const cleanup = await plugin.setup(harness.ctx)
+    const cleanup = await trackSetup(harness.ctx)
     expect(typeof cleanup).toBe("function")
     expect(harness.aborted).toBe(false)
     if (cleanup === undefined) return

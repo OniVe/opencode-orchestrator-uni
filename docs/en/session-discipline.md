@@ -134,14 +134,18 @@ set of bans:
   signal is invented — no false "limit reached" on that path. `guard` exposes
   the source, liveness and stream failures.
 - `tool.execute.after` — caps the output of the configured tools and stores the
-  full text in `os.tmpdir()/opencode-tool-output/` (POSIX modes 0700 for the
-  directory and 0600 for the file; Windows ignores mode). The root is trusted
-  only as a real directory: a symlink/junction at `opencode-tool-output` is
-  refused, its `realpath` must equal `<real tmpdir>/opencode-tool-output`, and
-  every session directory is `lstat`ed and proven inside the root; the file is
-  written by the resolved path. The files are not cleaned up automatically —
-  remove them yourself; if `TMPDIR` points inside the workspace, they land
-  there.
+  full text in a private per-process root
+  `os.tmpdir()/opencode-tool-output-<random>/` (POSIX 0700 for the root and the
+  session directory, 0600 for the file; Windows ignores mode). The root is created
+  with `mkdtemp` at setup, so a pre-created directory or junction named
+  `opencode-tool-output` is never used; on POSIX the root must belong to the
+  current uid with no group/other access, otherwise the guard disables itself with
+  a warning (fail-open: the result is untouched). Session directories (`s-<uuid>`)
+  and files (`c-<uuid>.txt`, written with `wx`) are random, and each `realpath` is
+  proven inside the root; the root is removed when the plugin unloads (best
+  effort). Residual risk accepted: a same-user attacker can still swap a session
+  directory between `realpath` and `writeFile` (Node has no `openat`). If `TMPDIR`
+  points inside the workspace, the files land there.
 
 Configuration (defaults):
 
