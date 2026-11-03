@@ -701,6 +701,30 @@ function eventSubscriber(ctx: Plugin.Context): EventSubscribe | undefined {
 }
 
 /**
+ * The host contract says `event.subscribe` returns an `AsyncIterable`. A version
+ * skew can return `undefined`, a `Promise` or a plain object instead; the guard
+ * treats that as a dead stream (hook fallback) instead of throwing during setup.
+ */
+function asyncIteratorOf(stream: unknown): AsyncIterator<unknown> {
+  const factory = (stream as { [Symbol.asyncIterator]?: unknown } | null | undefined)?.[Symbol.asyncIterator]
+  if (typeof factory !== "function") {
+    throw new TypeError("event.subscribe did not return an async iterable")
+  }
+  return (factory as () => AsyncIterator<unknown>).call(stream)
+}
+
+/** Best effort: close a host iterator so its own resources (socket, timer) are released. */
+function closeIteratorQuietly(iterator: AsyncIterator<unknown>): void {
+  const close = iterator.return
+  if (typeof close !== "function") return
+  try {
+    void Promise.resolve(close.call(iterator)).catch(() => {})
+  } catch {
+    // best effort: a failing close must not affect the guard state
+  }
+}
+
+/**
  * Register the hooks. Every host gets the `session.compaction` hook (attempts and
  * a tentative note that names no count and no limit); on a host with an event
  * stream `session.compaction.ended` confirms a compaction and
@@ -846,8 +870,12 @@ export async function createSessionBudget(
             }
             signal.addEventListener("abort", () => resolve("aborted"), { once: true })
           })
-          const iterator = stream[Symbol.asyncIterator]()
+          // The iterator is created inside the try on purpose: a host that returns
+          // something that is not an async iterable must degrade to the hook, not
+          // reject this fire-and-forget task.
+          let iterator: AsyncIterator<unknown> | undefined
           try {
+            iterator = asyncIteratorOf(stream)
             while (true) {
               const step = await Promise.race([iterator.next(), aborted])
               if (step === "aborted") break
@@ -895,11 +923,20 @@ export async function createSessionBudget(
             // Subscription ended or the server went away; the finally block flips
             // the source to the hook, which is registered either way.
           } finally {
+            // Best effort, whatever the exit path (done or abort): the host may hold
+            // a socket, a timer or an unsubscribe callback in `return()`.
+            if (iterator !== undefined) closeIteratorQuietly(iterator)
             eventLive = false
             compactionSource = "hook"
             if (!compactionSubscription.signal.aborted) streamFailures = 1
           }
-        })()
+        })().catch(() => {
+          // Last barrier: no path of this task may surface as an unhandled
+          // rejection, and a task that died must never leave the guard lying.
+          eventLive = false
+          compactionSource = "hook"
+          if (!compactionSubscription.signal.aborted) streamFailures = 1
+        })
       } catch {
         compactionSource = "hook"
         eventLive = false
@@ -1008,8 +1045,16 @@ export async function createSessionBudget(
           if (input.status !== "completed") return
           if (!outputGuardEnabled || outputRoot === undefined) return
           // The kit's own tools are checked on the raw name too: a namespace-less
-          // config entry (`session_stats`) must not turn one into a capped tool.
-          if (isProtectedTool(String(input.tool).trim().toLowerCase()) || isProtectedTool(name)) return
+          // config entry (`session_stats`) must not turn one into a capped tool, and
+          // the segment list is enforced here as well so a hand-built config cannot
+          // skip the parser.
+          if (
+            isProtectedTool(String(input.tool).trim().toLowerCase()) ||
+            isProtectedTool(name) ||
+            KIT_TOOL_NAMES.has(name)
+          ) {
+            return
+          }
           if (!config.toolOutput.tools.includes(name)) return
 
           const result = input.result as {
