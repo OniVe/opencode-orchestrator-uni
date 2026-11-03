@@ -52,6 +52,9 @@ function createHarness(
   const commands = new Map<string, CommandDraft>()
   const prompts: unknown[] = []
   const storage = new Map<string, unknown>()
+  const sessionHooks = new Map<string, unknown>()
+  const toolHooks = new Map<string, unknown>()
+  const subscriptionSignals: AbortSignal[] = []
   let subscriptionSignal: AbortSignal | undefined
   const agentEditor = {
     list: () => [...agents.values()],
@@ -105,6 +108,7 @@ function createHarness(
     event: {
       subscribe: (requestOptions?: { signal?: AbortSignal }) => {
         subscriptionSignal = requestOptions?.signal
+        if (requestOptions?.signal !== undefined) subscriptionSignals.push(requestOptions.signal)
         return {
           async *[Symbol.asyncIterator]() {
             // no events: the subscription ends immediately
@@ -118,7 +122,10 @@ function createHarness(
         prompts.push(input)
         return { id: "msg_test" }
       },
-      hook: async () => ({ dispose: async () => {} }),
+      hook: async (name: string, callback: unknown) => {
+        sessionHooks.set(name, callback)
+        return { dispose: async () => {} }
+      },
     },
     command: {
       transform: async (callback: (editor: typeof commandEditor) => void) => {
@@ -133,7 +140,10 @@ function createHarness(
       list: async () => ({ location: { directory: process.cwd() }, data: [...commands.values()] }),
     },
     tool: {
-      hook: async () => ({ dispose: async () => {} }),
+      hook: async (name: string, callback: unknown) => {
+        toolHooks.set(name, callback)
+        return { dispose: async () => {} }
+      },
       transform: async (callback: (editor: unknown) => void) => {
         callback({
           namespace: () => {},
@@ -174,6 +184,9 @@ function createHarness(
     tools,
     commands,
     prompts,
+    sessionHooks,
+    toolHooks,
+    subscriptionSignals,
     get aborted() {
       return subscriptionSignal?.aborted ?? false
     },
@@ -402,7 +415,33 @@ describe("opencode-orchestrator-uni", () => {
     ])
   })
 
-  test("setup registers both slash commands", async () => {
+  test("setup registers the guard hooks and subscribes to compaction events", async () => {
+    const { sessionHooks, toolHooks, subscriptionSignals } = await runSetup({ locale: "ru" })
+    // This harness exposes an event stream, so the compaction hook is not
+    // registered: the subscription is the compaction source.
+    expect([...sessionHooks.keys()]).toEqual(["context"])
+    expect([...toolHooks.keys()]).toEqual(["execute.after"])
+    expect(subscriptionSignals).toHaveLength(2) // session index + compaction events
+  })
+
+  test("a host without an event stream falls back to the compaction hook", async () => {
+    const harness = createHarness({ locale: "ru" })
+    delete (harness.ctx as unknown as { event?: unknown }).event
+    await plugin.setup(harness.ctx)
+    expect([...harness.sessionHooks.keys()].sort()).toEqual(["compaction", "context"])
+    expect(harness.toolHooks.has("execute.after")).toBe(true)
+  })
+
+  test("cleanup aborts every guard event subscription", async () => {
+    const harness = createHarness({ locale: "ru" })
+    const cleanup = await plugin.setup(harness.ctx)
+    expect(harness.subscriptionSignals).toHaveLength(2)
+    expect(harness.subscriptionSignals.every((signal) => signal.aborted)).toBe(false)
+    await cleanup?.()
+    expect(harness.subscriptionSignals.every((signal) => signal.aborted)).toBe(true)
+  })
+
+  test("setup registers all slash commands", async () => {
     const { commands, warnings } = await runSetup({ locale: "ru" })
     expect(warnings).toEqual([])
     expect([...commands.keys()].sort()).toEqual(["agents-md", "handoff", "spec"])

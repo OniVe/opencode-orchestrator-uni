@@ -24,7 +24,7 @@
  * - The `audit-kit` reference is registered only if that name is free; it points
  *   at this package's `docs/` directory so sessions can read the process
  *   documents directly.
- * - Slash commands (`/agents-md`, `/spec`) are registered through
+ * - Slash commands (`/agents-md`, `/spec`, `/handoff`) are registered through
  *   `ctx.command.transform`; their handlers inject a workflow prompt into the
  *   current session and never write files themselves.
  *

@@ -263,25 +263,66 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
 `E_INPUT` for malformed arguments, `E_NOT_FOUND` when the parent session does not exist,
 `E_ABORTED` when the session is stopped.
 
+### `orch_uni_session_stats`
+
+```jsonc
+{}                                  // counters of the calling session
+{ "sessionID": "ses_…" }            // any session on this server, not only a child
+```
+
+```jsonc
+{ "ok": true, "sessionID": "ses_…",
+  "counters": {
+    "requests": 12, "promptTokensLast": 151204, "promptTokensMax": 161002,
+    "promptTokensMedian": 148900, "band": 1, "compactions": 1,
+    "compactionFailures": 0, "compactionSource": "event",
+    "reminders": 2, "toolCalls": 31, "outputsCapped": 1,
+    "outputCharsSaved": 18422, "errors": 0
+  },
+  "limits": { "promptTokensSoft": 150000, "maxCompactions": 1, "maxToolOutputChars": 20000 },
+  "overBudget": true, "compactionLimitReached": true, "toolsPerTurn": 2.58,
+  "tracked": true, "guard": { "available": true, "hooksRegistered": true } }
+```
+
+`sessionID` may name **any session on this server**, not only a child of the caller;
+that is deliberate — the orchestrator uses the report to control every slice it runs.
+Counters are per plugin instance, and `tracked` is `true` only for a session this
+instance observed. `band` is the highest budget level reached (`0` below the soft
+threshold); `promptTokensMedian` is the median over the last 256 requests;
+`toolCalls` includes nested Code Mode calls; `outputCharsSaved` is a character
+count, not bytes, and an upper estimate (the injected stub is subtracted). A
+session the store does not return and this instance never observed is
+`E_NOT_FOUND`; a known session with zero requests is a valid report with
+`tracked: false`. Codes: `E_INPUT`, `E_NOT_FOUND`, `E_UNAVAILABLE` (the guard is
+not registered or its hooks failed), `E_ABORTED`.
+
 ## Session hygiene
 
 The plugin implements the [`session-discipline.md`](./docs/en/session-discipline.md)
 protocol: a session is one slice, the prompt budget is ≤150k tokens, at most one
 compaction, tool output goes to a file, and a slice ends with a handoff.
 
-The runtime part is three hooks:
+The runtime part is two hooks plus a compaction-event subscription:
 
 - `session.context` — estimates the prompt (system + messages) and, when it crosses
-  a budget level, adds one short reminder; the text is stable within a level, so the
-  prefix cache is not broken on every turn.
-- `session.compaction` — counts compactions; the next request reminds that the
-  summary is lossy and decisions must be pinned to a file.
+  a budget level, adds one short reminder. The reminder is injected **once, when a
+  new level is crossed**, not on every request; within a level the text is stable,
+  so the prefix cache is not broken.
+- compaction events — `session.compaction.ended` counts the compaction and the
+  next request reminds that the summary is lossy and decisions must be pinned to a
+  file; `session.compaction.failed` only increments `compactionFailures`. On a host
+  without an event stream the `session.compaction` hook is the fallback, and
+  `counters.compactionSource` says which source is live.
 - `tool.execute.after` — for `shell`, `bash`, `webfetch` it caps output over
-  `maxChars`: the full text goes to a temp directory, the model gets a head and the
-  path. `read`, `write`, `edit`, `execute` and the kit's own tools are not capped.
+  `maxChars`: the full text goes to `os.tmpdir()/opencode-tool-output/` (POSIX
+  modes 0700/0600; Windows ignores them), the model gets a head and the path.
+  Those files are **not cleaned up automatically** — remove them yourself. If
+  `TMPDIR` points inside the workspace, the files land there instead.
+  `read`, `write`, `edit`, `execute` and the kit's own tools are not capped.
 
-The guard is fail-open: a hook error neither breaks the request nor corrupts the
-result. Either part can be disabled with its `enabled` flag:
+`maxCompactions: 0` disables the compaction limit. The guard is fail-open: a hook
+error neither breaks the request nor corrupts the result. Either part can be
+disabled with its `enabled` flag:
 
 ```jsonc
 {
@@ -451,7 +492,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (289 tests in 9 files, up from
+`npm test` scans only `./test/` — the shipped suite (368 tests in 10 files, up from
 72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
 design: the positional argument of `bun test` is a path substring filter, so the
 bare command also picks up the intentionally failing fixtures under `eval/cases/`

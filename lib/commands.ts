@@ -101,6 +101,7 @@ function handoffPrompt(locale: CommandLocale, goal: string): string {
       "3. Запиши файл `docs/planning/handoff-<YYYY-MM-DD>.md` (нет каталога — корень проекта) инструментом `write`, не shell-heredoc.",
       "4. Ничего не додумывай: неизвестное помечай «не проверено»; секреты и токены в handoff не переноси.",
       "5. Покажи путь файла, краткий diff и открытые вопросы; канонические документы не меняй без подтверждения.",
+      "6. Если дерево грязное — предложи коммит по правилам проекта; не коммить без подтверждения владельца.",
     ].join("\n")
   }
   return [
@@ -113,6 +114,7 @@ function handoffPrompt(locale: CommandLocale, goal: string): string {
     "3. Write `docs/planning/handoff-<YYYY-MM-DD>.md` (use the project root when the directory is absent) with the `write` tool, not a shell heredoc.",
     "4. Do not invent facts: mark the unknown as `unverified`; never copy secrets or tokens into the handoff.",
     "5. Show the file path, a short diff and open questions; do not change canonical documents without approval.",
+    "6. If the working tree is dirty, propose a commit per the project rules; do not commit without the owner's approval.",
   ].join("\n")
 }
 
@@ -123,7 +125,7 @@ export async function registerKitCommands(ctx: Plugin.Context, locale: CommandLo
   // agent and tool with it, so it degrades to a warning plus a no-op cleanup.
   const command = (ctx as Partial<Plugin.Context>).command
   if (command === undefined || typeof command.transform !== "function") {
-    console.warn("orch-uni: this host has no command API; /agents-md and /spec are not registered")
+    console.warn("orch-uni: this host has no command API; /agents-md, /spec and /handoff are not registered")
     return async () => {}
   }
   let existing = new Set<string>()

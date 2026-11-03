@@ -11,7 +11,7 @@ import { TOOL_IDS, TOOL_NAMESPACE } from "../lib/tools"
 import { createHarness, runTool } from "./support/harness"
 
 describe("audit tool registration", () => {
-  test("registers the four tools in the orch_uni namespace", async () => {
+  test("registers the five tools in the orch_uni namespace", async () => {
     const harness = await createHarness()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_IDS].sort())
     expect(harness.namespaces.map((entry) => entry.name)).toEqual([TOOL_NAMESPACE])
