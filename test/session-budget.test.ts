@@ -12,7 +12,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
@@ -1100,6 +1100,46 @@ describe("hooks", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("a silently ignored tool result assignment leaves no orphaned file", async () => {
+    // A host may expose `content`/`metadata` as accessors whose setter quietly
+    // drops the value: no throw, but the stub never lands. The guard must notice
+    // and remove the written file instead of reporting a successful cap.
+    const root = await mkdtemp(path.join(tmpdir(), "audit-silent-result-"))
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({ toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, maxChars: 100, headChars: 10 } }),
+      "ru",
+      () => {},
+      { createOutputRoot: async () => root },
+    )
+    const s = sessionFor("silent_result")
+    const original = "s".repeat(5000)
+    const content = original
+    const metadata: Record<string, unknown> = {}
+    const result: Record<string, unknown> = {}
+    Object.defineProperty(result, "content", {
+      enumerable: true,
+      get: () => content,
+      set: () => {},
+    })
+    Object.defineProperty(result, "metadata", {
+      enumerable: true,
+      get: () => metadata,
+      set: () => {},
+    })
+
+    await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(s, "call_silent", "shell", result))
+
+    expect(result.content).toBe(original)
+    expect(result.metadata).toEqual({})
+    expect(budget.stats(s)).toMatchObject({ errors: 1, outputsCapped: 0 })
+    const entries = await readdir(root, { recursive: true, withFileTypes: true })
+    expect(entries.filter((entry) => entry.isFile())).toEqual([])
+    await budget.cleanup()
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("other tools, small outputs and failed calls are untouched", async () => {
     const harness = createBudgetHarness()
     const budget = await createSessionBudget(harness.ctx, config(), "ru")
@@ -1640,6 +1680,52 @@ describe("private output root", () => {
       await budget.cleanup()
     } finally {
       await rm(root, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
+  test.skipIf(linkStyle === undefined)("a session path that resolves outside the root is refused", async () => {
+    // The seam swaps the *root* for a link to an outside directory and recreates
+    // the session directory through it. The final component is a real directory,
+    // so `lstat` sees no link: only the `realpath` containment check can refuse.
+    const root = await mkdtemp(path.join(tmpdir(), "audit-realpath-root-"))
+    const outside = await mkdtemp(path.join(tmpdir(), "audit-realpath-outside-"))
+    const moved = `${root}-moved`
+    let sessionDirectory = ""
+    try {
+      const harness = createBudgetHarness()
+      const budget = await createSessionBudget(harness.ctx, capConfig, "en", () => {}, {
+        createOutputRoot: async () => root,
+        afterSessionDirectoryCreated: async (directory) => {
+          sessionDirectory = directory
+          const parent = path.dirname(directory)
+          await rename(parent, moved)
+          if (linkStyle === "junction") {
+            const proc = Bun.spawnSync(["cmd", "/c", "mklink", "/J", parent, outside])
+            expect(proc.exitCode).toBe(0)
+          } else {
+            await symlink(outside, parent, "dir")
+          }
+          await mkdir(directory, { recursive: true })
+        },
+      })
+      const session = sessionFor("realpath_escape")
+      const result: Record<string, unknown> = { content: "e".repeat(5000), metadata: { previous: true } }
+      await (harness.hooks.get("tool.execute.after") as HookCallback)(toolCall(session, "call_escape", "shell", result))
+
+      // The link is transparent here: `assertNotLink` cannot see it, so the refusal
+      // below comes from the realpath-inside-root check alone.
+      expect(sessionDirectory).not.toBe("")
+      expect((await lstat(sessionDirectory)).isSymbolicLink()).toBe(false)
+      expect(result.content).toBe("e".repeat(5000))
+      expect(result.metadata).toEqual({ previous: true })
+      expect(budget.stats(session)).toMatchObject({ outputsCapped: 0, errors: 1 })
+      const written = await readdir(outside, { recursive: true, withFileTypes: true })
+      expect(written.filter((entry) => entry.isFile())).toEqual([])
+      await budget.cleanup()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(moved, { recursive: true, force: true })
       await rm(outside, { recursive: true, force: true })
     }
   })
