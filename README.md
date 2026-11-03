@@ -285,8 +285,10 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
   "overBudget": true, "compactionLimitReached": true, "toolsPerTurn": 2.58,
   "tracked": true,
   "guard": { "available": true, "hooksRegistered": true, "sessionEnabled": true,
-             "toolOutputEnabled": true, "compactionSource": "event", "eventLive": true,
-             "streamFailures": 0 } }
+             "toolOutputEnabled": true,
+             "toolOutputTools": ["shell", "bash", "webfetch"],
+             "compactionSource": "event", "eventLive": true,
+             "streamFailures": 0, "unkeyedCalls": 0 } }
 ```
 
 `sessionID` may name **any session on this server**, not only a child of the caller;
@@ -346,18 +348,23 @@ The runtime part is three hooks (`session.context`, `session.compaction`,
 - `tool.execute.after` — for `shell`, `bash`, `webfetch` it caps output over
   `maxChars`: the full text goes to a private per-process root
   `os.tmpdir()/opencode-tool-output-<random>/` (POSIX 0700 for the root and the
-  session directory, 0600 for the file; Windows ignores mode), the model gets a
-  head and the path. The root is created with `mkdtemp` at plugin setup, so a
+  session directory, 0600 for the file). Windows ignores mode (measured: 0666),
+  so privacy there rests on the ACL of `os.tmpdir()` and is not checked by code.
+  The model gets a head and the path; the root is created with `mkdtemp` at plugin
+  setup, so a
   pre-created `opencode-tool-output` directory or junction is never used; on POSIX
   the root must belong to the current uid with no group/other access, otherwise
   the guard disables itself with a warning (fail-open: results are untouched).
   Session directories (`s-<uuid>`) and files (`c-<uuid>.txt`, written with `wx`)
   are random, and each `realpath` is proven inside the root. The root is removed
-  when the plugin unloads (best effort). Residual risk accepted: a same-user
+  when the plugin unloads (best effort). A lone surrogate is normalized once
+  (U+FFFD), so the file, the head and the counters describe the same string.
+  Residual risk accepted: a same-user
   attacker can still swap a session directory between `realpath` and `writeFile`
   (Node has no `openat`). If `TMPDIR` points inside the workspace, the files land
   there instead. `read`, `write`, `edit`, `execute` and the kit's own tools are
-  not capped.
+  not capped, and a kit tool named without its namespace (`session_stats`) is
+  refused in the config with a warning.
 
 `maxCompactions: 0` disables the compaction limit. The guard is fail-open: a hook
 error neither breaks the request nor corrupts the result. Either part can be
