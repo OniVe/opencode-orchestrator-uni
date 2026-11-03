@@ -175,7 +175,13 @@ empty; `guard.toolOutputTools` is that list (normalized, protected and kit names
 removed) and `guard.unkeyedCalls` counts hook calls without a non-empty
 `sessionID` (such input is dropped, not bucketed under `""`). An empty `tools`
 list — explicit or after every entry was rejected — disables capping with a
-warning. In the counters, `toolCalls`
+warning. Accepted limits: a session directory `s-<uuid>` lives until the plugin
+unloads — it is removed neither on `session.deleted` nor after a refused cap
+(a readonly result, for example) and is released with the root; lone-surrogate
+normalization relies on ES2024 `String.prototype.isWellFormed`/`toWellFormed`
+(the minimum runtime version is not pinned in `engines`, so on an old runtime the
+cap degrades fail-open: `errors` +1, the result is untouched).
+In the counters, `toolCalls`
 and the per-tool counters include nested Code Mode calls, and `outputCharsSaved`
 is an upper estimate in characters (the injected stub is subtracted).
 `toolCallsByTool` and `toolOutputsCappedByTool` split calls and capped outputs by
