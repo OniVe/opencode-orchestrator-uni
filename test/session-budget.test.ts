@@ -17,6 +17,8 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import {
+  asyncIteratorOf,
+  closeIteratorQuietly,
   compactionLimitReached,
   DEFAULT_SESSION_GUARD,
   DEFAULT_TOOL_OUTPUT_GUARD,
@@ -1284,7 +1286,12 @@ describe("hooks", () => {
     const onRejection = (reason: unknown) => rejections.push(reason)
     process.on("unhandledRejection", onRejection)
     try {
-      for (const stream of [{}, Promise.resolve({})]) {
+      for (const stream of [
+        {},
+        Promise.resolve({}),
+        // A factory that yields null: the iterable is present but has no iterator.
+        { [Symbol.asyncIterator]: () => null },
+      ]) {
         const harness = createBudgetHarness({ stream: stream as unknown as AsyncIterable<unknown> })
         // Setup must not throw: a broken host degrades to the always-registered hook.
         const budget = await createSessionBudget(harness.ctx, config(), "ru")
@@ -1308,6 +1315,36 @@ describe("hooks", () => {
       }
       // Nothing escaped into the process: the fire-and-forget task handled it.
       await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(rejections).toEqual([])
+    } finally {
+      process.off("unhandledRejection", onRejection)
+    }
+  })
+
+  test("cleanup survives a host iterator with a throwing return getter", async () => {
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown) => rejections.push(reason)
+    process.on("unhandledRejection", onRejection)
+    try {
+      const stream: AsyncIterable<unknown> = {
+        [Symbol.asyncIterator]: () => {
+          const iterator = { next: () => new Promise<IteratorResult<unknown>>(() => {}) }
+          Object.defineProperty(iterator, "return", {
+            get() {
+              throw new Error("hostile return getter")
+            },
+          })
+          return iterator as AsyncIterator<unknown>
+        },
+      }
+      const harness = createBudgetHarness({ stream })
+      const budget = await createSessionBudget(harness.ctx, config(), "ru")
+      expect(budget.guard().eventLive).toBe(true)
+
+      // The close runs inside the subscription `finally`: it must not throw out of it.
+      await budget.cleanup()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(budget.guard()).toMatchObject({ eventLive: false, compactionSource: "hook", streamFailures: 0 })
       expect(rejections).toEqual([])
     } finally {
       process.off("unhandledRejection", onRejection)
@@ -1803,6 +1840,78 @@ describe("toolResultText", () => {
       ]),
     ).toBe("a\nb")
     expect(toolResultText(undefined)).toBe("")
+  })
+})
+
+describe("asyncIteratorOf", () => {
+  test("refuses anything that is not an async iterable", () => {
+    for (const value of [
+      undefined,
+      null,
+      {},
+      Promise.resolve({}),
+      { [Symbol.asyncIterator]: 42 },
+      { [Symbol.asyncIterator]: () => null },
+    ]) {
+      expect(() => asyncIteratorOf(value)).toThrow(/async iterable/)
+    }
+  })
+
+  test("returns the host iterator and keeps its receiver", () => {
+    const iterator = { next: async () => ({ done: true as const, value: undefined }) }
+    const stream = {
+      [Symbol.asyncIterator]() {
+        expect(this).toBe(stream)
+        return iterator
+      },
+    }
+    expect(asyncIteratorOf(stream)).toBe(iterator)
+  })
+})
+
+describe("closeIteratorQuietly", () => {
+  test("never throws, even when the host getter or return() throws", () => {
+    const throwingGetter = {
+      next: async () => ({ done: true as const, value: undefined }),
+    }
+    Object.defineProperty(throwingGetter, "return", {
+      get() {
+        throw new Error("hostile return getter")
+      },
+    })
+    expect(() => closeIteratorQuietly(throwingGetter as unknown as AsyncIterator<unknown>)).not.toThrow()
+
+    const throwingReturn = {
+      next: async () => ({ done: true as const, value: undefined }),
+      return: () => {
+        throw new Error("return exploded")
+      },
+    }
+    expect(() => closeIteratorQuietly(throwingReturn as unknown as AsyncIterator<unknown>)).not.toThrow()
+
+    // No `return`, null and undefined are all no-ops.
+    expect(() => closeIteratorQuietly({ next: async () => ({ done: true, value: undefined }) })).not.toThrow()
+    expect(() => closeIteratorQuietly(null)).not.toThrow()
+    expect(() => closeIteratorQuietly(undefined)).not.toThrow()
+  })
+
+  test("swallows a rejecting return()", async () => {
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown) => rejections.push(reason)
+    process.on("unhandledRejection", onRejection)
+    try {
+      const iterator = {
+        next: async () => ({ done: true as const, value: undefined }),
+        return: async () => {
+          throw new Error("async close failed")
+        },
+      }
+      expect(() => closeIteratorQuietly(iterator as unknown as AsyncIterator<unknown>)).not.toThrow()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(rejections).toEqual([])
+    } finally {
+      process.off("unhandledRejection", onRejection)
+    }
   })
 })
 
