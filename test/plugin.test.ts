@@ -248,6 +248,24 @@ function effectiveEffect(agent: AgentDraft, action: string): string | undefined 
   return agent.permissions.filter((rule) => rule.action === "*" || rule.action === action).at(-1)?.effect
 }
 
+/** Whole-value wildcard matching of the host's permission engine (`*`, `?`; case-insensitive on Windows). */
+function globMatches(pattern: string, resource: string): boolean {
+  const normalizedPattern = pattern.replaceAll("\\", "/")
+  const normalizedResource = resource.replaceAll("\\", "/")
+  const source = normalizedPattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".")
+  return new RegExp(`^${source}$`, process.platform === "win32" ? "i" : "").test(normalizedResource)
+}
+
+/** Effective effect for an action on a concrete resource: the last matching rule wins. */
+function effectiveEffectFor(agent: AgentDraft, action: string, resource: string): string | undefined {
+  return agent.permissions
+    .filter((rule) => (rule.action === "*" || rule.action === action) && globMatches(rule.resource, resource))
+    .at(-1)?.effect
+}
+
 function seedExistingAgent(id: string): AgentDraft {
   return {
     id,
@@ -341,12 +359,47 @@ describe("opencode-orchestrator-uni", () => {
     for (const agent of agents.values()) expect(agent.model).toBeUndefined()
   })
 
-  test("orchestrator is primary with shell and edit access", async () => {
+  test("orchestrator delegates code edits: edit is denied except audit/state artifacts", async () => {
     const { agents } = await runSetup()
     const orchestrator = agents.get("orchestrator")!
     expect(orchestrator.mode).toBe("primary")
-    expect(effectiveEffect(orchestrator, "edit")).toBe("allow")
     expect(effectiveEffect(orchestrator, "shell")).toBe("allow")
+    expect(
+      orchestrator.permissions.some(
+        (rule) => rule.action === "edit" && rule.resource === "*" && rule.effect === "deny",
+      ),
+    ).toBe(true)
+
+    const denied = [
+      "src/index.ts",
+      "lib/session-budget.ts",
+      "test/plugin.test.ts",
+      "docs/ru/call-mechanics.md",
+      "README.md",
+      "package.json",
+      "eval/run.ts",
+    ]
+    for (const resource of denied) expect(effectiveEffectFor(orchestrator, "edit", resource), resource).toBe("deny")
+
+    const allowed = [
+      "reports/summary-x.md",
+      "lab/audit-pfx/reports/summary-x.md",
+      "/tmp/audit/reports/summary-x.md",
+      "C:/work/audit/reports/summary-x.md",
+      "risks-x.md",
+      "lab/audit-pfx/risks-x.md",
+      "case-x.md",
+      "docs/planning/handoff-2026-11-04.md",
+      "docs/planning/state.md",
+      "handoff-2026-11-04.md",
+      "decisions-2026-11-04.md",
+      "state.md",
+      "E:/projects/ai/opencode-orchestrator-uni/docs/planning/state.md",
+      "E:/projects/ai/opencode-orchestrator-uni/handoff-2026-11-04.md",
+      "E:/projects/ai/opencode-orchestrator-uni/decisions-2026-11-04.md",
+      "E:/projects/ai/opencode-orchestrator-uni/state.md",
+    ]
+    for (const resource of allowed) expect(effectiveEffectFor(orchestrator, "edit", resource), resource).toBe("allow")
   })
 
   test("audit subagents are read-only, fix-runner may write", async () => {

@@ -44,7 +44,7 @@ A session is one slice with a measurable DoD, not the whole project.
 - Investigation and verification ("find", "understand", "reproduce") go to
   subagents: they get a clean context and return 1–2k tokens of findings instead
   of a dump.
-- Implementation goes to one writer per workspace: related decisions must be made
+- Implementation goes to one writing subagent per workspace (the root does not edit code, docs or tests — only audit/session-state artifacts): related decisions must be made
   in one context (otherwise parallel agents diverge in style and contracts).
 - Decisions, consolidation and acceptance belong to the root orchestrator.
 - The audit loop is unchanged: re-audit resumes the same sessions; short audit
