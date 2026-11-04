@@ -15,7 +15,8 @@
  *   the guard is the workspace boundary, so `reports/`, `docs/planning/` and
  *   `audit-*` are writable only inside it. The location is read from the
  *   session on every event (`session.get`), so a moved session is evaluated
- *   against its new directory; the setup location is only a fallback;
+ *   against its new directory; the setup location is only a fallback (used when
+ *   the lookup is missing, fails or exceeds its 250 ms bound, with one warning);
  * - normalize separators and collapse `.`/`..`, then walk the segments left to
  *   right and let the first root decide: `reports` → allow (the whole subtree
  *   is an artifact), `docs` + `planning` + a path whose last segment is `.md`
@@ -62,6 +63,9 @@ const MARKDOWN_FILE = /\.md$/
 
 /** Message attached to a denied evaluation; also shown to the model. */
 export const WRITE_GUARD_MESSAGE = "root orchestrator may edit only audit/session-state artifacts"
+
+/** Upper bound on the per-event session lookup; a hung store must not hold the edit open. */
+const SESSION_LOOKUP_TIMEOUT_MS = 250
 
 export type EditDecision = "allow" | "deny"
 
@@ -200,29 +204,48 @@ export async function createWriteGuard(ctx: Plugin.Context, options: WriteGuardO
     return { available: false, cleanup: noop }
   }
   const session = (ctx as { readonly session?: SessionDirectoryApi }).session
-  // A failing `session.get` falls back to the setup location, exactly like a host
-  // without the API; the warning is emitted once so a persistent failure cannot
-  // flood the log on every edit.
+  // A failing, missing or hanging `session.get` falls back to the setup location;
+  // the warning is emitted once per guard so a persistent failure cannot flood
+  // the log on every edit (the single flag is deliberate — no counter, no reset).
   let sessionWarned = false
+  const warnSessionOnce = (message: string): void => {
+    if (sessionWarned) return
+    sessionWarned = true
+    options.warn(message)
+  }
   const locationFor = async (sessionID: string | undefined): Promise<string> => {
-    if (sessionID === undefined || typeof session?.get !== "function") return options.locationDirectory
+    if (typeof session?.get !== "function") {
+      warnSessionOnce("write guard: ctx.session.get is unavailable, using the setup location")
+      return options.locationDirectory
+    }
+    if (sessionID === undefined) return options.locationDirectory
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      const info = (await session.get({ sessionID })) as
+      // The lookup is bounded: a hung session store must not hold the permission
+      // event open (fail-open covers a rejection, not a promise that never settles).
+      const lookup = session.get({ sessionID })
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`timed out after ${SESSION_LOOKUP_TIMEOUT_MS} ms`))
+        }, SESSION_LOOKUP_TIMEOUT_MS)
+      })
+      const info = (await Promise.race([lookup, timeout])) as
         | { readonly location?: { readonly directory?: unknown } }
         | undefined
       const directory = info?.location?.directory
-      return typeof directory === "string" && directory !== "" ? directory : options.locationDirectory
+      if (typeof directory === "string" && directory !== "") return directory
+      warnSessionOnce("write guard: the session reports no location directory, using the setup location")
+      return options.locationDirectory
     } catch (error) {
       // Fail-open: an unreadable session must not break (or disable) the guard.
-      if (!sessionWarned) {
-        sessionWarned = true
-        options.warn(
-          `write guard: cannot read the session directory, using the setup location: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        )
-      }
+      warnSessionOnce(
+        `write guard: cannot read the session directory, using the setup location: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
       return options.locationDirectory
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
     }
   }
   try {

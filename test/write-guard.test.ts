@@ -145,6 +145,7 @@ describe("createWriteGuard", () => {
 
   interface HookHarnessOptions {
     readonly sessions?: unknown
+    readonly omitSession?: boolean
     readonly warn?: (message: string) => void
   }
 
@@ -160,12 +161,13 @@ describe("createWriteGuard", () => {
     let sessionGets = 0
     const sessionsOption = options.sessions as { get?: (input: { sessionID: string }) => Promise<unknown> } | undefined
     const baseGet = sessionsOption?.get
-    const sessions =
-      baseGet === undefined
+    const sessions = options.omitSession
+      ? undefined
+      : baseGet === undefined
         ? {
             get: async (input: { sessionID: string }) => {
               sessionGets += 1
-              return { id: input.sessionID }
+              return { id: input.sessionID, location: { directory: LOCATION } }
             },
           }
         : {
@@ -175,7 +177,7 @@ describe("createWriteGuard", () => {
             },
           }
     const ctx = {
-      session: sessions,
+      ...(sessions === undefined ? {} : { session: sessions }),
       permission: {
         hook: async (_name: string, callback: (event: EvaluateEventDraft) => Promise<void>) => {
           registered = callback
@@ -308,6 +310,80 @@ describe("createWriteGuard", () => {
     expect(denied.effect).toBe("deny")
     expect(host.warnings.filter((line) => line.includes("session directory"))).toHaveLength(1)
     expect(host.warnings.some((line) => line.includes("session store offline"))).toBe(true)
+    await host.guard.cleanup()
+  })
+
+  test("bounds a hanging session lookup, falls back and warns once", async () => {
+    const host = await hookHarness({ sessions: { get: () => new Promise(() => {}) } })
+    const started = Date.now()
+    const allowed = await host.evaluate({
+      sessionID: "ses_moved",
+      agent: "orchestrator",
+      action: "edit",
+      resources: ["reports/x"],
+      effect: "allow",
+    })
+    const elapsed = Date.now() - started
+    expect(allowed.effect).toBe("allow")
+    expect(elapsed).toBeGreaterThanOrEqual(200)
+    const denied = await host.evaluate({
+      sessionID: "ses_moved",
+      agent: "orchestrator",
+      action: "edit",
+      resources: ["src/x"],
+      effect: "allow",
+    })
+    expect(denied.effect).toBe("deny")
+    expect(host.sessionGets).toBe(2)
+    const lookupWarnings = host.warnings.filter((line) => line.includes("cannot read the session directory"))
+    expect(lookupWarnings).toHaveLength(1)
+    expect(lookupWarnings[0]).toContain("timed out")
+    await host.guard.cleanup()
+  })
+
+  test("warns once and falls back when the host has no session.get", async () => {
+    const host = await hookHarness({ omitSession: true })
+    const allowed = await host.evaluate({
+      sessionID: "ses_moved",
+      agent: "orchestrator",
+      action: "edit",
+      resources: ["reports/x"],
+      effect: "allow",
+    })
+    expect(allowed.effect).toBe("allow")
+    const denied = await host.evaluate({
+      sessionID: "ses_moved",
+      agent: "orchestrator",
+      action: "edit",
+      resources: ["src/x"],
+      effect: "allow",
+    })
+    expect(denied.effect).toBe("deny")
+    expect(host.warnings.filter((line) => line.includes("ctx.session.get is unavailable"))).toHaveLength(1)
+    await host.guard.cleanup()
+  })
+
+  test("warns once and falls back when the session reports no location directory", async () => {
+    const host = await hookHarness({
+      sessions: { get: async (input: { sessionID: string }) => ({ id: input.sessionID }) },
+    })
+    const allowed = await host.evaluate({
+      sessionID: "ses_moved",
+      agent: "orchestrator",
+      action: "edit",
+      resources: ["reports/x"],
+      effect: "allow",
+    })
+    expect(allowed.effect).toBe("allow")
+    const denied = await host.evaluate({
+      sessionID: "ses_moved",
+      agent: "orchestrator",
+      action: "edit",
+      resources: ["src/x"],
+      effect: "allow",
+    })
+    expect(denied.effect).toBe("deny")
+    expect(host.warnings.filter((line) => line.includes("no location directory"))).toHaveLength(1)
     await host.guard.cleanup()
   })
 
