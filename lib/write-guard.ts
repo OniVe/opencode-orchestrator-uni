@@ -17,7 +17,8 @@
  *   `reports` → allow (the whole subtree is an artifact), `docs` + `planning` +
  *   a path whose last segment is `.md` (any depth) → allow, any source root
  *   (`src`, `lib`, `test`, `tests`, `agents`, `tools`, `schemas`, `eval`,
- *   `.github`, `docs`) → deny;
+ *   `.github`) → deny. `docs` is not part of that set: its own branch above
+ *   allows nested `docs/planning/` Markdown and denies every other `docs/` path;
  * - with no root in the path, an artifact file (`case-*`, `risks-*`,
  *   `handoff-*`, `decisions-*`, `state.md`) is allowed only in the location
  *   root, under `reports/`, under `docs/planning/`, or inside an `audit-*`
@@ -31,7 +32,7 @@
  */
 import type { Plugin } from "@opencode/plugin"
 
-/** Source roots that hold project code, docs or kit content. */
+/** Source roots that hold project code or kit content; `docs` has its own branch in `decideSegments`. */
 const SOURCE_ROOTS: ReadonlySet<string> = new Set([
   "src",
   "lib",
@@ -42,7 +43,6 @@ const SOURCE_ROOTS: ReadonlySet<string> = new Set([
   "schemas",
   "eval",
   ".github",
-  "docs",
 ])
 
 /** Reserved artifact subtree: everything below it is an audit/state artifact. */
@@ -106,6 +106,8 @@ function decideSegments(segments: readonly string[], insideLocation: boolean): E
     const segment = segments[index]!
     const key = fold(segment)
     if (key === ARTIFACT_DIR) return "allow"
+    // `docs` is not part of SOURCE_ROOTS: this branch allows nested planning
+    // Markdown and denies every other `docs/` path.
     if (key === "docs") {
       const next = segments[index + 1]
       const last = segments.at(-1)
