@@ -15,9 +15,10 @@ const ALLOWED = [
   "handoff-x.md",
   "decisions-x.md",
   "state.md",
-  // Planning documents.
+  // Planning documents (nested `.md` is allowed at any depth).
   "docs/planning/state.md",
   "docs/planning/handoff-x.md",
+  "docs/planning/sub/x.md",
   // Artifact files under an audit-* directory.
   "audit-abc/case-x.md",
   "lab/audit-pfx/risks-x.md",
@@ -54,6 +55,7 @@ const DENIED = [
   "docs/planning/../../src/x.md",
   // Not a Markdown planning file.
   "docs/planning/tool.ts",
+  "docs/planning/sub/tool.ts",
   // Escaping the location leaves no artifact location behind.
   "../state.md",
   // Absolute paths resolve the same way.
@@ -75,5 +77,11 @@ describe("decideEdit", () => {
     expect(decideEdit("reports\\src\\x.ts", LOCATION)).toBe("allow")
     expect(decideEdit("src\\reports\\x.ts", LOCATION)).toBe("deny")
     expect(decideEdit("./reports/./x.md", LOCATION)).toBe("allow")
+  })
+
+  test("folds case on Windows", () => {
+    if (process.platform !== "win32") return
+    expect(decideEdit("SRC/reports/x.ts", LOCATION)).toBe("deny")
+    expect(decideEdit("REPORTS/x.md", LOCATION)).toBe("allow")
   })
 })

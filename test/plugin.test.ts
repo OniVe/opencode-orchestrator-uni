@@ -404,8 +404,8 @@ describe("opencode-orchestrator-uni", () => {
     expect(evaluate).toBeDefined()
     if (evaluate === undefined) return
 
-    const decide = (resources: readonly string[], agent = "orchestrator", effect = "allow") => {
-      const event: EvaluateEventDraft = { agent, action: "edit", resources, effect }
+    const decide = (resources: readonly string[], agent = "orchestrator", effect = "allow", action = "edit") => {
+      const event: EvaluateEventDraft = { agent, action, resources, effect }
       evaluate(event)
       return event
     }
@@ -423,6 +423,7 @@ describe("opencode-orchestrator-uni", () => {
     const alreadyDenied = decide(["src/index.ts"], "orchestrator", "deny")
     expect(alreadyDenied.effect).toBe("deny")
     expect(alreadyDenied.message).toBeUndefined()
+    expect(decide(["src/index.ts"], "orchestrator", "allow", "shell").effect).toBe("allow")
   })
 
   test("audit subagents are read-only, fix-runner may write", async () => {
