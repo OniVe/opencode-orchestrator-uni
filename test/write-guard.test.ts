@@ -44,8 +44,10 @@ const DENIED = [
   // Project files.
   "README.md",
   "package.json",
-  // A source root wins even under an artifact-looking continuation: one case per
-  // root, so dropping any root from SOURCE_ROOTS turns its case into an allow.
+  // A source root wins even under an artifact-looking continuation. There is one
+  // case per root in SOURCE_ROOTS (9 entries), so dropping any of them turns its
+  // case into an allow. `docs` is not in that set: it has a dedicated branch, and
+  // the `docs/reports/x.ts` / `docs/ru/x.md` cases pin that branch instead.
   "src/reports/x.ts",
   "src/docs/planning/x.md",
   "test/docs/planning/x.md",
