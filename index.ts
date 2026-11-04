@@ -55,6 +55,7 @@ import matter from "gray-matter"
 import { registerKitCommands } from "./lib/commands"
 import { createSessionBudget, readSessionBudgetOptions, safeJson } from "./lib/session-budget"
 import { registerAuditTools } from "./lib/tools"
+import { createWriteGuard } from "./lib/write-guard"
 
 /** Stable plugin id: diagnostics, enable/disable selectors, storage scope. */
 export const PLUGIN_ID = "orchestrator.uni"
@@ -419,10 +420,20 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   // tools are registered must abort that subscription too — otherwise a
   // half-registered plugin leaks an event listener for the lifetime of the server.
   const sessionBudget = await createSessionBudget(ctx, readSessionBudgetOptions(ctx.options, warn), locale, warn)
+  // The path-root write guard enforces the orchestrator's artifact-only edit
+  // contract beyond what flat `permissions` can express (see `lib/write-guard.ts`).
+  // It registers on the host's permission hook and stays a no-op on a host without
+  // that API — a missing hook is reported, never fatal. Registration happens
+  // before the tools so a later failure disposes the guard with the rest of the chain.
+  const writeGuard = await createWriteGuard(ctx, {
+    locationDirectory: String(ctx.location.directory),
+    warn,
+  })
   let toolsCleanup: () => void
   try {
     toolsCleanup = await registerAuditTools(ctx, { sessionBudget })
   } catch (error) {
+    await writeGuard.cleanup()
     await sessionBudget.cleanup()
     throw error
   }
@@ -431,6 +442,7 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
     commandsCleanup = await registerKitCommands(ctx, locale)
   } catch (error) {
     toolsCleanup()
+    await writeGuard.cleanup()
     await sessionBudget.cleanup()
     throw error
   }
@@ -441,7 +453,11 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
       try {
         toolsCleanup()
       } finally {
-        await sessionBudget.cleanup()
+        try {
+          await writeGuard.cleanup()
+        } finally {
+          await sessionBudget.cleanup()
+        }
       }
     }
   }
