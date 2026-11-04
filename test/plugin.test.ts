@@ -151,7 +151,7 @@ function createHarness(
       },
     },
     session: {
-      get: async () => ({}),
+      get: async () => ({ location: { directory: process.cwd() } }),
       prompt: async (input: unknown) => {
         prompts.push(input)
         return { id: "msg_test" }
