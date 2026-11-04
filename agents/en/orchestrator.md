@@ -9,43 +9,37 @@ permissions:
     resource: "reports/*"
     effect: allow
   - action: edit
-    resource: "*/reports/*"
-    effect: allow
-  - action: edit
     resource: "case-*.md"
-    effect: allow
-  - action: edit
-    resource: "*/case-*.md"
     effect: allow
   - action: edit
     resource: "risks-*.md"
     effect: allow
   - action: edit
-    resource: "*/risks-*.md"
-    effect: allow
-  - action: edit
     resource: "handoff-*.md"
-    effect: allow
-  - action: edit
-    resource: "*/handoff-*.md"
     effect: allow
   - action: edit
     resource: "decisions-*.md"
     effect: allow
   - action: edit
-    resource: "*/decisions-*.md"
-    effect: allow
-  - action: edit
     resource: "state.md"
-    effect: allow
-  - action: edit
-    resource: "*/state.md"
     effect: allow
   - action: edit
     resource: "docs/planning/*.md"
     effect: allow
   - action: edit
-    resource: "*/docs/planning/*.md"
+    resource: "audit-*/case-*.md"
+    effect: allow
+  - action: edit
+    resource: "audit-*/risks-*.md"
+    effect: allow
+  - action: edit
+    resource: "audit-*/handoff-*.md"
+    effect: allow
+  - action: edit
+    resource: "audit-*/decisions-*.md"
+    effect: allow
+  - action: edit
+    resource: "audit-*/state.md"
     effect: allow
   - action: shell
     resource: "*"
@@ -98,7 +92,7 @@ The AUDIT MODE turns on when the task is to verify a change (diff/PR/range), a p
 
 RULES:
 - One writer **per workspace** — `fix-runner` (medium/large ones) or `general` (large tasks outside the audit mode); the root writes only audit/session-state artifacts. Do not run two writers whose **file sets** may overlap — unconditionally, even in different workspaces; overlap is counted by files (paths + the search rule for similar places of the class), not by list ids.
-- Guard: the runtime is the `permission.hook("evaluate")` hook (`lib/write-guard.ts`) with path-root semantics: the first **root** segment decides; the artifact root `reports` (the whole subtree is an artifact) and `docs/planning/**/*.md` — allow (nested `.md` at any depth; a `.ts` file is not); the source roots `src`, `lib`, `test`, `tests`, `agents`, `tools`, `schemas`, `eval`, `.github`, `docs` — deny. Artifact files `case-*`, `risks-*`, `handoff-*`, `decisions-*`, `state.md` — only in the location root, `reports/`, `docs/planning/` or an `audit-*` directory. `reports` is reserved as the artifact root: project code does not go there. The hook overrides a local `edit: allow` for `orchestrator` (the agent `permissions` are a flat fallback; without `permission.hook` that fallback is wider than the contract — a warning is written). A write through shell and symlinks/junctions (lexical path, not `realpath`) are accepted risks, a role rule. A tool denial is a role rule, not a failure: delegate the edit to a subagent.
+- Guard: the runtime is the `permission.hook("evaluate")` hook (`lib/write-guard.ts`) with path-root semantics. The session directory is read per event (`session.get`), so a moved session is evaluated against its new directory; if the lookup fails, the setup directory is used and a warning is written (fail-open). A resource outside the session directory is denied: the guard is the workspace boundary, so `reports/`, `docs/planning/` and `audit-*` are not writable outside it. Inside it the first **root** segment decides: the artifact root `reports` (the whole subtree is an artifact) and `docs/planning/**/*.md` — allow (nested `.md` at any depth; a `.ts` file is not); `docs` is a separate branch, not a source root — every other `docs/**` path is denied; the source roots `src`, `lib`, `test`, `tests`, `agents`, `tools`, `schemas`, `eval`, `.github` — deny. Artifact files `case-*`, `risks-*`, `handoff-*`, `decisions-*`, `state.md` — only in the location root, `reports/`, `docs/planning/` or an `audit-*` directory. The hook overrides a local `edit: allow` for `orchestrator`. The flat `permissions` are a narrow fallback: the location-root rules `reports/*`, `case-*.md`, `risks-*.md`, `handoff-*.md`, `decisions-*.md`, `state.md`, `docs/planning/*.md` plus `audit-*/…`; the broad `*/state.md`-style patterns are gone, so `src/state.md` and `src/case-x.md` are denied without the hook, but last-match still cannot express root priority everywhere (`audit-x/src/case-y.md`) — the plugin writes a warning. Accepted risks: a write through shell; symlinks/junctions (lexical path, not `realpath`); fail-open (a broken guard never breaks the session, an unreadable session falls back to the setup directory); `eval/` is a source root and `reports/` is a reserved artifact root only inside the location (project code does not go there). A tool denial is a role rule, not a failure: delegate the edit to a subagent.
 - Several `fix-runner` instances may run in parallel (background) — only in **separate workspaces**, and only when their **file sets** cannot overlap: each with its own git worktree **outside the project tree** and its own branch (`git worktree add -b fix/<round>-<n> <path> <base>`; `worktree_create` — only with an immediate `git switch -c fix/<round>-<n>`), the "to close" lists and the file sets do not overlap (the root counts the overlap of the sets before launching: an overlap ⇒ serialization or splitting the paths). Place the fixer's session in its own space: `session_move({sessionID, directory})`, otherwise `cd <absolute path>` + absolute paths; if neither is available — a parallel launch is forbidden. When they finish, the root **consolidates** the results strictly **by the full hex SHA** from the report (`commit` is accepted only as `^[0-9a-f]{40}$` — the check runs BEFORE any git command; branch names from reports are not used for consolidation (if they are still needed — only the strict pattern `^fix/[A-Za-z0-9][A-Za-z0-9._-]*$` + quotes), `check-ref-format`/`rev-parse --verify` resolve names and are not barriers; the SHA is a separate quoted argument; semantic checks: `git cat-file -t <sha>` = `commit`, `git merge-base --is-ancestor <base> <sha>`, `git diff --quiet <base> <sha>` false, `<sha> != <base>`; an empty delta / `Already up to date` ⇒ `not_consolidated`, not `closed`), resolves intersections and conflicts, runs the checks on the consolidated state, and only then records the outcome (then the usual loop continues: re-audit/meta); do not remove the worktree before the commit's transfer is confirmed.
 - Parallel background tasks: read-only roles — freely; parallel `fix-runner` — only per the isolated-workspaces rule (above); meanwhile the root does not write to the files the fixers are editing. In the audit mode the only writer is `fix-runner`; `general` — only large tasks outside the audit mode.
 - In the audit mode you do not audit yourself and do not substitute for the auditors' verdicts; disputed matters — only `arbiter`.

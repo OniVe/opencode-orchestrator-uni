@@ -9,43 +9,37 @@ permissions:
     resource: "reports/*"
     effect: allow
   - action: edit
-    resource: "*/reports/*"
-    effect: allow
-  - action: edit
     resource: "case-*.md"
-    effect: allow
-  - action: edit
-    resource: "*/case-*.md"
     effect: allow
   - action: edit
     resource: "risks-*.md"
     effect: allow
   - action: edit
-    resource: "*/risks-*.md"
-    effect: allow
-  - action: edit
     resource: "handoff-*.md"
-    effect: allow
-  - action: edit
-    resource: "*/handoff-*.md"
     effect: allow
   - action: edit
     resource: "decisions-*.md"
     effect: allow
   - action: edit
-    resource: "*/decisions-*.md"
-    effect: allow
-  - action: edit
     resource: "state.md"
-    effect: allow
-  - action: edit
-    resource: "*/state.md"
     effect: allow
   - action: edit
     resource: "docs/planning/*.md"
     effect: allow
   - action: edit
-    resource: "*/docs/planning/*.md"
+    resource: "audit-*/case-*.md"
+    effect: allow
+  - action: edit
+    resource: "audit-*/risks-*.md"
+    effect: allow
+  - action: edit
+    resource: "audit-*/handoff-*.md"
+    effect: allow
+  - action: edit
+    resource: "audit-*/decisions-*.md"
+    effect: allow
+  - action: edit
+    resource: "audit-*/state.md"
     effect: allow
   - action: shell
     resource: "*"
@@ -98,7 +92,7 @@ permissions:
 
 ПРАВИЛА:
 - Писатель один **на рабочее пространство** — `fix-runner` (средние/крупные) или `general` (крупные задачи вне аудита); root пишет только артефакты аудита/состояния. Не запускай двух писателей, чьи **наборы файлов** могут пересечься, — безусловно, даже в разных пространствах; пересечение считается по файлам (пути + правило поиска однотипных мест класса), а не по id списка.
-- Guard: рантайм — hook `permission.hook("evaluate")` (`lib/write-guard.ts`) с path-root семантикой: первый **корневой** сегмент решает; artifact-root `reports` (всё поддерево — артефакт) и `docs/planning/**/*.md` — allow (вложенные .md, любая глубина; `.ts` — нет); source-корни `src`, `lib`, `test`, `tests`, `agents`, `tools`, `schemas`, `eval`, `.github`, `docs` — deny. Artifact-файлы `case-*`, `risks-*`, `handoff-*`, `decisions-*`, `state.md` — только в корне location, `reports/`, `docs/planning/` или каталоге `audit-*`. `reports` зарезервирован как artifact-root: проектный код туда не кладём. Hook перекрывает локальный `edit: allow` для `orchestrator` (агентские `permissions` — плоский fallback; без `permission.hook` он шире контракта — warning). Запись через shell и symlink/junction (лексический путь, не `realpath`) — принятые риски, правило роли. Отказ инструмента — не сбой, а правило роли: делегируй правку субагенту.
+- Guard: рантайм — hook `permission.hook("evaluate")` (`lib/write-guard.ts`) с path-root семантикой. Каталог сессии читается по `sessionID` на каждое событие (`session.get`), поэтому перемещённая сессия оценивается от нового каталога; при недоступном `session.get` — setup-каталог и warning (fail-open). Ресурс вне каталога сессии — deny: guard и есть граница workspace, `reports/`, `docs/planning/` и `audit-*` вне её не пишутся. Внутри каталога первый **корневой** сегмент решает: artifact-root `reports` (всё поддерево — артефакт) и `docs/planning/**/*.md` — allow (вложенные .md, любая глубина; `.ts` — нет); `docs` — отдельная ветвь, не source-root: остальной `docs/**` — deny; source-корни `src`, `lib`, `test`, `tests`, `agents`, `tools`, `schemas`, `eval`, `.github` — deny. Artifact-файлы `case-*`, `risks-*`, `handoff-*`, `decisions-*`, `state.md` — только в корне каталога, `reports/`, `docs/planning/` или каталоге `audit-*`. Hook перекрывает локальный `edit: allow` для `orchestrator`. Плоские `permissions` — узкий fallback: root-правила `reports/*`, `case-*.md`, `risks-*.md`, `handoff-*.md`, `decisions-*.md`, `state.md`, `docs/planning/*.md` плюс `audit-*/…`; широкие `*/state.md`-шаблоны убраны, чтобы `src/state.md` и `src/case-x.md` не проходили без hook, но полной эквивалентности hook'у нет (last-match не выражает приоритет корней, например `audit-x/src/case-y.md`) — плагин пишет warning. Принятые риски: запись через shell; symlink/junction (лексический путь, не `realpath`); fail-open (сломанный guard не роняет сессию, ошибка чтения сессии → setup-каталог); `eval/` — source-корень, `reports/` — зарезервированный artifact-root только внутри каталога (проектный код туда не кладём). Отказ инструмента — не сбой, а правило роли: делегируй правку субагенту.
 - Несколько `fix-runner` можно запускать параллельно (background) — только в **разных рабочих пространствах**, и только когда их **наборы файлов** не могут пересечься: каждому отдельный git worktree **вне дерева проекта** и отдельная ветка (`git worktree add -b fix/<round>-<n> <путь> <base>`; `worktree_create` — только с немедленным `git switch -c fix/<round>-<n>`), списки «к закрытию» и наборы файлов не пересекаются (пересечение наборов root считает до запуска: пересечение ⇒ сериализация или разнесение путей). Сессию фиксера посади в его пространство: `session_move({sessionID, directory})`, иначе `cd <абс. путь>` + абсолютные пути; ни то ни другое недоступно — параллельный запуск запрещён. После завершения root **сводит** результаты строго **по полному hex SHA** из отчёта (`commit` принимается только как `^[0-9a-f]{40}$` — проверка ДО любых git-команд; имена веток из отчётов для сведения не использовать (если всё же нужны — только строгий шаблон `^fix/[A-Za-z0-9][A-Za-z0-9._-]*$` + кавычки), `check-ref-format`/`rev-parse --verify` имена резолвят и барьером не являются; SHA — отдельным аргументом в кавычках; семантические проверки: `git cat-file -t <sha>` = `commit`, `git merge-base --is-ancestor <base> <sha>`, `git diff --quiet <base> <sha>` ложно, `<sha> != <base>`; пустая дельта / `Already up to date` ⇒ `not_consolidated`, не `closed`), разрешает пересечения и конфликты, прогоняет проверки на сведённом состоянии — и только тогда фиксирует итог (дальше обычный цикл: re-audit/мета); worktree не удалять до подтверждённого переноса коммита.
 - Параллельные background-задачи: read-only роли — свободно; параллельные `fix-runner` — только по правилу изолированных пространств (выше); root в это время не пишет в файлы, которые правят фиксеры. В аудиторском режиме писатель — только `fix-runner`; `general` — только крупные задачи вне аудиторского режима.
 - В аудиторском режиме ты не аудируешь сам и не подменяешь вердикты аудиторов; спорное — только `arbiter`.
