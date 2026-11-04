@@ -10,7 +10,7 @@ ships the **orchestrator agent kit**:
   session-state artifacts;
 - read-only audit subagents — `factcheck`, `empiric`, `invariant`,
   `arbiter`, `meta`, `redteam`, `context-lint`;
-- `fix-runner` — the only writing subagent (applies the "to close" list);
+- `fix-runner` — the only writing subagent of the kit (applies the "to close" list);
 - the kit's process documents, exposed as the **`audit-kit` reference**
   (`call-mechanics.md`, `process-ready-loop.md`, `root-runbook.md`,
   `instruction-other-session.md`, `context-efficiency.md`, `session-discipline.md`);
@@ -18,11 +18,13 @@ ships the **orchestrator agent kit**:
   `orch_uni_snapshot`, `orch_uni_sessions`, `orch_uni_session_stats` (see [Tools](#tools));
 - three slash commands — `/agents-md`, `/spec` and `/handoff` (see [Commands](#commands)).
 
-Read-only audit agents are enforced by `edit: deny` plus the prompt ban; their shell
-permission stays allowed so they can run verification commands (an accepted risk, no
-permission is relaxed).
+Read-only audit agents are enforced at the tool level for `edit`/`write`/`patch`
+(`edit: deny`) and by the prompt ban for everything else; their `shell` permission
+stays allowed so they can run verification commands. A write through shell (redirect,
+`sed -i`, `tee`) is forbidden by the prompt, not by a sandbox — an accepted risk, same
+as I-M15; no permission is relaxed.
 
-The orchestrator itself has `edit` denied on source paths and allowed only for audit and session-state artifacts (`reports/`, `case-*`, `risks-*`, `docs/planning/*`, `handoff-*`, `decisions-*`, `state.md`); a tool denial is a role rule — the edit goes to a subagent.
+The orchestrator itself has `edit` denied on `*` and allowed only for audit and session-state artifacts (`reports/`, `case-*`, `risks-*`, `docs/planning/*.md`, `handoff-*`, `decisions-*`, `state.md`); the source roots (`src`, `lib`, `test`, `agents`, `tools`, `schemas`, `eval`, `docs` except `docs/planning/*.md`, `.github`) are denied explicitly, and the runtime deny covers `edit`/`write`/`patch`. `shell` stays allowed for git and checks; a write through shell is forbidden by the prompt, not by a sandbox. The host matches the normalized lexical path, not `realpath`, so symlinks and junctions are outside the contract. A tool denial is a role rule — the edit goes to a subagent.
 
 The package is loaded directly from TypeScript: `exports` points at
 [`index.ts`](./index.ts). There is **no build step and no `dist/`** — OpenCode's
