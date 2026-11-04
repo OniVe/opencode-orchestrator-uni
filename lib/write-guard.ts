@@ -15,8 +15,9 @@
  *   result stays inside it;
  * - walk the segments left to right and let the first root decide:
  *   `reports` → allow (the whole subtree is an artifact), `docs` + `planning` +
- *   a `.md` file → allow, any source root (`src`, `lib`, `test`, `tests`,
- *   `agents`, `tools`, `schemas`, `eval`, `.github`, `docs`) → deny;
+ *   a path whose last segment is `.md` (any depth) → allow, any source root
+ *   (`src`, `lib`, `test`, `tests`, `agents`, `tools`, `schemas`, `eval`,
+ *   `.github`, `docs`) → deny;
  * - with no root in the path, an artifact file (`case-*`, `risks-*`,
  *   `handoff-*`, `decisions-*`, `state.md`) is allowed only in the location
  *   root, under `reports/`, under `docs/planning/`, or inside an `audit-*`
@@ -107,14 +108,8 @@ function decideSegments(segments: readonly string[], insideLocation: boolean): E
     if (key === ARTIFACT_DIR) return "allow"
     if (key === "docs") {
       const next = segments[index + 1]
-      const file = segments[index + 2]
-      if (
-        next !== undefined &&
-        fold(next) === "planning" &&
-        file !== undefined &&
-        index + 2 === segments.length - 1 &&
-        MARKDOWN_FILE.test(fold(file))
-      ) {
+      const last = segments.at(-1)
+      if (next !== undefined && fold(next) === "planning" && last !== undefined && MARKDOWN_FILE.test(fold(last))) {
         return "allow"
       }
       return "deny"
