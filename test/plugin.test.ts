@@ -89,6 +89,7 @@ function createHarness(
   const permissionHooks = new Map<string, unknown>()
   const subscriptionSignals: AbortSignal[] = []
   let subscriptionSignal: AbortSignal | undefined
+  let permissionDisposals = 0
   const agentEditor = {
     list: () => [...agents.values()],
     get: (id: string) => agents.get(id),
@@ -163,7 +164,11 @@ function createHarness(
     permission: {
       hook: async (name: string, callback: unknown) => {
         permissionHooks.set(name, callback)
-        return { dispose: async () => {} }
+        return {
+          dispose: async () => {
+            permissionDisposals += 1
+          },
+        }
       },
     },
     command: {
@@ -229,6 +234,9 @@ function createHarness(
     subscriptionSignals,
     get aborted() {
       return subscriptionSignal?.aborted ?? false
+    },
+    get permissionDisposals() {
+      return permissionDisposals
     },
   }
 }
@@ -379,53 +387,58 @@ describe("opencode-orchestrator-uni", () => {
       ),
     ).toBe(true)
 
-    const denied = ["src/index.ts", "README.md", "agents/ru/orchestrator.md"]
+    const denied = [
+      "src/index.ts",
+      "README.md",
+      "agents/ru/orchestrator.md",
+      // The flat fallback keeps artifact names out of source directories too.
+      "src/state.md",
+      "src/case-x.md",
+      "src/reports/x.md",
+      "app/state.md",
+    ]
     for (const resource of denied) expect(effectiveEffectFor(orchestrator, "edit", resource), resource).toBe("deny")
 
-    const allowed = [
-      "reports/summary.md",
-      "lab/audit-pfx/reports/x.md",
-      "docs/planning/state.md",
-      "audit-abc/case-x.md",
-      "state.md",
-    ]
+    const allowed = ["reports/summary.md", "docs/planning/state.md", "audit-abc/case-x.md", "state.md"]
     for (const resource of allowed) expect(effectiveEffectFor(orchestrator, "edit", resource), resource).toBe("allow")
   })
 
   test("registers the write guard permission hook", async () => {
     const { permissionHooks } = await runSetup({ locale: "ru" })
     interface EvaluateEventDraft {
+      sessionID?: string
       agent?: string
       action: string
       resources: readonly string[]
       effect: string
       message?: string
     }
-    const evaluate = permissionHooks.get("evaluate") as ((event: EvaluateEventDraft) => void) | undefined
+    const evaluate = permissionHooks.get("evaluate") as ((event: EvaluateEventDraft) => Promise<void>) | undefined
     expect(evaluate).toBeDefined()
     if (evaluate === undefined) return
 
-    const decide = (resources: readonly string[], agent = "orchestrator", effect = "allow", action = "edit") => {
+    const decide = async (resources: readonly string[], agent = "orchestrator", effect = "allow", action = "edit") => {
       const event: EvaluateEventDraft = { agent, action, resources, effect }
-      evaluate(event)
+      await evaluate(event)
       return event
     }
 
-    expect(decide(["src/index.ts"]).effect).toBe("deny")
-    expect(decide(["src/index.ts"]).message).toBe(WRITE_GUARD_MESSAGE)
-    expect(decide(["reports/summary.md"]).effect).toBe("allow")
-    expect(decide(["src/reports/x"]).effect).toBe("deny")
-    expect(decide(["reports/src/x"]).effect).toBe("allow")
-    expect(decide(["src/docs/planning/x.md"]).effect).toBe("deny")
-    expect(decide(["docs/planning/state.md"]).effect).toBe("allow")
-    expect(decide(["app/state.md"]).effect).toBe("deny")
-    expect(decide(["audit-abc/case-x.md"]).effect).toBe("allow")
-    expect(decide(["reports/summary.md", "src/index.ts"]).effect).toBe("deny")
-    expect(decide(["src/index.ts"], "fix-runner").effect).toBe("allow")
-    const alreadyDenied = decide(["src/index.ts"], "orchestrator", "deny")
+    expect((await decide(["src/index.ts"])).effect).toBe("deny")
+    expect((await decide(["src/index.ts"])).message).toBe(WRITE_GUARD_MESSAGE)
+    expect((await decide(["reports/summary.md"])).effect).toBe("allow")
+    expect((await decide(["src/reports/x"])).effect).toBe("deny")
+    expect((await decide(["reports/src/x"])).effect).toBe("allow")
+    expect((await decide(["src/docs/planning/x.md"])).effect).toBe("deny")
+    expect((await decide(["docs/planning/state.md"])).effect).toBe("allow")
+    expect((await decide(["app/state.md"])).effect).toBe("deny")
+    expect((await decide(["audit-abc/case-x.md"])).effect).toBe("allow")
+    expect((await decide(["../reports/x"])).effect).toBe("deny")
+    expect((await decide(["reports/summary.md", "src/index.ts"])).effect).toBe("deny")
+    expect((await decide(["src/index.ts"], "fix-runner")).effect).toBe("allow")
+    const alreadyDenied = await decide(["src/index.ts"], "orchestrator", "deny")
     expect(alreadyDenied.effect).toBe("deny")
     expect(alreadyDenied.message).toBeUndefined()
-    expect(decide(["src/index.ts"], "orchestrator", "allow", "shell").effect).toBe("allow")
+    expect((await decide(["src/index.ts"], "orchestrator", "allow", "shell")).effect).toBe("allow")
   })
 
   test("audit subagents are read-only, fix-runner may write", async () => {
@@ -675,5 +688,31 @@ describe("opencode-orchestrator-uni", () => {
     if (cleanup === undefined) return
     await expect(cleanup()).rejects.toThrow("dispose failed")
     expect(harness.aborted).toBe(true)
+  })
+
+  test("a successful cleanup disposes the write guard registration exactly once", async () => {
+    const harness = createHarness({ locale: "ru" })
+    const cleanup = await trackSetup(harness.ctx)
+    if (cleanup === undefined) throw new Error("setup returned no cleanup")
+    expect(harness.permissionDisposals).toBe(0)
+    await cleanup()
+    expect(harness.permissionDisposals).toBe(1)
+    // The guard cleanup is idempotent: a repeated call must not dispose twice.
+    await cleanup()
+    expect(harness.permissionDisposals).toBe(1)
+  })
+
+  test("a failing command registration disposes the write guard registration", async () => {
+    const harness = createHarness({ locale: "ru" }, { failingCommands: true })
+    await expect(trackSetup(harness.ctx)).rejects.toThrow("command transform failed")
+    expect(harness.permissionDisposals).toBe(1)
+  })
+
+  test("a failing command dispose still disposes the write guard registration", async () => {
+    const harness = createHarness({ locale: "ru" }, { failingDispose: true })
+    const cleanup = await trackSetup(harness.ctx)
+    if (cleanup === undefined) throw new Error("setup returned no cleanup")
+    await expect(cleanup()).rejects.toThrow("dispose failed")
+    expect(harness.permissionDisposals).toBe(1)
   })
 })

@@ -10,15 +10,19 @@
  *
  * This module implements the intended contract as a permission hook:
  *
- * - normalize separators and collapse `.`/`..`; resolve a relative resource
- *   against the location directory and strip the location prefix when the
- *   result stays inside it;
- * - walk the segments left to right and let the first root decide:
- *   `reports` → allow (the whole subtree is an artifact), `docs` + `planning` +
- *   a path whose last segment is `.md` (any depth) → allow, any source root
- *   (`src`, `lib`, `test`, `tests`, `agents`, `tools`, `schemas`, `eval`,
- *   `.github`) → deny. `docs` is not part of that set: its own branch above
- *   allows nested `docs/planning/` Markdown and denies every other `docs/` path;
+ * - resolve a relative resource against the session's location directory and
+ *   strip that prefix; a resource that stays outside the location is denied —
+ *   the guard is the workspace boundary, so `reports/`, `docs/planning/` and
+ *   `audit-*` are writable only inside it. The location is read from the
+ *   session on every event (`session.get`), so a moved session is evaluated
+ *   against its new directory; the setup location is only a fallback;
+ * - normalize separators and collapse `.`/`..`, then walk the segments left to
+ *   right and let the first root decide: `reports` → allow (the whole subtree
+ *   is an artifact), `docs` + `planning` + a path whose last segment is `.md`
+ *   (any depth) → allow, any source root (`src`, `lib`, `test`, `tests`,
+ *   `agents`, `tools`, `schemas`, `eval`, `.github`) → deny. `docs` is not part
+ *   of that set: its own branch above allows nested `docs/planning/` Markdown
+ *   and denies every other `docs/` path;
  * - with no root in the path, an artifact file (`case-*`, `risks-*`,
  *   `handoff-*`, `decisions-*`, `state.md`) is allowed only in the location
  *   root, under `reports/`, under `docs/planning/`, or inside an `audit-*`
@@ -61,9 +65,9 @@ export const WRITE_GUARD_MESSAGE = "root orchestrator may edit only audit/sessio
 
 export type EditDecision = "allow" | "deny"
 
-/** Case-fold one segment the way the host resolves paths on this platform. */
-function fold(segment: string): string {
-  return process.platform === "win32" ? segment.toLowerCase() : segment
+/** Case-fold one segment the way the host resolves paths on `platform`. */
+function fold(segment: string, platform: string): string {
+  return platform === "win32" ? segment.toLowerCase() : segment
 }
 
 /** Split a path into segments, collapsing `.`/`..` and unifying separators. */
@@ -87,31 +91,40 @@ function isAbsolute(resource: string): boolean {
 }
 
 /** Drop the location prefix when `absolute` is inside it; `undefined` otherwise. */
-function stripLocation(absolute: readonly string[], location: readonly string[]): string[] | undefined {
+function stripLocation(
+  absolute: readonly string[],
+  location: readonly string[],
+  platform: string,
+): string[] | undefined {
   if (location.length === 0 || location.length > absolute.length) return undefined
   for (let index = 0; index < location.length; index += 1) {
-    if (fold(absolute[index]!) !== fold(location[index]!)) return undefined
+    if (fold(absolute[index]!, platform) !== fold(location[index]!, platform)) return undefined
   }
   return absolute.slice(location.length)
 }
 
 /** `reports/` and `docs/planning/` already allow earlier; roots and files are checked here. */
-function artifactLocation(segments: readonly string[], insideLocation: boolean): boolean {
-  if (insideLocation && segments.length === 1) return true
-  return segments.slice(0, -1).some((segment) => AUDIT_DIR.test(fold(segment)))
+function artifactLocation(segments: readonly string[], platform: string): boolean {
+  if (segments.length === 1) return true
+  return segments.slice(0, -1).some((segment) => AUDIT_DIR.test(fold(segment, platform)))
 }
 
-function decideSegments(segments: readonly string[], insideLocation: boolean): EditDecision {
+function decideSegments(segments: readonly string[], platform: string): EditDecision {
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index]!
-    const key = fold(segment)
+    const key = fold(segment, platform)
     if (key === ARTIFACT_DIR) return "allow"
     // `docs` is not part of SOURCE_ROOTS: this branch allows nested planning
     // Markdown and denies every other `docs/` path.
     if (key === "docs") {
       const next = segments[index + 1]
       const last = segments.at(-1)
-      if (next !== undefined && fold(next) === "planning" && last !== undefined && MARKDOWN_FILE.test(fold(last))) {
+      if (
+        next !== undefined &&
+        fold(next, platform) === "planning" &&
+        last !== undefined &&
+        MARKDOWN_FILE.test(fold(last, platform))
+      ) {
         return "allow"
       }
       return "deny"
@@ -119,7 +132,7 @@ function decideSegments(segments: readonly string[], insideLocation: boolean): E
     if (SOURCE_ROOTS.has(key)) return "deny"
   }
   const last = segments.at(-1)
-  if (last !== undefined && ARTIFACT_FILE.test(fold(last)) && artifactLocation(segments, insideLocation)) {
+  if (last !== undefined && ARTIFACT_FILE.test(fold(last, platform)) && artifactLocation(segments, platform)) {
     return "allow"
   }
   return "deny"
@@ -129,17 +142,21 @@ function decideSegments(segments: readonly string[], insideLocation: boolean): E
  * Decide whether the root orchestrator may write `resource` in `locationDirectory`.
  *
  * A relative resource is resolved against the location directory; an absolute one
- * is used as is. A path inside the location is reduced to its relative form first,
- * so the first segment is the actual root the resource belongs to.
+ * is used as is. The path is then reduced to its relative form: anything that stays
+ * outside the location is denied (the location is the workspace boundary), and an
+ * inside path is decided by its first segment.
  */
-export function decideEdit(resource: string, locationDirectory: string): EditDecision {
+export function decideEdit(
+  resource: string,
+  locationDirectory: string,
+  platform: string = process.platform,
+): EditDecision {
   const location = normalizeSegments(locationDirectory)
   const raw = resource.replaceAll("\\", "/")
-  const absolute = isAbsolute(raw)
-  const resolved = absolute ? normalizeSegments(raw) : normalizeSegments(`${location.join("/")}/${raw}`)
-  const relative = stripLocation(resolved, location)
-  if (relative !== undefined) return decideSegments(relative, true)
-  return decideSegments(resolved, false)
+  const resolved = isAbsolute(raw) ? normalizeSegments(raw) : normalizeSegments(`${location.join("/")}/${raw}`)
+  const relative = stripLocation(resolved, location, platform)
+  if (relative === undefined) return "deny"
+  return decideSegments(relative, platform)
 }
 
 export interface WriteGuardOptions {
@@ -158,11 +175,17 @@ export interface WriteGuard {
 
 /** The evaluate event fields the guard reads and writes (the host type is structural). */
 interface EvaluateEvent {
+  readonly sessionID?: string
   readonly agent?: string
   readonly action: string
   readonly resources: readonly string[]
   effect: "allow" | "deny" | "ask"
   message?: string
+}
+
+/** The session surface the guard reads the current location from (structural). */
+interface SessionDirectoryApi {
+  readonly get?: (input: { readonly sessionID: string }) => Promise<unknown>
 }
 
 /**
@@ -176,11 +199,40 @@ export async function createWriteGuard(ctx: Plugin.Context, options: WriteGuardO
     options.warn("write guard: ctx.permission.hook is unavailable; the path-root guard is not registered")
     return { available: false, cleanup: noop }
   }
+  const session = (ctx as { readonly session?: SessionDirectoryApi }).session
+  // A failing `session.get` falls back to the setup location, exactly like a host
+  // without the API; the warning is emitted once so a persistent failure cannot
+  // flood the log on every edit.
+  let sessionWarned = false
+  const locationFor = async (sessionID: string | undefined): Promise<string> => {
+    if (sessionID === undefined || typeof session?.get !== "function") return options.locationDirectory
+    try {
+      const info = (await session.get({ sessionID })) as
+        | { readonly location?: { readonly directory?: unknown } }
+        | undefined
+      const directory = info?.location?.directory
+      return typeof directory === "string" && directory !== "" ? directory : options.locationDirectory
+    } catch (error) {
+      // Fail-open: an unreadable session must not break (or disable) the guard.
+      if (!sessionWarned) {
+        sessionWarned = true
+        options.warn(
+          `write guard: cannot read the session directory, using the setup location: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        )
+      }
+      return options.locationDirectory
+    }
+  }
   try {
-    const registration = await permission.hook("evaluate", (event: EvaluateEvent) => {
+    const registration = await permission.hook("evaluate", async (event: EvaluateEvent) => {
       try {
         if (event.agent !== "orchestrator" || event.action !== "edit" || event.effect === "deny") return
-        const denied = event.resources.some((resource) => decideEdit(resource, options.locationDirectory) === "deny")
+        // The session may have been moved since setup: the host resolves the
+        // resource against the session's current directory, so the guard must too.
+        const locationDirectory = await locationFor(event.sessionID)
+        const denied = event.resources.some((resource) => decideEdit(resource, locationDirectory) === "deny")
         if (!denied) return
         event.effect = "deny"
         event.message = WRITE_GUARD_MESSAGE
@@ -189,9 +241,13 @@ export async function createWriteGuard(ctx: Plugin.Context, options: WriteGuardO
         options.warn(`write guard: evaluation failed: ${error instanceof Error ? error.message : String(error)}`)
       }
     })
+    let disposed = false
     return {
       available: true,
       cleanup: async () => {
+        // Idempotent: a repeated cleanup must not dispose the registration twice.
+        if (disposed) return
+        disposed = true
         await registration.dispose()
       },
     }
