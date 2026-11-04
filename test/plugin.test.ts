@@ -8,6 +8,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import plugin, { DOCS_DIRECTORY, type Locale, localeDirectory, PLUGIN_ID, REFERENCE_NAME } from "../index"
+import { WRITE_GUARD_MESSAGE } from "../lib/write-guard"
 import { agentFiles, docFiles } from "./support/locales"
 
 /**
@@ -411,6 +412,7 @@ describe("opencode-orchestrator-uni", () => {
     }
 
     expect(decide(["src/index.ts"]).effect).toBe("deny")
+    expect(decide(["src/index.ts"]).message).toBe(WRITE_GUARD_MESSAGE)
     expect(decide(["reports/summary.md"]).effect).toBe("allow")
     expect(decide(["src/reports/x"]).effect).toBe("deny")
     expect(decide(["reports/src/x"]).effect).toBe("allow")
