@@ -6,7 +6,8 @@ A native [OpenCode V2](https://opencode.ai/v2/docs/build/plugins) package plugin
 ships the **orchestrator agent kit**:
 
 - `orchestrator` — the root orchestrator (primary agent) with the audit loop as a
-  built-in mode;
+  built-in mode; it delegates every code/doc/test edit and writes only audit and
+  session-state artifacts;
 - read-only audit subagents — `factcheck`, `empiric`, `invariant`,
   `arbiter`, `meta`, `redteam`, `context-lint`;
 - `fix-runner` — the only writing subagent (applies the "to close" list);
@@ -21,6 +22,8 @@ Read-only audit agents are enforced by `edit: deny` plus the prompt ban; their s
 permission stays allowed so they can run verification commands (an accepted risk, no
 permission is relaxed).
 
+The orchestrator itself has `edit` denied on source paths and allowed only for audit and session-state artifacts (`reports/`, `case-*`, `risks-*`, `docs/planning/*`, `handoff-*`, `decisions-*`, `state.md`); a tool denial is a role rule — the edit goes to a subagent.
+
 The package is loaded directly from TypeScript: `exports` points at
 [`index.ts`](./index.ts). There is **no build step and no `dist/`** — OpenCode's
 Bun-based runtime resolves and loads the entry point natively (same pattern as the
@@ -32,7 +35,7 @@ On setup (`ctx.agent.transform` / `ctx.reference.transform`):
 
 | Agent             | Mode       | Role                                                     |
 | ----------------- | ---------- | -------------------------------------------------------- |
-| `orchestrator`    | `primary`  | Root orchestrator; audit loop as a built-in mode         |
+| `orchestrator`    | `primary`  | Root orchestrator; delegates edits; writes audit/state artifacts |
 | `factcheck` | `subagent` | Read-only: staleness pre-pass (already done / outdated)  |
 | `empiric`   | `subagent` | Read-only: reproductions, measurements, first sources    |
 | `invariant` | `subagent` | Read-only: states, cancels, races, hostile input         |
