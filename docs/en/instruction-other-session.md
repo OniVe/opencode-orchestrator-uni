@@ -34,7 +34,7 @@ The loop's rules:
 - "Owner" = the user. Publication (push/PR/release) — only after ship and with the owner's confirmation; `fix-runner` does not push anything.
 
 Steps:
-0) Prepare the working directory `audit-<id>` in your environment's temporary area: the brief `case.md` (the template below), the registry `risks.md`.
+0) Prepare the working directory `audit-<id>` in your environment's temporary area: the brief `case-<id>.md` (the template below), the registry `risks-<id>.md`.
    For the initial audit — a "blind" copy of the state (without the history of fixes); for a repeat one — with the fixes delta.
 1) Fact-check (foreground):
    subagent(agent="factcheck", prompt="Read the brief <path>. Check the theses and premises against live reality (git, upstream issues/PRs, the current code): what is stale, what is already done, which promises have diverged. Return the SGR + the "FACT-CHECK" block.")
@@ -49,7 +49,7 @@ Steps:
    partial/unavailable = "not confirmed"; a verifier failure/timeout — the same + noise. The refuted ones — into the refuted list; write the statuses into the summary `reports/summary-<id>.md`; an unconfirmed MAJOR does not go into fixes.
    Conflicts → subagent(agent="arbiter", prompt="Disputed items: <item → evidence A → evidence B>. For each: confirmed/refuted/undecidable + the prism (reproducibility|contract|falsification|not_applicable; for several — an array) + the method of checking. Only these items.")
    The summary's verdict (and the verification/arbitration) is recorded BEFORE the fixes and together with the state revision (hash/commit); a fix after the verdict is recorded → a repeat run (re-audit) or an explicit downgrade of the verdict: do not fix before the verdict.
-5) Fixes: only subagent(agent="fix-runner", prompt="To close: <id | location | mechanism | class/area (paths + a search rule for similar places) | repro (before) | acceptance criterion (after)>. Boundaries: file set: <paths>; workspace: <absolute path of a worktree outside the project tree>; branch: fix/<round>-<n>; base: <sha>; budget/limit: <time, number of fixes>; commit fix-<round>. Return fix-runner/v1."). Before the re-audit check the delta (git diff <round-base>..HEAD --stat + a key run) and the consolidation by the full hex SHA (^[0-9a-f]{40}$ before any git command + git cat-file -t <sha> = commit, git merge-base --is-ancestor <base> <sha>, a non-empty delta: git diff --quiet <base> <sha> false; an empty delta / Already up to date ⇒ not_consolidated, not closed); update risks.md (closed / accepted-risk with a reason).
+5) Fixes: only subagent(agent="fix-runner", prompt="To close: <id | location | mechanism | class/area (paths + a search rule for similar places) | repro (before) | acceptance criterion (after)>. Boundaries: file set: <paths>; workspace: <absolute path of a worktree outside the project tree>; branch: fix/<round>-<n>; base: <sha>; budget/limit: <time, number of fixes>; commit fix-<round>. Return fix-runner/v1."). Before the re-audit check the delta (git diff <round-base>..HEAD --stat + a key run) and the consolidation by the full hex SHA (^[0-9a-f]{40}$ before any git command + git cat-file -t <sha> = commit, git merge-base --is-ancestor <base> <sha>, a non-empty delta: git diff --quiet <base> <sha> false; an empty delta / Already up to date ⇒ not_consolidated, not closed); update risks-<id>.md (closed / accepted-risk with a reason).
 6) Re-audit — resuming the SAME sessions (background, one block):
    subagent(agent="empiric",   sessionID="<emp>", background=true, prompt="Fixes: <range + the actual list of changed files>; closed: <…>. Check the closure of your findings and the absence of regressions on the new state; return the updated SGR.")
    subagent(agent="invariant", sessionID="<inv>", background=true, prompt="… same …")
@@ -57,10 +57,10 @@ Steps:
 8) Release mode (the gates; order: red team → meta): freeze the candidate →
    subagent(agent="redteam", background=true, prompt="Brief <path>. The author's submission: <…>. The summary of previous rounds: <…>. Falsification mandate: reproduce every claim with your own instruments; available data: <…>; generate crafted inputs. Return the SGR.")
    → the same loop (fixes; the red team's MAJOR findings — with verification by the session of the opposite role as directed by the root; a dispute → `arbiter`) with the red team resumed until it is ready → subagent(agent="meta", prompt="Reports: <paths>; summary: <path to summary-<id>.md>. Check the MAJOR verification statuses in the summary (verdict + verifier_role); the evidence of every finding; the completeness of the self-checks, the absence of "green tests = checked". Return pass/fail.") → a check of the SHIP condition (below); ship only when it holds.
-   SHIP ⟺ meta.gate=pass ∧ closing_list is empty/closed ∧ coverage_gaps accepted by the owner (a record in risks.md). In all other cases ship is forbidden.
+   SHIP ⟺ meta.gate=pass ∧ closing_list is empty/closed ∧ coverage_gaps accepted by the owner (a record in risks-<id>.md). In all other cases ship is forbidden.
 9) Final: a round-by-round summary (the verdicts, what was closed, the accepted risks); save the reports in `reports/` of the audit's working directory.
 
-Brief template `case.md`:
+Brief template `case-<id>.md`:
 # Audit <id>: <name>
 State: <path, commit/range; the base>
 Context: <the goal of the change, what the author declares>
@@ -77,5 +77,5 @@ If a subagent is unavailable ("Agent not found"): check the agent files in your 
 - The fact-check ran and either dismissed the stale task or gave a block for the pair.
 - The pair produced SGR reports; the conflicts (if any) were resolved by the arbiter.
 - The loop reached full ready (all verdicts ready; no open MAJORs).
-- `reports\` holds all the reports and the summary `summary-<id>.md`; `risks.md` holds the accepted risks.
+- `reports\` holds all the reports and the summary `summary-<id>.md`; `risks-<id>.md` holds the accepted risks.
 - No agent changed the project (check the target project's `git status`).

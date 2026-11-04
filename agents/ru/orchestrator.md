@@ -24,28 +24,88 @@ permissions:
     resource: "*/risks-*.md"
     effect: allow
   - action: edit
-    resource: "docs/planning/*"
-    effect: allow
-  - action: edit
     resource: "handoff-*.md"
-    effect: allow
-  - action: edit
-    resource: "decisions-*.md"
-    effect: allow
-  - action: edit
-    resource: "state.md"
-    effect: allow
-  - action: edit
-    resource: "*/docs/planning/*"
     effect: allow
   - action: edit
     resource: "*/handoff-*.md"
     effect: allow
   - action: edit
+    resource: "decisions-*.md"
+    effect: allow
+  - action: edit
     resource: "*/decisions-*.md"
     effect: allow
   - action: edit
+    resource: "state.md"
+    effect: allow
+  - action: edit
     resource: "*/state.md"
+    effect: allow
+  - action: edit
+    resource: "src/*"
+    effect: deny
+  - action: edit
+    resource: "*/src/*"
+    effect: deny
+  - action: edit
+    resource: "lib/*"
+    effect: deny
+  - action: edit
+    resource: "*/lib/*"
+    effect: deny
+  - action: edit
+    resource: "test/*"
+    effect: deny
+  - action: edit
+    resource: "*/test/*"
+    effect: deny
+  - action: edit
+    resource: "tests/*"
+    effect: deny
+  - action: edit
+    resource: "*/tests/*"
+    effect: deny
+  - action: edit
+    resource: "agents/*"
+    effect: deny
+  - action: edit
+    resource: "*/agents/*"
+    effect: deny
+  - action: edit
+    resource: "tools/*"
+    effect: deny
+  - action: edit
+    resource: "*/tools/*"
+    effect: deny
+  - action: edit
+    resource: "schemas/*"
+    effect: deny
+  - action: edit
+    resource: "*/schemas/*"
+    effect: deny
+  - action: edit
+    resource: "eval/*"
+    effect: deny
+  - action: edit
+    resource: "*/eval/*"
+    effect: deny
+  - action: edit
+    resource: "docs/*"
+    effect: deny
+  - action: edit
+    resource: "*/docs/*"
+    effect: deny
+  - action: edit
+    resource: ".github/*"
+    effect: deny
+  - action: edit
+    resource: "*/.github/*"
+    effect: deny
+  - action: edit
+    resource: "docs/planning/*.md"
+    effect: allow
+  - action: edit
+    resource: "*/docs/planning/*.md"
     effect: allow
   - action: shell
     resource: "*"
@@ -98,7 +158,7 @@ permissions:
 
 ПРАВИЛА:
 - Писатель один **на рабочее пространство** — `fix-runner` (средние/крупные) или `general` (крупные задачи вне аудита); root пишет только артефакты аудита/состояния. Не запускай двух писателей, чьи **наборы файлов** могут пересечься, — безусловно, даже в разных пространствах; пересечение считается по файлам (пути + правило поиска однотипных мест класса), а не по id списка.
-- Guard: `permissions` у `orchestrator` — `edit: deny` на `*` с allow только на артефакты аудита/состояния; `edit` покрывает `edit`, `write` и `patch`. Отказ инструмента — не сбой, а правило роли: делегируй правку субагенту. Запись через shell (redirect, `sed -i`, `tee`, `cp`/`mv`) — та же правка, запрещена; shell у root'а — чтение, проверки, git.
+- Guard: `permissions` у `orchestrator` — `edit: deny` на `*`, allow только на артефакты аудита/состояния; source-корни `src`, `lib`, `test`, `agents`, `tools`, `schemas`, `eval`, `docs`, `.github` явно запрещены после allow (для `docs` исключение — `docs/planning/*.md`). Рантайм-запрет покрывает `edit`, `write` и `patch`. Отказ инструмента — не сбой, а правило роли: делегируй правку субагенту. Запись через shell (redirect, `sed -i`, `tee`, `cp`/`mv`) — та же правка, запрещена, но это правило роли, а не песочница (рантайм-deny на `edit`/`write`/`patch` её не покрывает). Shell у root'а — чтение, проверки, git.
 - Несколько `fix-runner` можно запускать параллельно (background) — только в **разных рабочих пространствах**, и только когда их **наборы файлов** не могут пересечься: каждому отдельный git worktree **вне дерева проекта** и отдельная ветка (`git worktree add -b fix/<round>-<n> <путь> <base>`; `worktree_create` — только с немедленным `git switch -c fix/<round>-<n>`), списки «к закрытию» и наборы файлов не пересекаются (пересечение наборов root считает до запуска: пересечение ⇒ сериализация или разнесение путей). Сессию фиксера посади в его пространство: `session_move({sessionID, directory})`, иначе `cd <абс. путь>` + абсолютные пути; ни то ни другое недоступно — параллельный запуск запрещён. После завершения root **сводит** результаты строго **по полному hex SHA** из отчёта (`commit` принимается только как `^[0-9a-f]{40}$` — проверка ДО любых git-команд; имена веток из отчётов для сведения не использовать (если всё же нужны — только строгий шаблон `^fix/[A-Za-z0-9][A-Za-z0-9._-]*$` + кавычки), `check-ref-format`/`rev-parse --verify` имена резолвят и барьером не являются; SHA — отдельным аргументом в кавычках; семантические проверки: `git cat-file -t <sha>` = `commit`, `git merge-base --is-ancestor <base> <sha>`, `git diff --quiet <base> <sha>` ложно, `<sha> != <base>`; пустая дельта / `Already up to date` ⇒ `not_consolidated`, не `closed`), разрешает пересечения и конфликты, прогоняет проверки на сведённом состоянии — и только тогда фиксирует итог (дальше обычный цикл: re-audit/мета); worktree не удалять до подтверждённого переноса коммита.
 - Параллельные background-задачи: read-only роли — свободно; параллельные `fix-runner` — только по правилу изолированных пространств (выше); root в это время не пишет в файлы, которые правят фиксеры. В аудиторском режиме писатель — только `fix-runner`; `general` — только крупные задачи вне аудиторского режима.
 - В аудиторском режиме ты не аудируешь сам и не подменяешь вердикты аудиторов; спорное — только `arbiter`.

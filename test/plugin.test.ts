@@ -259,10 +259,27 @@ function globMatches(pattern: string, resource: string): boolean {
   return new RegExp(`^${source}$`, process.platform === "win32" ? "i" : "").test(normalizedResource)
 }
 
+/** Collapse `.`/`..` and unify separators the way the host resolves a tool resource. */
+function normalizeResource(resource: string): string {
+  const parts: string[] = []
+  for (const part of resource.replaceAll("\\", "/").split("/")) {
+    if (part === "" || part === ".") continue
+    if (part === "..") {
+      parts.pop()
+      continue
+    }
+    parts.push(part)
+  }
+  return parts.join("/")
+}
+
 /** Effective effect for an action on a concrete resource: the last matching rule wins. */
 function effectiveEffectFor(agent: AgentDraft, action: string, resource: string): string | undefined {
   return agent.permissions
-    .filter((rule) => (rule.action === "*" || rule.action === action) && globMatches(rule.resource, resource))
+    .filter(
+      (rule) =>
+        (rule.action === "*" || rule.action === action) && globMatches(rule.resource, normalizeResource(resource)),
+    )
     .at(-1)?.effect
 }
 
@@ -378,6 +395,19 @@ describe("opencode-orchestrator-uni", () => {
       "README.md",
       "package.json",
       "eval/run.ts",
+      "agents/ru/orchestrator.md",
+      "lab/audit-pfx/agents/x.md",
+      "docs/en/call-mechanics.md",
+      "tools/kit-verify.ts",
+      "schemas/empiric.v1.json",
+      ".github/workflows/ci.yml",
+      "package-lock.json",
+      "src/reports/index.ts",
+      "test/reports/helper.test.ts",
+      "src/state.md",
+      "docs/planning/tool.ts",
+      "reports/../src/x.ts",
+      "reports/../../src/x.ts",
     ]
     for (const resource of denied) expect(effectiveEffectFor(orchestrator, "edit", resource), resource).toBe("deny")
 
@@ -400,6 +430,14 @@ describe("opencode-orchestrator-uni", () => {
       "E:/projects/ai/opencode-orchestrator-uni/state.md",
     ]
     for (const resource of allowed) expect(effectiveEffectFor(orchestrator, "edit", resource), resource).toBe("allow")
+
+    const patch = ["reports/summary-x.md", "src/index.ts"]
+    expect(patch.every((resource) => effectiveEffectFor(orchestrator, "edit", resource) === "allow")).toBe(false)
+    if (process.platform === "win32") {
+      expect(effectiveEffectFor(orchestrator, "edit", "REPORTS/x.md")).toBe("allow")
+      expect(effectiveEffectFor(orchestrator, "edit", "reports\\x.md")).toBe("allow")
+      expect(effectiveEffectFor(orchestrator, "edit", "reports\\..\\src\\x.ts")).toBe("deny")
+    }
   })
 
   test("audit subagents are read-only, fix-runner may write", async () => {
