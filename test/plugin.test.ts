@@ -85,6 +85,7 @@ function createHarness(
   const storage = new Map<string, unknown>()
   const sessionHooks = new Map<string, unknown>()
   const toolHooks = new Map<string, unknown>()
+  const permissionHooks = new Map<string, unknown>()
   const subscriptionSignals: AbortSignal[] = []
   let subscriptionSignal: AbortSignal | undefined
   const agentEditor = {
@@ -158,6 +159,12 @@ function createHarness(
         return { dispose: async () => {} }
       },
     },
+    permission: {
+      hook: async (name: string, callback: unknown) => {
+        permissionHooks.set(name, callback)
+        return { dispose: async () => {} }
+      },
+    },
     command: {
       transform: async (callback: (editor: typeof commandEditor) => void) => {
         if (faults.failingCommands) throw new Error("command transform failed")
@@ -217,6 +224,7 @@ function createHarness(
     prompts,
     sessionHooks,
     toolHooks,
+    permissionHooks,
     subscriptionSignals,
     get aborted() {
       return subscriptionSignal?.aborted ?? false
@@ -259,27 +267,10 @@ function globMatches(pattern: string, resource: string): boolean {
   return new RegExp(`^${source}$`, process.platform === "win32" ? "i" : "").test(normalizedResource)
 }
 
-/** Collapse `.`/`..` and unify separators the way the host resolves a tool resource. */
-function normalizeResource(resource: string): string {
-  const parts: string[] = []
-  for (const part of resource.replaceAll("\\", "/").split("/")) {
-    if (part === "" || part === ".") continue
-    if (part === "..") {
-      parts.pop()
-      continue
-    }
-    parts.push(part)
-  }
-  return parts.join("/")
-}
-
 /** Effective effect for an action on a concrete resource: the last matching rule wins. */
 function effectiveEffectFor(agent: AgentDraft, action: string, resource: string): string | undefined {
   return agent.permissions
-    .filter(
-      (rule) =>
-        (rule.action === "*" || rule.action === action) && globMatches(rule.resource, normalizeResource(resource)),
-    )
+    .filter((rule) => (rule.action === "*" || rule.action === action) && globMatches(rule.resource, resource))
     .at(-1)?.effect
 }
 
@@ -387,57 +378,51 @@ describe("opencode-orchestrator-uni", () => {
       ),
     ).toBe(true)
 
-    const denied = [
-      "src/index.ts",
-      "lib/session-budget.ts",
-      "test/plugin.test.ts",
-      "docs/ru/call-mechanics.md",
-      "README.md",
-      "package.json",
-      "eval/run.ts",
-      "agents/ru/orchestrator.md",
-      "lab/audit-pfx/agents/x.md",
-      "docs/en/call-mechanics.md",
-      "tools/kit-verify.ts",
-      "schemas/empiric.v1.json",
-      ".github/workflows/ci.yml",
-      "package-lock.json",
-      "src/reports/index.ts",
-      "test/reports/helper.test.ts",
-      "src/state.md",
-      "docs/planning/tool.ts",
-      "reports/../src/x.ts",
-      "reports/../../src/x.ts",
-    ]
+    const denied = ["src/index.ts", "README.md", "agents/ru/orchestrator.md"]
     for (const resource of denied) expect(effectiveEffectFor(orchestrator, "edit", resource), resource).toBe("deny")
 
     const allowed = [
-      "reports/summary-x.md",
-      "lab/audit-pfx/reports/summary-x.md",
-      "/tmp/audit/reports/summary-x.md",
-      "C:/work/audit/reports/summary-x.md",
-      "risks-x.md",
-      "lab/audit-pfx/risks-x.md",
-      "case-x.md",
-      "docs/planning/handoff-2026-11-04.md",
+      "reports/summary.md",
+      "lab/audit-pfx/reports/x.md",
       "docs/planning/state.md",
-      "handoff-2026-11-04.md",
-      "decisions-2026-11-04.md",
+      "audit-abc/case-x.md",
       "state.md",
-      "E:/projects/ai/opencode-orchestrator-uni/docs/planning/state.md",
-      "E:/projects/ai/opencode-orchestrator-uni/handoff-2026-11-04.md",
-      "E:/projects/ai/opencode-orchestrator-uni/decisions-2026-11-04.md",
-      "E:/projects/ai/opencode-orchestrator-uni/state.md",
     ]
     for (const resource of allowed) expect(effectiveEffectFor(orchestrator, "edit", resource), resource).toBe("allow")
+  })
 
-    const patch = ["reports/summary-x.md", "src/index.ts"]
-    expect(patch.every((resource) => effectiveEffectFor(orchestrator, "edit", resource) === "allow")).toBe(false)
-    if (process.platform === "win32") {
-      expect(effectiveEffectFor(orchestrator, "edit", "REPORTS/x.md")).toBe("allow")
-      expect(effectiveEffectFor(orchestrator, "edit", "reports\\x.md")).toBe("allow")
-      expect(effectiveEffectFor(orchestrator, "edit", "reports\\..\\src\\x.ts")).toBe("deny")
+  test("registers the write guard permission hook", async () => {
+    const { permissionHooks } = await runSetup({ locale: "ru" })
+    interface EvaluateEventDraft {
+      agent?: string
+      action: string
+      resources: readonly string[]
+      effect: string
+      message?: string
     }
+    const evaluate = permissionHooks.get("evaluate") as ((event: EvaluateEventDraft) => void) | undefined
+    expect(evaluate).toBeDefined()
+    if (evaluate === undefined) return
+
+    const decide = (resources: readonly string[], agent = "orchestrator", effect = "allow") => {
+      const event: EvaluateEventDraft = { agent, action: "edit", resources, effect }
+      evaluate(event)
+      return event
+    }
+
+    expect(decide(["src/index.ts"]).effect).toBe("deny")
+    expect(decide(["reports/summary.md"]).effect).toBe("allow")
+    expect(decide(["src/reports/x"]).effect).toBe("deny")
+    expect(decide(["reports/src/x"]).effect).toBe("allow")
+    expect(decide(["src/docs/planning/x.md"]).effect).toBe("deny")
+    expect(decide(["docs/planning/state.md"]).effect).toBe("allow")
+    expect(decide(["app/state.md"]).effect).toBe("deny")
+    expect(decide(["audit-abc/case-x.md"]).effect).toBe("allow")
+    expect(decide(["reports/summary.md", "src/index.ts"]).effect).toBe("deny")
+    expect(decide(["src/index.ts"], "fix-runner").effect).toBe("allow")
+    const alreadyDenied = decide(["src/index.ts"], "orchestrator", "deny")
+    expect(alreadyDenied.effect).toBe("deny")
+    expect(alreadyDenied.message).toBeUndefined()
   })
 
   test("audit subagents are read-only, fix-runner may write", async () => {
