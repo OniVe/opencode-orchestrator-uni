@@ -157,6 +157,45 @@ Links: `<openapi.yaml>`, `<schema.sql>`, `<types.ts>`.
 - [ ] Contracts and docs/ADR updated.
 ```
 
+## Research brief: delegated investigation
+
+The root does not read code "for context" without need: `explore` (code) or `general` (topics, data, external sources) does broad investigation and returns a short brief; a narrow question is read by the root itself, targeted. This saves the root's context and leaves the decisions to it.
+
+### Routing
+
+- Broad question — several modules/files (>3), synthesis across many sources, or external sources: delegate to `explore`/`general` and require the brief.
+- Narrow question — 1–3 known files with a targeted answer: the root reads them itself (`read` with `limit`/`offset`, `grep`/`glob`), no subagent.
+- Reading — `read`/`grep`/`glob` only; do not use `shell` for reading (raw dumps and extra context).
+
+### Contract
+
+```md
+## Research brief: <topic>
+Question: <one line>
+Scope: <what was checked and what was not>
+Sources:
+- `path:line` — <what it confirms>
+Findings:
+1. <claim> — evidence: `path:line` / URL
+Open questions: <...>
+Confidence: high | medium | low
+not_verified: <...>
+```
+
+- ≤60–80 lines and ≤10 findings; no raw dumps, file inserts, or quotes longer than 5 lines.
+- Every finding carries evidence (`file:line` or URL); anything unchecked goes to `not_verified`, not into confident conclusions.
+- If the brief does not fit the limit — cut the scope, not the limit.
+- The root reads the brief and spot-checks ≤5 files without which a decision cannot be made.
+
+### Measurement
+
+Before/after the same task in separate sessions:
+
+1. `orch_uni_session_stats`: `promptTokensLast/Max/Median`, `toolCallsByTool.read/grep/shell`, `toolCalls`, `toolsPerTurn`.
+2. Root and subagent session tokens (`orch_uni_sessions`): the brief must not shift the whole volume onto the children.
+3. Goal: fewer `read/grep/shell` calls by the root and fewer root prompt tokens at the same brief quality.
+4. Routing: a narrow task — no child sessions; a broad task — one child with a brief ≤80 lines.
+
 ## Command /agents-md
 
 1. Decide the mode: audit an existing file or draft from scratch.
