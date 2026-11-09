@@ -13,7 +13,7 @@
   <p align="center">
     Плагин OpenCode V2, который ведёт работу как аудиторский цикл, опирающийся на доказательства.
     <br />
-    <a href="./docs/ru"><strong>Документация »</strong></a>
+    <a href="https://github.com/OniVe/opencode-orchestrator-uni/tree/main/docs/ru"><strong>Документация »</strong></a>
     <br />
     <br />
     <a href="https://github.com/OniVe/opencode-orchestrator-uni/issues/new">Сообщить об ошибке</a>
@@ -22,7 +22,7 @@
   </p>
 
   <p align="center">
-    <a href="./README.md">English</a> &middot; <strong>Русский</strong>
+    <a href="https://github.com/OniVe/opencode-orchestrator-uni/blob/main/README.md">English</a> &middot; <strong>Русский</strong>
   </p>
 </div>
 
@@ -74,7 +74,7 @@
 разрешений инструментов и промпта; оркестратор делегирует любую правку
 кода/документации/тестов; артефакты аудита остаются в доступных для записи
 путях. Guard не пускает оркестратор в исходники — см.
-[Защиту записи](./docs/ru/reference.md#защита-записи).
+[Защиту записи](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#защита-записи).
 
 ### Что входит
 
@@ -83,7 +83,7 @@
 | Агенты | `orchestrator` (primary); read-only `factcheck`, `empiric`, `invariant`, `arbiter`, `meta`, `redteam`, `context-lint`; пишущий `fix-runner` |
 | Инструменты | Пять read-only инструментов: `orch_uni_validate_report`, `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions`, `orch_uni_session_stats` |
 | Команды | Три слэш-команды: `/agents-md`, `/spec`, `/handoff` |
-| Справочник | Процессные документы как reference `audit-kit`; подробности — в [Справочнике](./docs/ru/reference.md) |
+| Справочник | Процессные документы как reference `audit-kit`; подробности — в [Справочнике](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md) |
 
 <p align="right">(<a href="#readme-top">наверх</a>)</p>
 
@@ -129,7 +129,7 @@ opencode plugin add opencode-orchestrator-uni
 
 Зафиксировать версию можно так: `opencode-orchestrator-uni@0.5.1`. Для настройки
 моделей используйте объектную форму — см. [Настройку](#настройка) и
-[Модели](./docs/ru/reference.md#модели).
+[Модели](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#модели).
 
 Перезапустите сервис после изменения конфига:
 
@@ -150,9 +150,9 @@ opencode service restart
 - `toolOutputGuard` — урезает большие выводы `shell`/`bash`/`webfetch`.
 
 Неверные значения игнорируются с предупреждением `[orchestrator.uni] …`. Полный
-справочник опций: [Модели](./docs/ru/reference.md#модели),
-[Локаль](./docs/ru/reference.md#локаль) и
-[Гигиена сессии](./docs/ru/reference.md#гигиена-сессии).
+справочник опций: [Модели](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#модели),
+[Локаль](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#локаль) и
+[Гигиена сессии](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#гигиена-сессии).
 
 <p align="right">(<a href="#readme-top">наверх</a>)</p>
 
@@ -173,7 +173,7 @@ opencode service restart
 `invariant` проверяет состояния и враждебный ввод; `arbiter` разбирает споры.
 `meta` проводит гейт отчётов, `redteam` проверяет приёмку, а `fix-runner`
 закрывает список. Процессные документы поставляются как reference `audit-kit` и
-лежат в [`docs/ru`](./docs/ru).
+лежат в [`docs/ru`](https://github.com/OniVe/opencode-orchestrator-uni/tree/main/docs/ru).
 
 <p align="right">(<a href="#readme-top">наверх</a>)</p>
 
@@ -191,7 +191,7 @@ opencode service restart
 | `context-lint` | `subagent` | Read-only: аудит AGENTS.md/SPEC.md на token-эффективность         |
 | `fix-runner`   | `subagent` | Пишущий: применяет список правок и доказывает закрытие           |
 
-Все агенты поставляются без модели; определения лежат в [`agents/`](./agents) и
+Все агенты поставляются без модели; определения лежат в [`agents/`](https://github.com/OniVe/opencode-orchestrator-uni/tree/main/agents) и
 парсятся при setup. «Read-only» означает: `edit` запрещён и промпт запрещает
 запись; `shell` остаётся для проверок (принятый риск I-M15).
 
@@ -212,7 +212,7 @@ opencode service restart
 
 ## Справочник
 
-Глубокий справочник — в [`docs/ru/reference.md`](./docs/ru/reference.md):
+Глубокий справочник — в [`docs/ru/reference.md`](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md):
 защита записи, все пять инструментов со схемами и лимитами, гигиена сессии,
 модели, локаль, приоритет и заметки.
 
@@ -238,7 +238,7 @@ npm run lint:fix
 
 `check:locales` и `verify:kit` требуют git-чекаута — в npm-пакете каталог
 `tools/` не поставляется (`stand: unavailable`). [Biome](https://biomejs.org)
-([`biome.json`](./biome.json)) покрывает `index.ts`, `lib/`, `test/` и
+([`biome.json`](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/biome.json)) покрывает `index.ts`, `lib/`, `test/` и
 `eval/*.ts`, пропускает `lab/` и `eval/results/`, а `eval/cases/**` и
 `eval/baselines/**` заморожены; записи baseline используют стиль
 `JSON.stringify(…, null, 2)`, поэтому переформатирование давало бы churn на
@@ -260,7 +260,7 @@ npm run lint:fix
 
 ## Участие
 
-См. [`CONTRIBUTING.md`](./CONTRIBUTING.md). Сделайте форк, создайте ветку
+См. [`CONTRIBUTING.md`](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/CONTRIBUTING.md). Сделайте форк, создайте ветку
 (`git checkout -b feature/AmazingFeature`), закоммитьте по
 [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`,
 `docs:`; формат проверяет `commitlint`), запушьте и откройте pull request. `ru` —
@@ -272,7 +272,7 @@ npm run lint:fix
 
 ## Лицензия
 
-Распространяется по лицензии MIT. См. [`LICENSE`](./LICENSE).
+Распространяется по лицензии MIT. См. [`LICENSE`](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/LICENSE).
 
 <p align="right">(<a href="#readme-top">наверх</a>)</p>
 

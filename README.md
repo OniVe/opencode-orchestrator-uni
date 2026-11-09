@@ -13,7 +13,7 @@
   <p align="center">
     An OpenCode V2 plugin that runs coding work as an evidence-driven audit loop.
     <br />
-    <a href="./docs/en"><strong>Explore the docs »</strong></a>
+    <a href="https://github.com/OniVe/opencode-orchestrator-uni/tree/main/docs/en"><strong>Explore the docs »</strong></a>
     <br />
     <br />
     <a href="https://github.com/OniVe/opencode-orchestrator-uni/issues/new">Report Bug</a>
@@ -22,7 +22,7 @@
   </p>
 
   <p align="center">
-    <strong>English</strong> &middot; <a href="./README.ru.md">Русский</a>
+    <strong>English</strong> &middot; <a href="https://github.com/OniVe/opencode-orchestrator-uni/blob/main/README.ru.md">Русский</a>
   </p>
 </div>
 
@@ -72,7 +72,7 @@ process documents that keep the loop honest. Plugin id: `orchestrator.uni`.
 The kit is a protocol, not a sandbox. Auditors are read-only by tool permission
 and prompt; the orchestrator delegates every code/doc/test edit; audit artifacts
 stay in writable paths. The write guard keeps the orchestrator out of source —
-see [Write Guard](./docs/en/reference.md#write-guard).
+see [Write Guard](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#write-guard).
 
 ### What You Get
 
@@ -81,7 +81,7 @@ see [Write Guard](./docs/en/reference.md#write-guard).
 | Agents | `orchestrator` (primary); read-only `factcheck`, `empiric`, `invariant`, `arbiter`, `meta`, `redteam`, `context-lint`; writer `fix-runner` |
 | Tools | Five read-only tools: `orch_uni_validate_report`, `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions`, `orch_uni_session_stats` |
 | Commands | Three slash commands: `/agents-md`, `/spec`, `/handoff` |
-| Reference | Process documents exposed as the `audit-kit` reference; deep details in [Reference](./docs/en/reference.md) |
+| Reference | Process documents exposed as the `audit-kit` reference; deep details in [Reference](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md) |
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -126,7 +126,7 @@ Or add it to the `plugins` array in `~/.config/opencode/opencode.json(c)`:
 ```
 
 Pin a version with `opencode-orchestrator-uni@0.5.1`. For model options, use the
-object form — see [Configure](#configure) and [Models](./docs/en/reference.md#models).
+object form — see [Configure](#configure) and [Models](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#models).
 
 Restart the service after changing the config:
 
@@ -147,9 +147,9 @@ All options are optional and live on the plugin entry:
 - `toolOutputGuard` — caps large `shell`/`bash`/`webfetch` output.
 
 Invalid values are ignored with an `[orchestrator.uni] …` warning. Full option
-reference: [Models](./docs/en/reference.md#models),
-[Locale](./docs/en/reference.md#locale), and
-[Session Hygiene](./docs/en/reference.md#session-hygiene).
+reference: [Models](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#models),
+[Locale](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#locale), and
+[Session Hygiene](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#session-hygiene).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -170,7 +170,7 @@ reference: [Models](./docs/en/reference.md#models),
 probes states and hostile input; `arbiter` resolves disputes. `meta` gates the
 reports, `redteam` checks acceptance, and `fix-runner` closes the list. The
 process documents ship as the `audit-kit` reference and live in
-[`docs/en`](./docs/en).
+[`docs/en`](https://github.com/OniVe/opencode-orchestrator-uni/tree/main/docs/en).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -188,7 +188,7 @@ process documents ship as the `audit-kit` reference and live in
 | `context-lint` | `subagent` | Read-only: audits AGENTS.md/SPEC.md for token efficiency          |
 | `fix-runner`   | `subagent` | Writer: applies the fix list and proves closure                   |
 
-All agents ship without a model; definitions live in [`agents/`](./agents) and
+All agents ship without a model; definitions live in [`agents/`](https://github.com/OniVe/opencode-orchestrator-uni/tree/main/agents) and
 are parsed at setup. "Read-only" means `edit` is denied and the prompt forbids
 writes; `shell` stays allowed for verification (accepted risk I-M15).
 
@@ -209,7 +209,7 @@ session, and the orchestrator follows the usual evidence and approval rules.
 
 ## Reference
 
-The deep reference lives in [`docs/en/reference.md`](./docs/en/reference.md):
+The deep reference lives in [`docs/en/reference.md`](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md):
 write guard, all five tools with schemas and limits, session hygiene, models,
 locale, precedence, and notes.
 
@@ -236,7 +236,7 @@ intentionally failing fixtures under `eval/cases/` and drafts under `lab/`; use
 
 `check:locales` and `verify:kit` need a git checkout — the npm package ships no
 `tools/` (`stand: unavailable`). [Biome](https://biomejs.org)
-([`biome.json`](./biome.json)) covers `index.ts`, `lib/`, `test/` and `eval/*.ts`,
+([`biome.json`](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/biome.json)) covers `index.ts`, `lib/`, `test/` and `eval/*.ts`,
 skips `lab/` and `eval/results/`, and freezes `eval/cases/**` and
 `eval/baselines/**`; baseline records use `JSON.stringify(…, null, 2)` style, so
 reformatting them would churn on `eval:recompute`. `lint/style/noNonNullAssertion`
@@ -258,7 +258,7 @@ work and known issues live in the [issue tracker][issues-url].
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md). Fork, create a branch
+See [`CONTRIBUTING.md`](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/CONTRIBUTING.md). Fork, create a branch
 (`git checkout -b feature/AmazingFeature`), commit with
 [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`,
 `docs:`; `commitlint` enforces the format), push, and open a pull request. `ru` is
@@ -270,7 +270,7 @@ parity).
 
 ## License
 
-Distributed under the MIT License. See [`LICENSE`](./LICENSE).
+Distributed under the MIT License. See [`LICENSE`](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/LICENSE).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

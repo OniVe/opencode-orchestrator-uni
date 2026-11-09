@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/package.json",
   "name": "opencode-orchestrator-uni",
   "version": "0.1.0",
-  "description": "Native OpenCode V2 plugin that registers the orchestrator agent kit (root orchestrator, audit subagents, fix-runner) and exposes the kit's process documents as the audit-kit reference.",
+  "description": "An OpenCode V2 plugin that runs coding work as an evidence-driven audit loop: a root orchestrator, read-only auditors, one fix-runner, and deterministic verification tools.",
   "type": "module",
   "license": "MIT",
   "author": "OniVe",
