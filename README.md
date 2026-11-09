@@ -1,95 +1,400 @@
-# opencode-orchestrator-uni
+<a id="readme-top"></a>
 
-**English** · [Русский](./README.ru.md)
+[![npm version][npm-shield]][npm-url]
+[![CI][ci-shield]][ci-url]
+[![License][license-shield]][license-url]
+[![OpenCode V2][opencode-shield]][opencode-url]
 
-A native [OpenCode V2](https://opencode.ai/v2/docs/build/plugins) package plugin that
-ships the **orchestrator agent kit**:
+<br />
 
-- `orchestrator` — the root orchestrator (primary agent) with the audit loop as a
-  built-in mode; it delegates every code/doc/test edit and writes only audit and
-  session-state artifacts;
-- read-only audit subagents — `factcheck`, `empiric`, `invariant`,
-  `arbiter`, `meta`, `redteam`, `context-lint`;
-- `fix-runner` — the only writing subagent of the kit (applies the "to close" list);
-- the kit's process documents, exposed as the **`audit-kit` reference**
+<div align="center">
+  <h3 align="center">opencode-orchestrator-uni</h3>
+
+  <p align="center">
+    An OpenCode V2 plugin that runs coding work as an evidence-driven audit loop.
+    <br />
+    <a href="./docs/en"><strong>Explore the docs »</strong></a>
+    <br />
+    <br />
+    <a href="https://github.com/OniVe/opencode-orchestrator-uni/issues/new">Report Bug</a>
+    &middot;
+    <a href="https://github.com/OniVe/opencode-orchestrator-uni/issues/new">Request Feature</a>
+  </p>
+
+  <p align="center">
+    <strong>English</strong> &middot; <a href="./README.ru.md">Русский</a>
+  </p>
+</div>
+
+<details>
+  <summary>Table of Contents</summary>
+  <ol>
+    <li>
+      <a href="#about-the-project">About The Project</a>
+      <ul>
+        <li><a href="#what-you-get">What You Get</a></li>
+        <li><a href="#write-guard">Write Guard</a></li>
+        <li><a href="#built-with">Built With</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#getting-started">Getting Started</a>
+      <ul>
+        <li><a href="#prerequisites">Prerequisites</a></li>
+        <li><a href="#installation">Installation</a></li>
+        <li><a href="#configure">Configure</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#usage">Usage</a>
+      <ul>
+        <li><a href="#quick-start">Quick Start</a></li>
+        <li><a href="#the-audit-loop">The Audit Loop</a></li>
+        <li><a href="#agents">Agents</a></li>
+        <li><a href="#commands">Commands</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#reference">Reference</a>
+      <ul>
+        <li><a href="#tools">Tools</a></li>
+        <li><a href="#session-hygiene">Session Hygiene</a></li>
+        <li><a href="#models">Models</a></li>
+        <li><a href="#locale">Locale</a></li>
+        <li><a href="#precedence">Precedence</a></li>
+        <li><a href="#notes">Notes</a></li>
+      </ul>
+    </li>
+    <li><a href="#development">Development</a></li>
+    <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#contributing">Contributing</a></li>
+    <li><a href="#license">License</a></li>
+    <li><a href="#contact">Contact</a></li>
+    <li><a href="#acknowledgments">Acknowledgments</a></li>
+  </ol>
+</details>
+
+## About The Project
+
+Agent sessions drift: the same agent writes the code, judges the result, and
+summarizes its own success. This plugin makes that separation explicit. It ships
+the **orchestrator agent kit** for [OpenCode V2](https://opencode.ai/v2/docs/build/plugins):
+a root orchestrator with an audit loop built in, read-only audit subagents, one
+writing subagent, deterministic verification tools, and the process documents
+that keep the loop honest.
+
+The kit is a protocol, not a sandbox. Auditors are read-only by tool permission
+and by prompt; the orchestrator delegates every code, documentation and test
+edit; the audit trail, the closure list and the session state stay in writable
+artifact paths. The result is a session that can be stopped, handed off and
+audited without trusting a self-reported "done".
+
+### What You Get
+
+- `orchestrator` — the root orchestrator (primary agent) with the audit loop as
+  a built-in mode. It delegates every code/doc/test edit and writes only audit
+  and session-state artifacts.
+- Read-only audit subagents — `factcheck`, `empiric`, `invariant`, `arbiter`,
+  `meta`, `redteam`, `context-lint`.
+- `fix-runner` — the only writing subagent of the kit. It applies the "to close"
+  list and proves closure.
+- The kit's process documents, exposed as the **`audit-kit` reference**
   (`call-mechanics.md`, `process-ready-loop.md`, `root-runbook.md`,
-  `instruction-other-session.md`, `context-efficiency.md`, `session-discipline.md`);
-- five deterministic, read-only tools — `orch_uni_validate_report`, `orch_uni_context_lint`,
-  `orch_uni_snapshot`, `orch_uni_sessions`, `orch_uni_session_stats` (see [Tools](#tools));
-- three slash commands — `/agents-md`, `/spec` and `/handoff` (see [Commands](#commands)).
+  `instruction-other-session.md`, `context-efficiency.md`,
+  `session-discipline.md`).
+- Five deterministic, read-only tools — `orch_uni_validate_report`,
+  `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions`,
+  `orch_uni_session_stats` (see [Tools](#tools)).
+- Three slash commands — `/agents-md`, `/spec` and `/handoff` (see
+  [Commands](#commands)).
 
 Read-only audit agents are enforced at the tool level for `edit`/`write`/`patch`
-(`edit: deny`) and by the prompt ban for everything else; their `shell` permission
-stays allowed so they can run verification commands. A write through shell (redirect,
-`sed -i`, `tee`) is forbidden by the prompt, not by a sandbox — an accepted risk, same
-as I-M15; no permission is relaxed.
-
-The orchestrator itself has `edit` denied on `*`; the flat `permissions` are only a narrow fallback allowlist for audit/state artifacts, and the real guard is the `permission.hook("evaluate")` hook in `lib/write-guard.ts` with path-root semantics. The session directory is read per event (`session.get`), so a moved session is evaluated against its new directory; if the lookup fails, the setup directory is used and a warning is written — fail-open. A resource outside the session directory is denied: the guard is the workspace boundary, so `reports/`, `docs/planning/` and `audit-*` are not writable outside it. Inside it the first **root** segment decides. `reports/` is a reserved artifact root — the whole subtree is writable (even `reports/src/x.ts`), so project code must not live there (a `packages/reports/**` path counts as an artifact by contract); `docs/planning/**/*.md` is allowed (nested Markdown at any depth; a `.ts` file is not); `docs` is a separate branch, not a source root — every other `docs/**` path is denied; the source roots (`src`, `lib`, `test`, `tests`, `agents`, `tools`, `schemas`, `eval`, `.github`) are denied even under an artifact-looking prefix (`src/reports/x.ts`, `src/docs/planning/x.md`). Root artifact files (`case-*`, `risks-*`, `handoff-*`, `decisions-*`, `state.md`) are allowed only in the location root, under `reports/`, `docs/planning/` or an `audit-*` directory — `app/state.md` is denied. The hook runs after the flat rules, so a local `edit: allow` for `orchestrator` is closed too. The flat fallback carries only that artifact set as location-root rules (`reports/*`, `case-*.md`, `risks-*.md`, `handoff-*.md`, `decisions-*.md`, `state.md`, `docs/planning/*.md`) plus `audit-*/…`; the broad `*/state.md`-style patterns are gone, so `src/state.md` is denied even without the hook, but last-match still cannot express root priority everywhere (`audit-x/src/case-y.md`) — a warning is written. The fallback is narrower than the hook for nested artifact roots: `lab/x/reports/*` and similar paths are written only with the hook (the root rules cover `reports/*` at the location root only). A failing or timed-out session lookup (250 ms bound) falls back to the setup directory and writes the warning once per guard; for a moved session an absolute artifact path may then be denied (fail-closed for that class). A single `sessionWarned` flag without a counter is accepted: failures after the first warning stay silent. `shell` stays allowed for git and checks; a shell write and symlinks/junctions (the host matches the normalized lexical path, not `realpath`) are accepted risks, as is fail-open (a broken guard never breaks the session), governed by the prompt rather than a sandbox. A tool denial is a role rule — the edit goes to a subagent.
+(`edit: deny`) and by the prompt ban for everything else; their `shell`
+permission stays allowed so they can run verification commands. A write through
+shell (redirect, `sed -i`, `tee`) is forbidden by the prompt, not by a sandbox —
+an accepted risk, same as I-M15; no permission is relaxed.
 
 The package is loaded directly from TypeScript: `exports` points at
 [`index.ts`](./index.ts). There is **no build step and no `dist/`** — OpenCode's
-Bun-based runtime resolves and loads the entry point natively (same pattern as the
-official `@opencode/plugin-figma` package).
+Bun-based runtime resolves and loads the entry point natively (same pattern as
+the official `@opencode/plugin-figma` package).
 
-## What the plugin registers
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Write Guard
+
+The orchestrator itself has `edit` denied on `*`. The flat `permissions` are only
+a narrow fallback allowlist for audit/state artifacts, and the real guard is the
+`permission.hook("evaluate")` hook in `lib/write-guard.ts` with path-root
+semantics.
+
+- The session directory is read per event (`session.get`), so a moved session is
+  evaluated against its new directory. If the lookup fails, the setup directory
+  is used and a warning is written — fail-open.
+- A resource outside the session directory is denied: the guard is the workspace
+  boundary, so `reports/`, `docs/planning/` and `audit-*` are not writable
+  outside it. Inside it the first **root** segment decides.
+- `reports/` is a reserved artifact root — the whole subtree is writable (even
+  `reports/src/x.ts`), so project code must not live there (a
+  `packages/reports/**` path counts as an artifact by contract).
+  `docs/planning/**/*.md` is allowed (nested Markdown at any depth; a `.ts` file
+  is not). `docs` is a separate branch, not a source root — every other
+  `docs/**` path is denied.
+- The source roots (`src`, `lib`, `test`, `tests`, `agents`, `tools`, `schemas`,
+  `eval`, `.github`) are denied even under an artifact-looking prefix
+  (`src/reports/x.ts`, `src/docs/planning/x.md`).
+- Root artifact files (`case-*`, `risks-*`, `handoff-*`, `decisions-*`,
+  `state.md`) are allowed only in the location root, under `reports/`,
+  `docs/planning/` or an `audit-*` directory — `app/state.md` is denied.
+- The hook runs after the flat rules, so a local `edit: allow` for `orchestrator`
+  is closed too. The flat fallback carries only that artifact set as
+  location-root rules (`reports/*`, `case-*.md`, `risks-*.md`, `handoff-*.md`,
+  `decisions-*.md`, `state.md`, `docs/planning/*.md`) plus `audit-*/…`. The broad
+  `*/state.md`-style patterns are gone, so `src/state.md` is denied even without
+  the hook, but last-match still cannot express root priority everywhere
+  (`audit-x/src/case-y.md`) — a warning is written.
+- The fallback is narrower than the hook for nested artifact roots:
+  `lab/x/reports/*` and similar paths are written only with the hook (the root
+  rules cover `reports/*` at the location root only).
+- A failing or timed-out session lookup (250 ms bound) falls back to the setup
+  directory and writes the warning once per guard; for a moved session an
+  absolute artifact path may then be denied (fail-closed for that class). A
+  single `sessionWarned` flag without a counter is accepted: failures after the
+  first warning stay silent.
+- `shell` stays allowed for git and checks. A shell write and symlinks/junctions
+  (the host matches the normalized lexical path, not `realpath`) are accepted
+  risks, as is fail-open (a broken guard never breaks the session), governed by
+  the prompt rather than a sandbox. A tool denial is a role rule — the edit goes
+  to a subagent.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Built With
+
+- [![OpenCode V2][opencode-shield]][opencode-url]
+- [![TypeScript][typescript-shield]][typescript-url]
+- [![Bun][bun-shield]][bun-url]
+- [![Biome][biome-shield]][biome-url]
+- [![semantic-release][semantic-release-shield]][semantic-release-url]
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Getting Started
+
+The plugin is configuration-only: install the package, point OpenCode at it, and
+the kit registers its agents, tools, commands and reference on setup.
+
+### Prerequisites
+
+- **OpenCode 2.x** with the V2 plugin API (the `plugins` config field). V1's
+  plugin loader expects the legacy `server()` export and will not load this
+  plugin.
+- **Bun** for the test suite and the kit's check scripts, and **Node.js 22.14+**
+  for the release tooling. The plugin itself has no build step and no `dist/`.
+- A git checkout if you want to run `npm run check:locales` or
+  `npm run verify:kit` — the npm package ships no `tools/` directory.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Installation
+
+#### With the OpenCode CLI
+
+```sh
+opencode plugin add opencode-orchestrator-uni
+```
+
+#### Manually
+
+Add the package to the `plugins` array in your global
+`~/.config/opencode/opencode.json(c)`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-orchestrator-uni"]
+}
+```
+
+Pin a version if you prefer:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-orchestrator-uni@0.5.1"]
+}
+```
+
+To set kit models at the same time, use the object form — see
+[Models](#models):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "opencode-orchestrator-uni",
+      "options": { "model": "deepseek/deepseek-flash" }
+    }
+  ]
+}
+```
+
+Restart the OpenCode service after changing the config:
+
+```sh
+opencode service restart
+```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Configure
+
+All options are optional and live on the plugin entry. One entry can set the
+locale, the default model and both runtime guards:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "opencode-orchestrator-uni",
+      "options": {
+        "locale": "en",
+        "model": "deepseek/deepseek-flash",
+        "sessionGuard": { "enabled": true, "promptTokensSoft": 150000, "maxCompactions": 1 },
+        "toolOutputGuard": {
+          "enabled": true,
+          "maxChars": 20000,
+          "headChars": 4000,
+          "tools": ["shell", "bash", "webfetch"]
+        }
+      }
+    }
+  ]
+}
+```
+
+- `locale` — `"en"` or `"ru"`; full tags such as `"ru-RU"` are accepted. See
+  [Locale](#locale).
+- `model` / `agents` — default and per-agent models in
+  `"provider/model[#variant]"` or `{ providerID, model, variant }` form. See
+  [Models](#models).
+- `sessionGuard` — prompt-budget reminders and the compaction limit;
+  `enabled`, `promptTokensSoft`, `maxCompactions`.
+- `toolOutputGuard` — caps large `shell`/`bash`/`webfetch` output;
+  `enabled`, `maxChars`, `headChars`, `tools`.
+
+Invalid values are ignored with an `[orchestrator.uni] …` warning. Restart the
+OpenCode service after changing the file.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Usage
+
+### Quick Start
+
+1. Install the plugin and restart OpenCode.
+2. Point `model` at a model you trust for audit work, or leave it unset so
+   subagents inherit the session model.
+3. Open a session in the project directory and give the orchestrator a slice: a
+   bug, a spec, a release gate.
+4. Use `/spec` before implementation, `/agents-md` when the repository needs an
+   `AGENTS.md`, and `/handoff` to close the slice.
+
+The orchestrator is a primary agent. If your client asks which agent to use,
+select it explicitly.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### The Audit Loop
+
+One pass starts with `factcheck`, which marks work that is already done or
+outdated. `empiric` produces reproductions and measurements, `invariant` probes
+states and hostile input, and `arbiter` resolves only disputed findings. The
+orchestrator validates each structured report with `orch_uni_validate_report`,
+`meta` gates the report set, `redteam` checks the acceptance criteria, and
+`fix-runner` applies the closure list. `orch_uni_snapshot` proves that the
+working tree is what the report says it is.
+
+The loop is described in the shipped process documents. They are available in
+the session as the `audit-kit` reference, for example
+`<reference path>/process-ready-loop.md`, `call-mechanics.md`,
+`root-runbook.md` and `session-discipline.md`. The same files live under
+[`docs/en`](./docs/en) and [`docs/ru`](./docs/ru).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Agents
 
 On setup (`ctx.agent.transform` / `ctx.reference.transform`):
 
-| Agent             | Mode       | Role                                                     |
-| ----------------- | ---------- | -------------------------------------------------------- |
-| `orchestrator`    | `primary`  | Root orchestrator; delegates edits; writes audit/state artifacts |
-| `factcheck` | `subagent` | Read-only: staleness pre-pass (already done / outdated)  |
-| `empiric`   | `subagent` | Read-only: reproductions, measurements, first sources    |
-| `invariant` | `subagent` | Read-only: states, cancels, races, hostile input         |
-| `arbiter`   | `subagent` | Read-only: resolves disputed findings only               |
-| `meta`      | `subagent` | Read-only: meta-audit of reports (pass/fail gate)        |
-| `redteam`   | `subagent` | Read-only: acceptance red team (release gates)           |
-| `context-lint` | `subagent` | Read-only: audits AGENTS.md/SPEC.md for token efficiency |
-| `fix-runner`      | `subagent` | Writer: applies the fix list and proves closure          |
+| Agent          | Mode       | Role                                                              |
+| -------------- | ---------- | ----------------------------------------------------------------- |
+| `orchestrator` | `primary`  | Root orchestrator; delegates edits; writes audit/state artifacts  |
+| `factcheck`    | `subagent` | Read-only: staleness pre-pass (already done / outdated)           |
+| `empiric`      | `subagent` | Read-only: reproductions, measurements, first sources             |
+| `invariant`    | `subagent` | Read-only: states, cancels, races, hostile input                  |
+| `arbiter`      | `subagent` | Read-only: resolves disputed findings only                        |
+| `meta`         | `subagent` | Read-only: meta-audit of reports (pass/fail gate)                 |
+| `redteam`      | `subagent` | Read-only: acceptance red team (release gates)                    |
+| `context-lint` | `subagent` | Read-only: audits AGENTS.md/SPEC.md for token efficiency          |
+| `fix-runner`   | `subagent` | Writer: applies the fix list and proves closure                   |
 
 All agents ship **without a model**: models are deployment configuration (see
-[Models](#models)). Definitions live in [`agents/`](./agents) as plain Markdown agent
-files and are parsed at setup time — the files are the single source of truth.
+[Models](#models)). Definitions live in [`agents/`](./agents) as plain Markdown
+agent files and are parsed at setup time — the files are the single source of
+truth.
 
-"Read-only" here means `edit` is denied and the prompt forbids writes; `shell` stays
-allowed so an auditor can run the verification commands it needs (accepted risk
-I-M15). The audit loop treats that as a contract, not as a sandbox.
+"Read-only" here means `edit` is denied and the prompt forbids writes; `shell`
+stays allowed so an auditor can run the verification commands it needs (accepted
+risk I-M15). The audit loop treats that as a contract, not as a sandbox.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Commands
+
+| Command      | What it does                                                                                                                                                                     |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/agents-md` | Injects the AGENTS.md audit/draft workflow: `context-efficiency.md` template, `orch_uni_context_lint`, `context-lint`, approval before writing.                                  |
+| `/spec`      | Injects the SPEC.md workflow: brief, clarifying questions, EARS/AC/traceability, `orch_uni_context_lint`, `context-lint`, approval before writing.                               |
+| `/handoff`   | Injects the slice-closing workflow: session and working-tree facts, the `session-discipline.md` handoff template, writes `docs/planning/handoff-<YYYY-MM-DD>.md`.                 |
+
+A command is a prompt, not a writer: its handler injects a workflow prompt into
+the current session. The orchestrator then follows the usual evidence and
+approval rules.
 
 The `audit-kit` reference points at this package's per-locale `docs/<locale>/`
 directory (see [Locale](#locale)). OpenCode lists it in session context as an
 additional local directory, so the orchestrator (and any other agent) can read
-the process documents directly, for example `<reference path>/call-mechanics.md`.
+the process documents directly, for example
+`<reference path>/call-mechanics.md`.
 
-The plugin also registers five deterministic, **read-only** tools in the `orch_uni`
-namespace and three slash commands — see [Tools](#tools) and [Commands](#commands).
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-## Commands
+## Reference
 
-| Command | What it does |
-| --- | --- |
-| `/agents-md` | Injects the AGENTS.md audit/draft workflow: `context-efficiency.md` template, `orch_uni_context_lint`, `context-lint`, approval before writing. |
-| `/spec` | Injects the SPEC.md workflow: brief, clarifying questions, EARS/AC/traceability, `orch_uni_context_lint`, `context-lint`, approval before writing. |
-| `/handoff` | Injects the slice-closing workflow: session and working-tree facts, the `session-discipline.md` handoff template, writes `docs/planning/handoff-<YYYY-MM-DD>.md`. |
+### Tools
 
-A command is a prompt, not a writer: its handler injects a workflow prompt into the
-current session. The orchestrator then follows the usual evidence and approval rules.
+The plugin registers five deterministic, **read-only** tools in the `orch_uni`
+namespace.
 
-## Tools
+| Effective name             | Read-only | What it does                                                                    |
+| -------------------------- | --------- | ------------------------------------------------------------------------------- |
+| `orch_uni_validate_report` | yes       | Extract the SGR JSON block of a report, resolve its schema, validate it         |
+| `orch_uni_context_lint`    | yes       | Deterministic audit of AGENTS.md/SPEC.md: budget, vague phrases, links, sections |
+| `orch_uni_snapshot`        | yes       | Deterministic revision of a directory tree (per-file sha256 + aggregate hash)   |
+| `orch_uni_sessions`        | yes       | Child sessions of a session: agent, model, cost, tokens, time                   |
+| `orch_uni_session_stats`   | yes       | Session protocol counters: prompt, compactions, tools/turn, capped outputs      |
 
-| Effective name           | Read-only | What it does                                                                  |
-| ------------------------ | --------- | ----------------------------------------------------------------------------- |
-| `orch_uni_validate_report`  | yes       | Extract the SGR JSON block of a report, resolve its schema, validate it        |
-| `orch_uni_context_lint`     | yes       | Deterministic audit of AGENTS.md/SPEC.md: budget, vague phrases, links, sections |
-| `orch_uni_snapshot`         | yes       | Deterministic revision of a directory tree (per-file sha256 + aggregate hash)  |
-| `orch_uni_sessions`         | yes       | Child sessions of a session: agent, model, cost, tokens, time                  |
-| `orch_uni_session_stats`    | yes       | Session protocol counters: prompt, compactions, tools/turn, capped outputs      |
+Every tool answers with a JSON text body. Failures are **typed codes** inside the
+body (`E_INPUT`, `E_NO_JSON`, …) instead of thrown tool errors, so an agent can
+branch on the code without parsing prose. None of the five writes to the
+workspace, the session store or the configuration.
 
-Every tool answers with a JSON text body. Failures are **typed codes** inside the body
-(`E_INPUT`, `E_NO_JSON`, …) instead of thrown tool errors, so an agent can branch on the
-code without parsing prose. None of the five writes to the workspace, the session store
-or the configuration.
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-### `orch_uni_validate_report`
+#### `orch_uni_validate_report`
 
 ```jsonc
 { "text": "<report text>" }              // or
@@ -134,7 +439,7 @@ schema. `context-lint-failure/v1` is the typed failure envelope of
 `additionalProperties` permissively — agents may add fields of their
 own (`verdict_label`, `check`, …).
 
-### `orch_uni_context_lint`
+#### `orch_uni_context_lint`
 
 ```jsonc
 { "path": "AGENTS.md" }                  // file or directory, relative to the location
@@ -182,8 +487,8 @@ link-candidate list and a capped findings list report one marker each in the sam
 `max_findings: 2` over 20 001 broken links yields 2 kept findings plus 2 markers. Cap
 markers point at `file:1` in `evidence`.
 Non-goals are counted as top-level items: a wrapped paragraph is one item, inline
-`;`/`,`/`and`/`и` split only at the top level (not inside `(…)`, `[…]`, backticks of any
-width or `<code>`), and a bullet at 0–4 spaces under the label is an item — fenced,
+`;`/`,`/`and` and their localized equivalents split only at the top level (not inside
+`(…)`, `[…]`, backticks of any width or `<code>`), and a bullet at 0–4 spaces under the label is an item — fenced,
 `<pre>` and deeper-indented code is not.
 Placeholders are `<...>` (three or more dots) and `TODO`/`TBD`/`FIXME`; `<DoD>` and
 `<name>` are markup.
@@ -210,7 +515,7 @@ or a Commands section, an HTML comment such as `<!-- npm install -->` is not a c
 needs a target, so prose such as "Make sure …" is not a command. A scan started at the root also
 picks up fixture trees such as `eval/`; pass an explicit path for the canonical files.
 
-### `orch_uni_snapshot`
+#### `orch_uni_snapshot`
 
 ```jsonc
 { "path": "lab/stack-test", "exclude": ["tmp"] }   // exclude is optional and additive
@@ -231,7 +536,7 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
   whole snapshot; a truncated snapshot would be a wrong aggregate). `E_NOT_FOUND` for a
   missing path or a non-directory, `E_ABORTED` when the session is stopped.
 
-### `orch_uni_sessions`
+#### `orch_uni_sessions`
 
 ```jsonc
 {}                                        // children of the calling session
@@ -268,7 +573,7 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
 `E_INPUT` for malformed arguments, `E_NOT_FOUND` when the parent session does not exist,
 `E_ABORTED` when the session is stopped.
 
-### `orch_uni_session_stats`
+#### `orch_uni_session_stats`
 
 ```jsonc
 {}                                  // counters of the calling session
@@ -326,7 +631,9 @@ an untracked session is `E_NO_API`, a tracked one is `ok` with `session: null` a
 `limitations` entry. Codes: `E_INPUT`, `E_NOT_FOUND`, `E_INTERNAL`, `E_NO_API`,
 `E_UNAVAILABLE` (the guard is not registered or its hooks failed), `E_ABORTED`.
 
-## Session hygiene
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Session Hygiene
 
 The plugin implements the [`session-discipline.md`](./docs/en/session-discipline.md)
 protocol: a session is one slice, the prompt budget is ≤150k tokens, at most one
@@ -355,25 +662,28 @@ The runtime part is three hooks (`session.context`, `session.compaction`,
   `os.tmpdir()/opencode-tool-output-<random>/` (POSIX 0700 for the root and the
   session directory, 0600 for the file). Windows ignores mode (measured: 0666),
   so privacy there rests on the ACL of `os.tmpdir()` and is not checked by code.
-  The model gets a head and the path; the root is created with `mkdtemp` at plugin
-  setup, so a
-  pre-created `opencode-tool-output` directory or junction is never used; on POSIX
-  the root must belong to the current uid with no group/other access, otherwise
-  the guard disables itself with a warning (fail-open: results are untouched).
-  Session directories (`s-<uuid>`) and files (`c-<uuid>.txt`, written with `wx`)
-  are random, and each `realpath` is proven inside the root. The root is removed
-  when the plugin unloads (best effort). A lone surrogate is normalized once
-  (U+FFFD), so the file, the head and the counters describe the same string.
-  Residual risk accepted: a same-user
-  attacker can still swap a session directory between `realpath` and `writeFile`
-  (Node has no `openat`). If `TMPDIR` points inside the workspace, the files land
-  there instead. `read`, `write`, `edit`, `execute` and the kit's own tools are
-  not capped, and a kit tool named without its namespace (`session_stats`) is
-  refused in the config with a warning.
+  The model gets a head and the path; the root is created with
+  `mkdtemp` at plugin setup, so a pre-created `opencode-tool-output` directory or
+  junction is never used; on POSIX the root must belong to the current uid with no
+  group/other access, otherwise the guard disables itself with a warning (fail-open:
+  results are untouched). Session directories (`s-<uuid>`) and files
+  (`c-<uuid>.txt`, written with `wx`) are random, and each `realpath` is proven
+  inside the root. The root is removed when the plugin unloads (best effort). A
+  lone surrogate is normalized once (U+FFFD), so the file, the head and the
+  counters describe the same string. Residual risk accepted: a same-user attacker
+  can still swap a session directory between `realpath` and `writeFile` (Node has
+  no `openat`). If `TMPDIR` points inside the workspace, the files land there
+  instead. `read`, `write`, `edit`, `execute` and the kit's own tools are not
+  capped, and a kit tool named without its namespace (`session_stats`) is refused
+  in the config with a warning.
 
-`maxCompactions: 0` disables the compaction limit. The guard is fail-open: a hook
-error neither breaks the request nor corrupts the result. Either part can be
-disabled with its `enabled` flag:
+`maxCompactions: 0` disables the compaction limit. `guard.toolOutputEnabled` is
+`true` only when the private root was created **and** the effective tool list is
+non-empty; `guard.toolOutputTools` is that list, and `guard.unkeyedCalls` counts
+hook calls without a non-empty `sessionID` (they are dropped, not merged into an
+empty bucket). An empty `tools` list disables the cap with a warning. The guard is
+fail-open: a hook error neither breaks the request nor corrupts the result. Either
+part can be disabled with its `enabled` flag:
 
 ```jsonc
 {
@@ -396,7 +706,9 @@ disabled with its `enabled` flag:
 
 Slice metrics — `orch_uni_session_stats`; closing a slice — the `/handoff` command.
 
-## Models
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Models
 
 Agent definitions carry no `model`; models are configured on the plugin entry in
 `opencode.json(c)`:
@@ -431,7 +743,9 @@ Agent definitions carry no `model`; models are configured on the plugin entry in
 - An `agents` config entry or a local Markdown agent file that defines its own
   model still wins — configuration is applied after package plugins.
 
-## Locale
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Locale
 
 Agent definitions and process documents ship per locale — `agents/<locale>/`
 and `docs/<locale>/`; currently `ru` and `en` (the English content is a
@@ -459,61 +773,9 @@ reported with a warning in the plugin log. Both locales register the same agents
 under the same ids — switching the locale only changes the language of the
 prompts, the process documents and the reference description.
 
-## Requirements
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-- **OpenCode 2.x** with the V2 plugin API (the `plugins` config field). V1's plugin
-  loader expects the legacy `server()` export and will not load this plugin.
-
-## Install
-
-### With the OpenCode CLI
-
-```sh
-opencode plugin add opencode-orchestrator-uni
-```
-
-### Manually
-
-Add the package to the `plugins` array in your global
-`~/.config/opencode/opencode.json(c)`:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-orchestrator-uni"]
-}
-```
-
-Pin a version if you prefer:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-orchestrator-uni@0.1.0"]
-}
-```
-
-To set kit models at the same time, use the object form — see [Models](#models):
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    {
-      "package": "opencode-orchestrator-uni",
-      "options": { "model": "deepseek/deepseek-flash" }
-    }
-  ]
-}
-```
-
-Restart the OpenCode service after changing the config:
-
-```sh
-opencode service restart
-```
-
-## Precedence
+### Precedence
 
 Agent **definitions** are only filled in for ids that are not defined elsewhere: an
 agent with the same id coming from your configuration — an `agents` config entry, or a
@@ -526,6 +788,18 @@ applies to the `audit-kit` reference.
 If you previously installed the kit by copying agent files into your config directory,
 **remove those copies** after enabling the plugin, otherwise the stale copies keep
 overriding the plugin-provided definitions.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Notes
+
+- One runtime dependency: [`gray-matter`](https://www.npmjs.com/package/gray-matter)
+  for frontmatter parsing. OpenCode installs package plugin dependencies automatically.
+- Plugin id: `orchestrator.uni`.
+- Ships only the files listed in `package.json#files`: `index.ts`, `lib/`, `schemas/`,
+  `agents/`, `docs/`, `README.md`, `README.ru.md`, `LICENSE`.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Development
 
@@ -543,11 +817,11 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/` — the shipped suite (400 tests in 10 files, up from
-72 in 5 before the identifier guards). A bare `bun test` from the repository root is red by
-design: the positional argument of `bun test` is a path substring filter, so the
-bare command also picks up the intentionally failing fixtures under `eval/cases/`
-and the scratch drafts under `lab/`. Use `npm test` [F5].
+`npm test` scans only `./test/`. It now runs **438 tests in 11 files** — 437 pass and 1 skip; the previous round left the shipped suite (400 tests in 10 files). A bare
+`bun test` from the repository root is red by design: the positional argument of
+`bun test` is a path substring filter, so the bare command also picks up the
+intentionally failing fixtures under `eval/cases/` and the scratch drafts under
+`lab/`. Use `npm test` [F5].
 
 [Biome](https://biomejs.org) ([`biome.json`](./biome.json)) covers the code surface —
 `index.ts`, `lib/`, `test/`, `eval/*.ts` — and skips `lab/` and `eval/results/` through the
@@ -569,14 +843,78 @@ Test against a live server by pointing a project config at the checkout:
 Configured local plugin paths must be directories (or `file://` URLs of directories);
 OpenCode watches them and reloads on change.
 
-## Notes
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-- One runtime dependency: [`gray-matter`](https://www.npmjs.com/package/gray-matter)
-  for frontmatter parsing. OpenCode installs package plugin dependencies automatically.
-- Plugin id: `orchestrator.uni`.
-- Ships only the files listed in `package.json#files`: `index.ts`, `lib/`, `schemas/`,
-  `agents/`, `docs/`, `README.md`, `README.ru.md`, `LICENSE`.
+## Roadmap
+
+The current published release is **0.5.1**. The kit is pre-1.0: while the major
+version is `0`, a breaking change bumps the minor version instead of the major
+one. Release notes live on [GitHub Releases][releases-url]; planned work and
+known issues live in the [issue tracker][issues-url]. No dates or features are
+promised here — those two places are the source of truth.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Contributing
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the full contract. Contributions
+are welcome:
+
+1. Fork the project.
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`).
+3. Commit your changes using [Conventional Commits](https://www.conventionalcommits.org/)
+   (`feat:`, `fix:`, `docs:`, …); `commitlint` enforces the format.
+4. Push the branch.
+5. Open a pull request.
+
+Translations are part of the contract: `ru` is the reference locale and `en` must
+mirror it. After editing agents or process documents, run
+`npm run check:locales`; after editing either README, run `npm test` (the
+translation guard checks heading levels and code fence count).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## License
 
-MIT
+Distributed under the MIT License. See [`LICENSE`](./LICENSE) for the full text.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Contact
+
+Questions, bugs and feature requests: [GitHub Issues][issues-url].
+
+Project Link: [https://github.com/OniVe/opencode-orchestrator-uni][repo-url]
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Acknowledgments
+
+- [Best-README-Template](https://github.com/othneildrew/Best-README-Template) — the README structure this document follows.
+- [OpenCode V2 plugin documentation](https://opencode.ai/v2/docs/build/plugins) — the plugin API and runtime model.
+- [shields.io](https://shields.io) — the badges.
+- [Bun](https://bun.sh), [Biome](https://biomejs.org) and
+  [semantic-release](https://semantic-release.gitbook.io/) — the development and
+  release toolchain.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+[npm-shield]: https://img.shields.io/npm/v/opencode-orchestrator-uni?style=for-the-badge
+[npm-url]: https://www.npmjs.com/package/opencode-orchestrator-uni
+[ci-shield]: https://img.shields.io/github/actions/workflow/status/OniVe/opencode-orchestrator-uni/ci.yml?branch=main&style=for-the-badge
+[ci-url]: https://github.com/OniVe/opencode-orchestrator-uni/actions/workflows/ci.yml
+[license-shield]: https://img.shields.io/github/license/OniVe/opencode-orchestrator-uni?style=for-the-badge
+[license-url]: https://github.com/OniVe/opencode-orchestrator-uni/blob/main/LICENSE
+[opencode-shield]: https://img.shields.io/badge/OpenCode-V2-000000?style=for-the-badge
+[opencode-url]: https://opencode.ai/v2/docs/build/plugins
+[typescript-shield]: https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white
+[typescript-url]: https://www.typescriptlang.org/
+[bun-shield]: https://img.shields.io/badge/Bun-000000?style=for-the-badge&logo=bun&logoColor=white
+[bun-url]: https://bun.sh/
+[biome-shield]: https://img.shields.io/badge/Biome-60A5FA?style=for-the-badge&logo=biome&logoColor=white
+[biome-url]: https://biomejs.org/
+[semantic-release-shield]: https://img.shields.io/badge/semantic--release-E10079?style=for-the-badge
+[semantic-release-url]: https://semantic-release.gitbook.io/
+[repo-url]: https://github.com/OniVe/opencode-orchestrator-uni
+[issues-url]: https://github.com/OniVe/opencode-orchestrator-uni/issues
+[releases-url]: https://github.com/OniVe/opencode-orchestrator-uni/releases
