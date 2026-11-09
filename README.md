@@ -817,7 +817,7 @@ npm run lint:fix     # biome check --write . (applies safe fixes)
 
 The `check:locales` and `verify:kit` scripts need a git checkout of the kit — the npm package ships no `tools/` directory, so in an installed package they are unavailable (`stand: unavailable` plus your own reproducible checks).
 
-`npm test` scans only `./test/`. It now runs **438 tests in 11 files** — 437 pass and 1 skip; the previous round left the shipped suite (400 tests in 10 files). A bare
+`npm test` scans only `./test/`. It now runs **438 tests in 11 files** — 437 pass and 1 skip. A bare
 `bun test` from the repository root is red by design: the positional argument of
 `bun test` is a path substring filter, so the bare command also picks up the
 intentionally failing fixtures under `eval/cases/` and the scratch drafts under
