@@ -29,7 +29,7 @@
  * Everything here is fail-open: a hook error leaves the request/tool result
  * untouched and increments `errors`, because a broken guard must never break the
  * session it tries to protect. Counters are in-memory and scoped to one plugin
- * instance; `orch_uni_session_stats` exposes them to the orchestrator.
+ * instance; `tools.orch_uni.session_stats` exposes them to the orchestrator.
  */
 import { randomUUID } from "node:crypto"
 import { lstat, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises"
@@ -37,6 +37,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import type { Locale } from "../index"
+import type { EventJournal } from "./event-journal"
 
 /** Session guard defaults: 150k estimated prompt tokens, at most one compaction. */
 export const DEFAULT_SESSION_GUARD = {
@@ -74,7 +75,7 @@ export interface SessionBudgetConfig {
 /** Where compaction counts come from: the event stream, or the legacy hook fallback. */
 export type CompactionSource = "event" | "hook"
 
-/** Counters of one session, as exposed by `orch_uni_session_stats`. */
+/** Counters of one session, as exposed by `tools.orch_uni.session_stats`. */
 export interface SessionBudgetCounters {
   readonly sessionID: string
   readonly requests: number
@@ -125,7 +126,7 @@ interface MutableCounters {
   seenCompactionEvents: Set<string>
 }
 
-/** The guard's live wiring state, as exposed by `orch_uni_session_stats`. */
+/** The guard's live wiring state, as exposed by `tools.orch_uni.session_stats`. */
 export interface SessionBudgetGuard {
   /** `false` when this host has no hook API or the registration failed. */
   readonly available: boolean
@@ -174,6 +175,8 @@ export interface SessionBudgetRuntime {
    * that a link planted there is refused. Production never sets it.
    */
   readonly afterSessionDirectoryCreated?: (directory: string) => Promise<void> | void
+  /** Persisted protocol journal, written after a real reminder/compaction fact. */
+  readonly journal?: EventJournal
 }
 
 const DEFAULT_RUNTIME: SessionBudgetRuntime = {}
@@ -256,6 +259,7 @@ const KIT_TOOL_NAMES: ReadonlySet<string> = new Set([
   "snapshot",
   "context_lint",
   "validate_report",
+  "list_tools",
 ])
 
 /**
@@ -824,6 +828,8 @@ export async function createSessionBudget(
   const outputGuardEnabled = outputRoot !== undefined && config.toolOutput.tools.length > 0
 
   const states = new Map<string, MutableCounters>()
+  /** Persisted protocol journal; absent in isolation and in older tests. */
+  const journal = runtime.journal
   /** `sessionID → realpath` of its private directory, evicted with `session.deleted`. */
   const sessionDirectories = new Map<string, string>()
   /** Ids whose `session.deleted` was observed: late events/hooks must not resurrect them. */
@@ -912,6 +918,7 @@ export async function createSessionBudget(
                 states.delete(sessionID)
                 sessionDirectories.delete(sessionID)
                 deletedSessions.add(sessionID)
+                await journal?.clear(sessionID)
                 continue
               }
               if (deletedSessions.has(sessionID)) {
@@ -926,6 +933,11 @@ export async function createSessionBudget(
                   state.compactions += 1
                   state.pendingConfirmed = state.compactions
                   state.tentative = false
+                  await journal?.append(sessionID, {
+                    kind: "compaction",
+                    count: state.compactions,
+                    limitReached: compactionLimitReached(config, state.compactions),
+                  })
                 } else if (type === "session.compaction.failed") {
                   const key = compactionEventKey(record)
                   if (key !== undefined && !firstSighting(state, key)) continue
@@ -933,6 +945,11 @@ export async function createSessionBudget(
                   // A failed attempt produces no lossy summary: drop only the tentative
                   // slot; a confirmed compaction still waiting for delivery is kept.
                   state.tentative = false
+                  await journal?.append(sessionID, {
+                    kind: "compaction",
+                    count: state.compactions,
+                    failed: true,
+                  })
                 }
               } catch {
                 state.errors += 1
@@ -1006,10 +1023,18 @@ export async function createSessionBudget(
           // Marks move only after the reminder was actually delivered to the
           // request: a host whose `system` array rejects the push (frozen/foreign
           // array) must not lose the note for this level forever.
+          const deliveredCompactions = confirmedNote ? state.pendingConfirmed : 0
           state.band = level
           if (confirmedNote) state.pendingConfirmed = 0
           if (confirmedNote || tentativeNote) state.tentative = false
           state.reminders += parts.length
+          // One journal event per delivered request, not per part: the fact is
+          // "a reminder went out at this level", not "two strings were pushed".
+          void journal?.append(sessionID, {
+            kind: "reminder",
+            band: level,
+            ...(deliveredCompactions > 0 ? { compactionCount: deliveredCompactions } : {}),
+          })
         } catch {
           if (state !== undefined) state.errors += 1
         }

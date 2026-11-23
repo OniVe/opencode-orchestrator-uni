@@ -1,6 +1,7 @@
 # Reference
 
-Deep reference for the orchestrator kit: the write guard, the five tools, the
+Deep reference for the orchestrator kit: the write guard, the five core tools
+plus the `list_tools` discovery tool and the flat compatibility alias, the
 session protocol, model and locale configuration, and precedence rules.
 
 [Back to the README](../../README.md)
@@ -66,23 +67,32 @@ an accepted risk (I-M15), not a sandbox.
 
 ## Tools
 
-The plugin registers five deterministic, **read-only** tools in the `orch_uni`
-namespace.
+The plugin registers five deterministic, **read-only** core tools in the
+`orch_uni` namespace, a sixth discovery tool `list_tools`, and one flat
+compatibility alias `orch_uni_validate_report` for older prompts. Canonical
+calls use `tools.orch_uni.<name>({...})`; the alias is a separate registration
+whose live-host acceptance is `not_verified` (the unit harness covers it), so
+prompts and docs always prefer the dot form.
 
-| Effective name             | Read-only | What it does                                                                    |
-| -------------------------- | --------- | ------------------------------------------------------------------------------- |
-| `orch_uni_validate_report` | yes       | Extract the SGR JSON block of a report, resolve its schema, validate it         |
-| `orch_uni_context_lint`    | yes       | Deterministic audit of AGENTS.md/SPEC.md: budget, vague phrases, links, sections |
-| `orch_uni_snapshot`        | yes       | Deterministic revision of a directory tree (per-file sha256 + aggregate hash)   |
-| `orch_uni_sessions`        | yes       | Child sessions of a session: agent, model, cost, tokens, time                   |
-| `orch_uni_session_stats`   | yes       | Session protocol counters: prompt, compactions, tools/turn, capped outputs      |
+| Canonical call                   | Read-only | What it does                                                                    |
+| -------------------------------- | --------- | ------------------------------------------------------------------------------- |
+| `tools.orch_uni.validate_report` | yes       | Extract the SGR JSON block of a report, resolve its schema, validate it         |
+| `tools.orch_uni.context_lint`    | yes       | Deterministic audit of AGENTS.md/SPEC.md: budget, vague phrases, links, sections |
+| `tools.orch_uni.snapshot`        | yes       | Deterministic revision of a directory tree (per-file sha256 + aggregate hash)   |
+| `tools.orch_uni.sessions`        | yes       | Child sessions of a session: agent, model, cost, tokens, time                   |
+| `tools.orch_uni.session_stats`   | yes       | Session protocol counters plus the persisted journal                           |
+| `tools.orch_uni.list_tools`      | yes       | Canonical calls; schema ids and minimal examples for `validate_report`          |
 
 Every tool answers with a JSON text body. Failures are **typed codes** inside the
 body (`E_INPUT`, `E_NO_JSON`, …) instead of thrown tool errors, so an agent can
-branch on the code without parsing prose. None of the five writes to the
-workspace, the session store or the configuration.
+branch on the code without parsing prose. None of the six writes to the
+workspace, the session store or the configuration. The flat
+`orch_uni_validate_report` alias executes exactly the validator above; it exists
+only so older prompts keep working. Its registration is best-effort: if the host
+rejects a namespace-less tool, the plugin emits one warning and skips the alias;
+the six canonical tools stay registered.
 
-### `orch_uni_validate_report`
+### `tools.orch_uni.validate_report`
 
 ```jsonc
 { "text": "<report text>" }              // or
@@ -90,25 +100,34 @@ workspace, the session store or the configuration.
   "schema": "empiric/v1" }          // optional: expected schema id
 ```
 
-Provide exactly one of `text` / `path`. The tool takes the **last** fenced ```` ```json ````
+Provide exactly one of `text` / `path`. An unknown `schema` argument is refused
+with `E_UNKNOWN_SCHEMA` **before** the file is read; the body carries `available`
+(the shipped ids) and a `hint`. The tool then takes the **last** fenced ```` ```json ````
 block that parses and carries a `schema` field, resolves the schema by that field and
 validates the document.
 
 ```jsonc
 { "valid": true, "schema": "empiric/v1", "errors": [], "warnings": [ … ] }
 { "valid": false, "code": "E_INVALID", "schema": "empiric/v1",
-  "errors": [ { "path": "$.findings[0].severity", "message": "expected one of …" } ],
+  "errors": [ { "path": "$.findings[0].severity", "message": "expected one of …",
+                "hint": "Field \"severity\" is not an allowed value; …" } ],
+  "hint": "Fix $.findings[0].severity first: …",
   "warnings": [] }
 ```
+
+Every failure body also carries `hint` (≤300 characters): the fenced-block
+skeleton for `E_NO_JSON`, the usual JSON mistakes for `E_PARSE`, the expected and
+reported ids plus `available` for `E_SCHEMA_MISMATCH`, and the first error for
+`E_INVALID` — where each `errors[]` entry has its own `hint`.
 
 | Code                | Meaning                                                          |
 | ------------------- | ---------------------------------------------------------------- |
 | `E_INPUT`           | Bad call: neither/both of `text`/`path`, wrong types, unreadable file |
-| `E_NO_JSON`         | No fenced ```` ```json ```` block found                          |
+| `E_NO_JSON`         | No fenced ```` ```json ```` block found; `hint` has the skeleton |
 | `E_PARSE`           | A block exists but none parses as JSON                           |
-| `E_UNKNOWN_SCHEMA`  | The report names an id that is not shipped (or no id at all)     |
+| `E_UNKNOWN_SCHEMA`  | Unknown expected id (preflight) or a report id that is not shipped (see `available`) |
 | `E_SCHEMA_MISMATCH` | The report names another schema than the expected one            |
-| `E_INVALID`         | The document does not satisfy its schema (see `errors`)          |
+| `E_INVALID`         | The document does not satisfy its schema (see `errors[].hint`)   |
 | `E_SCHEMA_IO`       | `schemas/*.json` unreadable/malformed (see `directory`, `file`)  |
 | `E_ABORTED`         | The session was stopped while reading the report                 |
 
@@ -123,11 +142,25 @@ The schemas ship as `schemas/*.json` and are derived **strictly** from the SGR
 sections of `agents/*.md`, which stay the source of truth: the test suite parses every
 agent's SGR template and fails when a prompt field or enum value is not accepted by its
 schema. `context-lint-failure/v1` is the typed failure envelope of
-`orch_uni_context_lint` — it has no agent template and is never a report. Schemas set
+`tools.orch_uni.context_lint` — it has no agent template and is never a report. Schemas set
 `additionalProperties` permissively — agents may add fields of their
 own (`verdict_label`, `check`, …).
 
-### `orch_uni_context_lint`
+### `tools.orch_uni.list_tools`
+
+```jsonc
+{}                              // catalogue only
+{ "tool": "validate_report" }   // plus schema ids, required fields and minimal examples
+```
+
+Returns `{ok, namespace, canonical, tools, compatibility, schemas?, exampleMaxChars?}`.
+`tools` lists every name with its canonical `call` (`tools.orch_uni.<name>({...})`)
+and a one-line summary. With `tool: "validate_report"` it adds `schemas`: one entry
+per shipped id with `required` and a minimal valid `example` (≤1200 characters),
+so a model can repair a report without reading these docs. An unknown `tool` is
+`E_INPUT` with the available names.
+
+### `tools.orch_uni.context_lint`
 
 ```jsonc
 { "path": "AGENTS.md" }                  // file or directory, relative to the location
@@ -203,7 +236,7 @@ or a Commands section, an HTML comment such as `<!-- npm install -->` is not a c
 needs a target, so prose such as "Make sure …" is not a command. A scan started at the root also
 picks up fixture trees such as `eval/`; pass an explicit path for the canonical files.
 
-### `orch_uni_snapshot`
+### `tools.orch_uni.snapshot`
 
 ```jsonc
 { "path": "lab/stack-test", "exclude": ["tmp"] }   // exclude is optional and additive
@@ -224,7 +257,7 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
   whole snapshot; a truncated snapshot would be a wrong aggregate). `E_NOT_FOUND` for a
   missing path or a non-directory, `E_ABORTED` when the session is stopped.
 
-### `orch_uni_sessions`
+### `tools.orch_uni.sessions`
 
 ```jsonc
 {}                                        // children of the calling session
@@ -261,7 +294,7 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
 `E_INPUT` for malformed arguments, `E_NOT_FOUND` when the parent session does not exist,
 `E_ABORTED` when the session is stopped.
 
-### `orch_uni_session_stats`
+### `tools.orch_uni.session_stats`
 
 ```jsonc
 {}                                  // counters of the calling session
@@ -286,8 +319,24 @@ picks up fixture trees such as `eval/`; pass an explicit path for the canonical 
              "toolOutputEnabled": true,
              "toolOutputTools": ["shell", "bash", "webfetch"],
              "compactionSource": "event", "eventLive": true,
-             "streamFailures": 0, "unkeyedCalls": 0 } }
+             "streamFailures": 0, "unkeyedCalls": 0 },
+  "journal": { "available": true,
+               "counts": { "reminder": 1, "compaction": 1, "command": 1, "validation": 2 },
+               "events": [ { "kind": "validation", "at": 1760000000000,
+                             "schema": "empiric/v1", "valid": true,
+                             "errorCount": 0, "warningCount": 1 } ] } }
 ```
+
+`journal` is an optional, backward-compatible field: `{available, counts, events}`.
+`counts` is an all-time aggregate per kind (`reminder`, `compaction`, `command`,
+`validation`); `events` keeps the newest `options.sessionJournal.maxEvents`
+(default 200) entries, so a capped journal still reports every fact in `counts`.
+The journal lives in plugin storage under
+`orchestrator.uni/session-journal/v1/<sessionID>`; it contains only whitelisted
+primitives — never prompt text, tool arguments, paths or report bodies — and
+`session.deleted` removes it with the counters. If journaling is disabled, a
+storage write failed, or the session has no journal yet, `available` is `false`
+and the field stays a normal success shape; it is never `E_NOT_FOUND`.
 
 `sessionID` may name **any session on this server**, not only a child of the caller;
 that is deliberate — the orchestrator uses the report to control every slice it runs.
@@ -383,14 +432,25 @@ part can be disabled with its `enabled` flag:
           "maxChars": 20000,
           "headChars": 4000,
           "tools": ["shell", "bash", "webfetch"]
-        }
+        },
+        "sessionJournal": { "enabled": true, "maxEvents": 200 }
       }
     }
   ]
 }
 ```
 
-Slice metrics — `orch_uni_session_stats`; closing a slice — the `/handoff` command.
+The **event journal** (`options.sessionJournal`) is a separate, fail-open
+persistence of four protocol facts: `reminder` (after a real system-prompt push),
+`compaction` (confirmed or failed, after deduplication), `command` (a slash command
+ran) and `validation` (the validator returned). It stores no prompt text, tool
+arguments, paths or report bodies, keeps the newest `maxEvents` per session
+(default 200) while `counts` survives eviction, and is removed on `session.deleted`.
+A storage failure produces one warning and turns journaling off for the instance;
+`session_stats.journal.available` then reads `false`. Set
+`"sessionJournal": { "enabled": false }` to switch it off entirely.
+
+Slice metrics — `tools.orch_uni.session_stats`; closing a slice — the `/handoff` command.
 
 ## Models
 

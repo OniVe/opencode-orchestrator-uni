@@ -43,5 +43,23 @@
         }
       }
     }
+  },
+  "example": {
+    "schema": "fix-runner/v1",
+    "round": "1",
+    "commit": null,
+    "results": [
+      {
+        "id": "F1",
+        "status": "closed",
+        "change": "fix the broken link",
+        "before": "link target missing",
+        "after": "link resolves",
+        "proof": "bun test ./test/",
+        "stand": "local checkout",
+        "tests": "0 fail"
+      }
+    ],
+    "out_of_scope": []
   }
 }

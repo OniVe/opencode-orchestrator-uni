@@ -97,5 +97,24 @@
         }
       }
     }
+  },
+  "example": {
+    "schema": "empiric/v1",
+    "verdict": "ready",
+    "claims_checked": [
+      {
+        "claim": "the suite is green",
+        "method": "run",
+        "command": "bun test ./test/",
+        "rc": "0",
+        "result": "0 fail",
+        "verdict": "confirmed"
+      }
+    ],
+    "modes_measured": [],
+    "self_check": [{ "item": 1, "title": "rc recorded", "status": "applied", "note": "rc=0" }],
+    "findings": [],
+    "contract_gaps": [],
+    "not_verified": []
   }
 }

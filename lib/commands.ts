@@ -7,6 +7,7 @@
  * `docs/<locale>/context-efficiency.md` and `docs/<locale>/session-discipline.md`.
  */
 import type { Plugin } from "@opencode/plugin"
+import type { EventJournal } from "./event-journal"
 
 type CommandLocale = "ru" | "en"
 
@@ -40,7 +41,7 @@ function agentsMdPrompt(locale: CommandLocale, goal: string): string {
       "",
       "Работай по документу context-efficiency.md из reference audit-kit.",
       audit
-        ? "1. Это аудит: сначала вызови orch_uni_context_lint (если доступен), затем context-lint; покажи SGR и closing_list."
+        ? "1. Это аудит: сначала вызови tools.orch_uni.context_lint (если доступен), затем context-lint; покажи SGR и closing_list."
         : "1. Это черновик: собери факты (стек, команды, границы, ловушки, never/ask, указатели); задай не более 8 вопросов.",
       "2. Не выдумывай команды, пути и версии; всё непроверенное помечай.",
       "3. Заполни шаблон AGENTS.md из context-efficiency.md; бюджет 150–200 строк.",
@@ -55,7 +56,7 @@ function agentsMdPrompt(locale: CommandLocale, goal: string): string {
     "",
     "Follow context-efficiency.md from the audit-kit reference.",
     audit
-      ? "1. This is an audit: run orch_uni_context_lint first (when available), then context-lint; show the SGR and closing_list."
+      ? "1. This is an audit: run tools.orch_uni.context_lint first (when available), then context-lint; show the SGR and closing_list."
       : "1. This is a draft: collect facts (stack, commands, boundaries, traps, never/ask, pointers); ask at most 8 questions.",
     "2. Do not invent commands, paths or versions; mark everything unverified.",
     "3. Fill the AGENTS.md template from context-efficiency.md; keep the budget at 150–200 lines.",
@@ -73,7 +74,7 @@ function specPrompt(locale: CommandLocale, brief: string): string {
       "Работай по документу context-efficiency.md из reference audit-kit.",
       "1. Задай не более 5 уточняющих вопросов; non-goals, приоритеты и метрики утверждает владелец.",
       "2. Заполни шаблон SPEC.md: контекст, цель, non-goals 3–7, сценарии, R1..Rn (EARS), AC с тестами, инварианты, контракты ссылками, NFR, SC, открытые вопросы, трассировка, DoD.",
-      "3. Прогони orch_uni_context_lint (если доступен) и context-lint; покажи diff и открытые вопросы.",
+      "3. Прогони tools.orch_uni.context_lint (если доступен) и context-lint; покажи diff и открытые вопросы.",
       "4. Канонический SPEC.md не меняй без подтверждения; правки — через fix-runner.",
     ].join("\n")
   }
@@ -84,7 +85,7 @@ function specPrompt(locale: CommandLocale, brief: string): string {
     "Follow context-efficiency.md from the audit-kit reference.",
     "1. Ask at most 5 clarifying questions; non-goals, priorities and success metrics are owned by the owner.",
     "2. Fill the SPEC.md template: context, goal, 3–7 non-goals, scenarios, R1..Rn (EARS), AC with tests, invariants, contract links, NFRs, success metrics, open questions, traceability, DoD.",
-    "3. Run orch_uni_context_lint (when available) and context-lint; show the diff and open questions.",
+    "3. Run tools.orch_uni.context_lint (when available) and context-lint; show the diff and open questions.",
     "4. Do not change the canonical SPEC.md without approval; apply fixes through fix-runner.",
   ].join("\n")
 }
@@ -119,7 +120,11 @@ function handoffPrompt(locale: CommandLocale, goal: string): string {
 }
 
 /** Register `/agents-md`, `/spec` and `/handoff`; the cleanup disposes the transform registration. */
-export async function registerKitCommands(ctx: Plugin.Context, locale: CommandLocale): Promise<Plugin.Cleanup> {
+export async function registerKitCommands(
+  ctx: Plugin.Context,
+  locale: CommandLocale,
+  journal?: EventJournal,
+): Promise<Plugin.Cleanup> {
   // The command API is optional in a host build. A missing `list` was already
   // tolerated; a missing `transform` used to throw out of `setup` and take every
   // agent and tool with it, so it degrades to a warning plus a no-op cleanup.
@@ -141,17 +146,23 @@ export async function registerKitCommands(ctx: Plugin.Context, locale: CommandLo
         name: "agents-md",
         description: DESCRIPTIONS[locale].agentsMd,
         execute: async (input) => {
-          await ctx.session.prompt({
-            sessionID: input.sessionID,
-            text: agentsMdPrompt(
-              locale,
-              commandArgs(input.prompt.text) || (locale === "ru" ? "текущий репозиторий" : "the current repository"),
-            ),
-            ...(input.prompt.files === undefined ? {} : { files: input.prompt.files }),
-            ...(input.prompt.agents === undefined ? {} : { agents: input.prompt.agents }),
-            ...(input.prompt.skills === undefined ? {} : { skills: input.prompt.skills }),
-            delivery: input.delivery,
-          })
+          try {
+            await ctx.session.prompt({
+              sessionID: input.sessionID,
+              text: agentsMdPrompt(
+                locale,
+                commandArgs(input.prompt.text) || (locale === "ru" ? "текущий репозиторий" : "the current repository"),
+              ),
+              ...(input.prompt.files === undefined ? {} : { files: input.prompt.files }),
+              ...(input.prompt.agents === undefined ? {} : { agents: input.prompt.agents }),
+              ...(input.prompt.skills === undefined ? {} : { skills: input.prompt.skills }),
+              delivery: input.delivery,
+            })
+          } catch (error) {
+            await journal?.append(input.sessionID, { kind: "command", command: "agents-md", skipped: true })
+            throw error
+          }
+          await journal?.append(input.sessionID, { kind: "command", command: "agents-md" })
         },
       })
     }
@@ -160,18 +171,24 @@ export async function registerKitCommands(ctx: Plugin.Context, locale: CommandLo
         name: "spec",
         description: DESCRIPTIONS[locale].spec,
         execute: async (input) => {
-          await ctx.session.prompt({
-            sessionID: input.sessionID,
-            text: specPrompt(
-              locale,
-              commandArgs(input.prompt.text) ||
-                (locale === "ru" ? "описание фичи не задано — спроси" : "no feature brief — ask for one"),
-            ),
-            ...(input.prompt.files === undefined ? {} : { files: input.prompt.files }),
-            ...(input.prompt.agents === undefined ? {} : { agents: input.prompt.agents }),
-            ...(input.prompt.skills === undefined ? {} : { skills: input.prompt.skills }),
-            delivery: input.delivery,
-          })
+          try {
+            await ctx.session.prompt({
+              sessionID: input.sessionID,
+              text: specPrompt(
+                locale,
+                commandArgs(input.prompt.text) ||
+                  (locale === "ru" ? "описание фичи не задано — спроси" : "no feature brief — ask for one"),
+              ),
+              ...(input.prompt.files === undefined ? {} : { files: input.prompt.files }),
+              ...(input.prompt.agents === undefined ? {} : { agents: input.prompt.agents }),
+              ...(input.prompt.skills === undefined ? {} : { skills: input.prompt.skills }),
+              delivery: input.delivery,
+            })
+          } catch (error) {
+            await journal?.append(input.sessionID, { kind: "command", command: "spec", skipped: true })
+            throw error
+          }
+          await journal?.append(input.sessionID, { kind: "command", command: "spec" })
         },
       })
     }
@@ -180,20 +197,26 @@ export async function registerKitCommands(ctx: Plugin.Context, locale: CommandLo
         name: "handoff",
         description: DESCRIPTIONS[locale].handoff,
         execute: async (input) => {
-          await ctx.session.prompt({
-            sessionID: input.sessionID,
-            text: handoffPrompt(
-              locale,
-              commandArgs(input.prompt.text) ||
-                (locale === "ru"
-                  ? "текущая сессия — опиши срез по фактам"
-                  : "the current session — describe the slice from facts"),
-            ),
-            ...(input.prompt.files === undefined ? {} : { files: input.prompt.files }),
-            ...(input.prompt.agents === undefined ? {} : { agents: input.prompt.agents }),
-            ...(input.prompt.skills === undefined ? {} : { skills: input.prompt.skills }),
-            delivery: input.delivery,
-          })
+          try {
+            await ctx.session.prompt({
+              sessionID: input.sessionID,
+              text: handoffPrompt(
+                locale,
+                commandArgs(input.prompt.text) ||
+                  (locale === "ru"
+                    ? "текущая сессия — опиши срез по фактам"
+                    : "the current session — describe the slice from facts"),
+              ),
+              ...(input.prompt.files === undefined ? {} : { files: input.prompt.files }),
+              ...(input.prompt.agents === undefined ? {} : { agents: input.prompt.agents }),
+              ...(input.prompt.skills === undefined ? {} : { skills: input.prompt.skills }),
+              delivery: input.delivery,
+            })
+          } catch (error) {
+            await journal?.append(input.sessionID, { kind: "command", command: "handoff", skipped: true })
+            throw error
+          }
+          await journal?.append(input.sessionID, { kind: "command", command: "handoff" })
         },
       })
     }

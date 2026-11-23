@@ -40,5 +40,20 @@
         }
       }
     }
+  },
+  "example": {
+    "schema": "arbiter/v1",
+    "verdict": "resolved",
+    "disputes": [
+      {
+        "id": "D1",
+        "item": "the cache survives a restart",
+        "verdict": "confirmed",
+        "prism": "reproducibility",
+        "method": "rerun the scenario",
+        "evidence": "command rc=0, output matches"
+      }
+    ],
+    "not_verified": []
   }
 }

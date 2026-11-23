@@ -42,5 +42,13 @@
         }
       }
     }
+  },
+  "example": {
+    "schema": "meta/v1",
+    "verdict": "pass",
+    "gate": "pass",
+    "closing_list": [],
+    "coverage_gaps": [],
+    "reports": [{ "report": "reports/empiric-r1.md", "result": "pass", "violations": [] }]
   }
 }

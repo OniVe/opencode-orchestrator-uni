@@ -101,15 +101,18 @@ the number of small steps.
 
 | Metric | Target | Where |
 | --- | --- | --- |
-| Estimated prompt (median) | ≤ 150k | `orch_uni_session_stats` |
-| Compactions per slice | ≤ 1 | `orch_uni_session_stats` |
-| Tools per turn (`toolCalls/requests`, reported as `toolsPerTurn`) | ≥ 2 | `orch_uni_session_stats` |
-| Share of capped outputs among the tool's calls (`toolOutputsCappedByTool.shell / toolCallsByTool.shell`; likewise `bash`, `webfetch`) | < 5% | `orch_uni_session_stats` |
+| Estimated prompt (median) | ≤ 150k | `tools.orch_uni.session_stats` |
+| Compactions per slice | ≤ 1 | `tools.orch_uni.session_stats` |
+| Tools per turn (`toolCalls/requests`, reported as `toolsPerTurn`) | ≥ 2 | `tools.orch_uni.session_stats` |
+| Share of capped outputs among the tool's calls (`toolOutputsCappedByTool.shell / toolCallsByTool.shell`; likewise `bash`, `webfetch`) | < 5% | `tools.orch_uni.session_stats` |
 | Handoff at slice end | present | working tree |
 
-`orch_uni_session_stats` reports the counters of the current plugin instance and
+`tools.orch_uni.session_stats` reports the counters of the current plugin instance and
 the configured limits; historical runs are counted from the session database on
-the project side.
+the project side. Its optional `journal` field keeps the protocol facts
+(reminders, compactions, commands, validations) across plugin reloads: `counts`
+is all-time, `events` is the newest 200, and a missing or failed journal is
+`available: false`, not an error.
 
 ## 8. Guard
 

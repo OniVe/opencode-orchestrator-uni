@@ -19,7 +19,7 @@ import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
 import { schemaForRole } from "../eval/derive"
 import { AGENTS_DIRECTORY, DOCS_DIRECTORY, PLUGIN_ID, SUPPORTED_LOCALES } from "../index"
-import { loadSchemas, SCHEMAS_DIRECTORY, TOOL_IDS } from "../lib/tools"
+import { COMPATIBILITY_VALIDATE_REPORT, loadSchemas, SCHEMAS_DIRECTORY, TOOL_NAMES } from "../lib/tools"
 import { agentFiles as localeAgentFiles } from "./support/locales"
 
 const KIT_ROOT = path.resolve(AGENTS_DIRECTORY, "..")
@@ -70,9 +70,12 @@ const PLUGIN_ID_LITERAL = "orchestrator.uni"
  */
 const OLD_IDENTITY_TOKENS = /\b(?:opencode-)?orchestrator-agents\b/g
 
-/** Effective tool id in prose: `orch_uni_<name>`, plus the documented wildcard `orch_uni_*`. */
+/** Effective tool id in prose: the one flat alias plus the documented wildcard `orch_uni_*`. */
 const TOOL_TOKEN = /\borch_uni_[A-Za-z0-9_*]+/g
-const TOOL_TOKEN_ALLOWED = new Set([...TOOL_IDS, "orch_uni_*"])
+const TOOL_TOKEN_ALLOWED = new Set([COMPATIBILITY_VALIDATE_REPORT, "orch_uni_*"])
+
+/** Canonical call in prose: `tools.orch_uni.<name>`; the name must be a shipped tool. */
+const CANONICAL_TOKEN = /\btools\.orch_uni\.([A-Za-z0-9_]+)/g
 
 /** Every JSON object in markdown that carries a string `schema` field. */
 function promptTemplates(markdown: string): Record<string, unknown>[] {
@@ -187,16 +190,28 @@ describe("prose references only existing agent and tool ids", () => {
       for (const match of markdown.matchAll(TOOL_TOKEN)) {
         if (TOOL_TOKEN_ALLOWED.has(match[0])) continue
         const line = markdown.slice(0, match.index).split("\n").length
-        violations.push(`${relative}:${line}: unknown tool id "${match[0]}" (TOOL_IDS: ${TOOL_IDS.join(", ")})`)
+        violations.push(
+          `${relative}:${line}: unknown flat tool id "${match[0]}" (use tools.orch_uni.<name>; TOOL_NAMES: ${TOOL_NAMES.join(", ")})`,
+        )
+      }
+      for (const match of markdown.matchAll(CANONICAL_TOKEN)) {
+        if (TOOL_NAMES.includes(match[1]!)) continue
+        const line = markdown.slice(0, match.index).split("\n").length
+        violations.push(
+          `${relative}:${line}: unknown canonical tool "${match[0]}" (TOOL_NAMES: ${TOOL_NAMES.join(", ")})`,
+        )
       }
     }
     expect(violations).toEqual([])
   })
 
-  test("every agent prompt names the validator by its effective id", async () => {
+  test("every agent prompt names the validator by its canonical call", async () => {
     for (const file of await agentFiles()) {
       const markdown = await readFile(path.join(AGENTS_DIRECTORY, file), "utf8")
-      expect(/\borch_uni_validate_report\b/.test(markdown), `${file} names orch_uni_validate_report`).toBe(true)
+      expect(
+        /\btools\.orch_uni\.validate_report\b/.test(markdown),
+        `${file} names tools.orch_uni.validate_report`,
+      ).toBe(true)
     }
   })
 })
@@ -296,9 +311,9 @@ describe("agent prompt caps match the tool", () => {
 // R6-5/R7-7: both READMEs state the same shipped test count and the same file
 // count, and the English count equals the pinned constant, so a round that adds
 // tests cannot leave both locales stale at the same old number.
-const SHIPPED_TEST_COUNT = 438
+const SHIPPED_TEST_COUNT = 474
 describe("README test count", () => {
-  test("both READMEs agree on the shipped test count and 11 files", async () => {
+  test("both READMEs agree on the shipped test count and 12 files", async () => {
     const guards = [
       { name: "README.md", pattern: /\*\*(\d+) tests in (\d+) files\*\*/ },
       { name: "README.ru.md", pattern: /\*\*(\d+) тест(?:ов|а)? в (\d+) файлах\*\*/ },
@@ -315,8 +330,8 @@ describe("README test count", () => {
     expect(english.tests).toBeGreaterThan(0)
     expect(english.tests).toBe(russian.tests)
     expect(english.tests).toBe(SHIPPED_TEST_COUNT)
-    expect(english.files).toBe(11)
-    expect(russian.files).toBe(11)
+    expect(english.files).toBe(12)
+    expect(russian.files).toBe(12)
   })
 })
 

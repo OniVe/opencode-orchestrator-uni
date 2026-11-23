@@ -52,7 +52,7 @@ export const SUPPORTED_KEYWORDS: ReadonlySet<string> = new Set([
   "minItems",
 ])
 
-/** Typed failure codes returned by `checkReport` and the `orch_uni_validate_report` tool. */
+/** Typed failure codes returned by `checkReport` and the `tools.orch_uni.validate_report` tool. */
 export type ValidationCode =
   | "E_NO_JSON"
   | "E_PARSE"
@@ -64,6 +64,8 @@ export type ValidationCode =
 export interface SchemaError {
   readonly path: string
   readonly message: string
+  /** Short, actionable repair hint (≤300 chars); computed by `checkReport`. */
+  readonly hint?: string
 }
 
 export interface ValidationReport {
@@ -76,6 +78,10 @@ export interface ValidationReport {
   readonly warnings: readonly string[]
   /** Short human-readable summary; always set for extraction failures. */
   readonly message?: string
+  /** Repair hint for a typed failure (≤300 chars). */
+  readonly hint?: string
+  /** Schema ids the registry knows, set on `E_UNKNOWN_SCHEMA` / `E_SCHEMA_MISMATCH`. */
+  readonly available?: readonly string[]
 }
 
 export interface CheckReportOptions {
@@ -184,6 +190,79 @@ export function validateValue(value: unknown, node: JsonSchemaNode, path: string
     }
   }
   return errors
+}
+
+/**
+ * Repair hints are bounded: a failed validation must not turn into a second
+ * report-sized payload in the model's context.
+ */
+export const HINT_LIMIT = 300
+
+function clipHint(text: string): string {
+  return text.length <= HINT_LIMIT ? text : `${text.slice(0, HINT_LIMIT - 3)}...`
+}
+
+/** Last addressed field of a `$.a.b[0].c` path (`$` when the root itself failed). */
+function lastField(path: string): string {
+  const match = /(?:^|\.)([A-Za-z0-9_-]+)(?=\[(?:\d+)\]$|$)/.exec(path)
+  return match?.[1] ?? path
+}
+
+/**
+ * Deterministic repair hint for one schema error, keyed by its message. The
+ * validator messages are stable (`test/report-schema.test.ts` pins them), so a
+ * message-prefix switch stays in sync without threading the schema node through.
+ */
+export function schemaErrorHint(error: SchemaError): string {
+  const field = lastField(error.path)
+  const { message } = error
+  if (message === "required field is missing") {
+    return clipHint(`Required field "${field}" is missing; add it at ${error.path}.`)
+  }
+  if (message.startsWith("expected type ")) {
+    return clipHint(
+      `Field "${field}" has the wrong type (${message.slice("expected ".length)}); use the stated JSON type.`,
+    )
+  }
+  if (message.startsWith("expected one of ")) {
+    return clipHint(`Field "${field}" is not an allowed value; copy one of the enum values from the message exactly.`)
+  }
+  if (message === "additional property is not allowed") {
+    return clipHint(`Property "${field}" is not in the schema; remove it or move the fact into a documented field.`)
+  }
+  if (message.startsWith("expected at least ")) {
+    return clipHint(`Field "${field}" is too short; ${message.slice("expected ".length)}.`)
+  }
+  if (message.startsWith("expected const ")) {
+    return clipHint(`Field "${field}" is pinned; set it to the exact const value shown in the message.`)
+  }
+  return clipHint(`${error.path}: ${message}`)
+}
+
+/** `E_NO_JSON`: the exact block shape the extractor accepts. */
+function noJsonHint(): string {
+  return clipHint(
+    'End the answer with a fenced block:\n```json\n{"schema":"<id>", ...}\n```\nThe opening fence is ```json; the closing fence must be a line of its own.',
+  )
+}
+
+/** `E_PARSE`: the three mistakes that most often break a copied JSON block. */
+function parseHint(): string {
+  return clipHint(
+    "The ```json block is not valid JSON: remove trailing commas and comments, escape newlines inside strings, and quote every key.",
+  )
+}
+
+function availableHint(available: readonly string[]): string {
+  return clipHint(
+    `Available schemas: ${available.join(", ")}. Call tools.orch_uni.list_tools({tool:"validate_report"}) for minimal examples.`,
+  )
+}
+
+function mismatchHint(expected: string, reported: string, available: readonly string[]): string {
+  return clipHint(
+    `The report declares "${reported}", but "${expected}" was expected; set "schema":"${expected}" or drop the expected schema. ${availableHint(available)}`,
+  )
 }
 
 /**
@@ -397,14 +476,12 @@ export function reportWarnings(schemaId: string, value: unknown): string[] {
  * outcome is a `ValidationReport` with a typed `code` when `valid` is false.
  */
 export function checkReport(text: string, options: CheckReportOptions): ValidationReport {
-  const selected = selectReportJson(text)
-  if (!selected.ok) {
-    return { valid: false, code: selected.code, errors: [], warnings: [], message: selected.message }
-  }
-  const value = selected.value
-  const reported = isPlainObject(value) && typeof value.schema === "string" ? value.schema : undefined
+  const available = [...options.schemas.keys()].sort()
   const expected = options.expectedSchema
 
+  // The expected id is a property of the call, not of the report: it is checked
+  // before extraction, so an unknown expected schema is E_UNKNOWN_SCHEMA even
+  // when the text/file has no JSON block at all.
   if (expected !== undefined && !options.schemas.has(expected)) {
     return {
       valid: false,
@@ -413,8 +490,25 @@ export function checkReport(text: string, options: CheckReportOptions): Validati
       errors: [],
       warnings: [],
       message: `unknown expected schema "${expected}"`,
+      hint: availableHint(available),
+      available,
     }
   }
+
+  const selected = selectReportJson(text)
+  if (!selected.ok) {
+    return {
+      valid: false,
+      code: selected.code,
+      errors: [],
+      warnings: [],
+      message: selected.message,
+      hint: selected.code === "E_NO_JSON" ? noJsonHint() : parseHint(),
+    }
+  }
+  const value = selected.value
+  const reported = isPlainObject(value) && typeof value.schema === "string" ? value.schema : undefined
+
   const schemaId = reported ?? expected
   if (schemaId === undefined) {
     return {
@@ -423,6 +517,8 @@ export function checkReport(text: string, options: CheckReportOptions): Validati
       errors: [],
       warnings: [],
       message: 'the report has no "schema" field and no schema was expected',
+      hint: availableHint(available),
+      available,
     }
   }
   const schema = options.schemas.get(schemaId)
@@ -434,6 +530,8 @@ export function checkReport(text: string, options: CheckReportOptions): Validati
       errors: [],
       warnings: [],
       message: `unknown schema id "${schemaId}"`,
+      hint: availableHint(available),
+      available,
     }
   }
   if (expected !== undefined && reported !== undefined && reported !== expected) {
@@ -444,10 +542,13 @@ export function checkReport(text: string, options: CheckReportOptions): Validati
       errors: [],
       warnings: [],
       message: `expected schema "${expected}", report declares "${reported}"`,
+      hint: mismatchHint(expected, reported, available),
+      available,
     }
   }
-  const errors = validateValue(value, schema)
+  const errors = validateValue(value, schema).map((error) => ({ ...error, hint: schemaErrorHint(error) }))
   if (errors.length > 0 || !isPlainObject(value)) {
+    const first = errors[0]
     return {
       valid: false,
       code: "E_INVALID",
@@ -455,6 +556,7 @@ export function checkReport(text: string, options: CheckReportOptions): Validati
       errors,
       warnings: [],
       message: `report does not satisfy ${schemaId}: ${errors.length} validation error(s)`,
+      ...(first === undefined ? {} : { hint: clipHint(`Fix ${first.path} first: ${first.hint ?? first.message}`) }),
     }
   }
   return {
