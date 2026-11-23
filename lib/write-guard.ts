@@ -168,6 +168,22 @@ export interface WriteGuardOptions {
   readonly locationDirectory: string
   /** Reports a missing host API or a registration failure (the guard stays no-op). */
   readonly warn: (message: string) => void
+  /**
+   * Observer called for every `edit` evaluation of every agent **after** the
+   * guard decided, with the final effect. The protocol guard uses it to count
+   * source writes; it never changes the guard's own decision, and a throwing
+   * observer is reported once and ignored.
+   */
+  readonly onEvaluate?: (event: WriteGuardEvaluation) => void
+}
+
+/** One edit evaluation as seen by the observer (final effect included). */
+export interface WriteGuardEvaluation {
+  readonly sessionID?: string
+  readonly agent?: string
+  readonly action: string
+  readonly resources: readonly string[]
+  readonly effect: "allow" | "deny" | "ask"
 }
 
 export interface WriteGuard {
@@ -249,19 +265,47 @@ export async function createWriteGuard(ctx: Plugin.Context, options: WriteGuardO
     }
   }
   try {
+    // A throwing observer must not influence the guard: it is reported once and
+    // ignored, exactly like a host API failure.
+    let observerWarned = false
+    const notify = (event: EvaluateEvent): void => {
+      const observer = options.onEvaluate
+      if (observer === undefined) return
+      try {
+        observer({
+          ...(event.sessionID === undefined ? {} : { sessionID: event.sessionID }),
+          ...(event.agent === undefined ? {} : { agent: event.agent }),
+          action: event.action,
+          resources: [...event.resources],
+          effect: event.effect,
+        })
+      } catch (error) {
+        if (observerWarned) return
+        observerWarned = true
+        options.warn(`write guard: the edit observer failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
     const registration = await permission.hook("evaluate", async (event: EvaluateEvent) => {
       try {
-        if (event.agent !== "orchestrator" || event.action !== "edit" || event.effect === "deny") return
-        // The session may have been moved since setup: the host resolves the
-        // resource against the session's current directory, so the guard must too.
-        const locationDirectory = await locationFor(event.sessionID)
-        const denied = event.resources.some((resource) => decideEdit(resource, locationDirectory) === "deny")
-        if (!denied) return
-        event.effect = "deny"
-        event.message = WRITE_GUARD_MESSAGE
+        if (event.action !== "edit") return
+        if (event.agent === "orchestrator" && event.effect !== "deny") {
+          // The session may have been moved since setup: the host resolves the
+          // resource against the session's current directory, so the guard must too.
+          const locationDirectory = await locationFor(event.sessionID)
+          const denied = event.resources.some((resource) => decideEdit(resource, locationDirectory) === "deny")
+          if (denied) {
+            event.effect = "deny"
+            event.message = WRITE_GUARD_MESSAGE
+          }
+        }
+        // Every edit of every agent, after the decision: the protocol guard counts
+        // source writes made by fix-runner/build/general too.
+        notify(event)
       } catch (error) {
         // Fail-open: a broken guard must never break the session it protects.
         options.warn(`write guard: evaluation failed: ${error instanceof Error ? error.message : String(error)}`)
+        // The observer still sees the final (unchanged) effect of this edit.
+        if (event.action === "edit") notify(event)
       }
     })
     let disposed = false

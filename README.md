@@ -146,12 +146,18 @@ All options are optional and live on the plugin entry:
 - `sessionGuard` — prompt-budget reminders and the compaction limit.
 - `toolOutputGuard` — caps large `shell`/`bash`/`webfetch` output.
 - `sessionJournal` — persists protocol events (reminders, compactions, commands,
-  validations) in plugin storage; enabled by default, newest 200 events per session.
+  validations, loop/artifact snapshots) in plugin storage; enabled by default,
+  newest 200 events per session.
+- `protocolGuard` — the source-write loop metric and the root artifact gate:
+  warns on the next context when edits ran outside a full
+  `empiric`+`invariant` → `fix-runner` cycle, or when a slice ended with no
+  handoff/state artifact and no report.
 
 Invalid values are ignored with an `[orchestrator.uni] …` warning. Full option
 reference: [Models](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#models),
-[Locale](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#locale), and
-[Session Hygiene](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#session-hygiene).
+[Locale](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#locale),
+[Session Hygiene](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#session-hygiene), and
+[Loop and Artifacts](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#loop-and-artifacts).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -232,7 +238,7 @@ npm run lint
 npm run lint:fix
 ```
 
-`npm test` scans only `./test/` and now runs **474 tests in 12 files** — 473 pass
+`npm test` scans only `./test/` and now runs **513 tests in 13 files** — 512 pass
 and 1 skip. A bare `bun test` from the root is red by design: it also picks up
 intentionally failing fixtures under `eval/cases/` and drafts under `lab/`; use
 `npm test`.

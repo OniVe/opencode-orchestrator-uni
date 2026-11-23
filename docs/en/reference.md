@@ -452,6 +452,46 @@ A storage failure produces one warning and turns journaling off for the instance
 
 Slice metrics — `tools.orch_uni.session_stats`; closing a slice — the `/handoff` command.
 
+## Loop And Artifacts
+
+`options.protocolGuard` adds a live loop metric and a root artifact gate. It
+observes the write guard's edit evaluations (every agent, final effect) and the
+event stream (`session.created`, root `session.idle`/`session.execution.*`).
+Defaults: `{ enabled: true, requirePair: true, artifactWarnings: true,
+maxArtifactEntries: 500 }`.
+
+- Only roots whose agent is `orchestrator` are classified; `build`/`general`/
+  `plan` roots are ignored. A root with no known agent, or a terminal event for
+  a session with no observed `session.created`, is resolved through a bounded
+  `session.get` first; if the agent stays unknown, the root is skipped
+  (fail-open).
+- The loop is `none` without an `empiric`/`invariant` child, `audit` with at
+  least one, and `audit+fix` only when both auditors and a `fix-runner` created
+  at or after the first auditor exist. A source write is an allowed edit that
+  the write guard classifies as source (`decideEdit` → `deny`); denied edits,
+  artifact edits and shell writes are not counted.
+- Writes of the root and every descendant (by parent chain) are summed. The
+  metric is journaled as `loop` and mirrored into session metadata under
+  `orchestrator.uni`; only counters and booleans are stored, never paths.
+- When a root turn ends with source writes but no `audit+fix` (strict by
+  default; `requirePair: false` accepts `audit`), one warning is queued and
+  injected into the root's **next context** as a system part, once per root. A
+  condition that disappears before delivery is dropped.
+- The artifact gate runs on a root idle/terminal when the root has writes or
+  audit activity: it shallowly checks `handoff-*.md`/`state.md` in the location
+  root and `docs/planning/`, plus top-level `reports/*.md`. If none is found and
+  `artifactWarnings` is on, the same next-context warning applies. Symlinks are
+  skipped, absent directories count as empty, and a scan that hits
+  `maxArtifactEntries` is marked truncated and never fabricates a warning.
+- `tools.orch_uni.session_stats` returns the latest snapshot as `protocol` (or
+  `null` before the first root idle); the event journal keeps `loop` and
+  `artifact` events.
+- Limitations: sessions created before this plugin instance started are
+  invisible; shell writes are invisible; metadata is best-effort (bounded
+  `session.get`/`session.update` failures and timeouts are one warning and the
+  journal stays); multiple `context` hooks on one live host are **not_verified**
+  (the API returns a separate registration per call).
+
 ## Models
 
 Agent definitions carry no `model`; models are configured on the plugin entry in

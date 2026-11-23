@@ -147,6 +147,7 @@ describe("createWriteGuard", () => {
     readonly sessions?: unknown
     readonly omitSession?: boolean
     readonly warn?: (message: string) => void
+    readonly onEvaluate?: Parameters<typeof createWriteGuard>[1]["onEvaluate"]
   }
 
   /** Register the guard against a fake host and return the captured callback. */
@@ -189,7 +190,11 @@ describe("createWriteGuard", () => {
         },
       },
     }
-    const guard = await createWriteGuard(fakeContext(ctx), { locationDirectory: LOCATION, warn })
+    const guard = await createWriteGuard(fakeContext(ctx), {
+      locationDirectory: LOCATION,
+      warn,
+      ...(options.onEvaluate === undefined ? {} : { onEvaluate: options.onEvaluate }),
+    })
     const evaluate = async (event: EvaluateEventDraft) => {
       await registered?.(event)
       return event
@@ -421,6 +426,78 @@ describe("createWriteGuard", () => {
     const failures = host.warnings.filter((line) => line.includes("evaluation failed"))
     expect(failures).toHaveLength(2)
     expect(failures.some((line) => line.includes("resource exploded"))).toBe(true)
+    await host.guard.cleanup()
+  })
+
+  test("the observer sees every edit of every agent after the decision", async () => {
+    const seen: { agent?: string; effect: string; resources: readonly string[] }[] = []
+    const host = await hookHarness({
+      onEvaluate: (event) => {
+        seen.push({
+          ...(event.agent === undefined ? {} : { agent: event.agent }),
+          effect: event.effect,
+          resources: event.resources,
+        })
+      },
+    })
+    // fix-runner may write source: the guard leaves it, and the observer sees it.
+    const fix = await host.evaluate({
+      sessionID: "ses_child",
+      agent: "fix-runner",
+      action: "edit",
+      resources: ["src/x.ts"],
+      effect: "allow",
+    })
+    expect(fix.effect).toBe("allow")
+    // The orchestrator source edit is denied first, and the observer sees the
+    // final effect (deny), not the incoming one.
+    const denied = await host.evaluate({
+      sessionID: "ses_root",
+      agent: "orchestrator",
+      action: "edit",
+      resources: ["src/x.ts"],
+      effect: "allow",
+    })
+    expect(denied.effect).toBe("deny")
+    // A non-edit evaluation is not an edit write and is not reported.
+    await host.evaluate({
+      sessionID: "ses_root",
+      agent: "orchestrator",
+      action: "shell",
+      resources: ["git status"],
+      effect: "allow",
+    })
+    expect(seen).toEqual([
+      { agent: "fix-runner", effect: "allow", resources: ["src/x.ts"] },
+      { agent: "orchestrator", effect: "deny", resources: ["src/x.ts"] },
+    ])
+    await host.guard.cleanup()
+  })
+
+  test("a throwing observer is reported once and never changes the decision", async () => {
+    let calls = 0
+    const host = await hookHarness({
+      onEvaluate: () => {
+        calls += 1
+        throw new Error("observer exploded")
+      },
+    })
+    const first = await host.evaluate({
+      agent: "fix-runner",
+      action: "edit",
+      resources: ["src/x.ts"],
+      effect: "allow",
+    })
+    const second = await host.evaluate({
+      agent: "fix-runner",
+      action: "edit",
+      resources: ["src/y.ts"],
+      effect: "allow",
+    })
+    expect(first.effect).toBe("allow")
+    expect(second.effect).toBe("allow")
+    expect(calls).toBe(2)
+    expect(host.warnings.filter((line) => line.includes("edit observer")).length).toBe(1)
     await host.guard.cleanup()
   })
 })

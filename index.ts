@@ -54,6 +54,7 @@ import type { Agent, Model, Plugin, Reference } from "@opencode/plugin"
 import matter from "gray-matter"
 import { registerKitCommands } from "./lib/commands"
 import { EventJournal, readSessionJournalOptions } from "./lib/event-journal"
+import { createProtocolGuard, readProtocolGuardOptions } from "./lib/protocol-guard"
 import { createSessionBudget, readSessionBudgetOptions, safeJson } from "./lib/session-budget"
 import { registerAuditTools } from "./lib/tools"
 import { createWriteGuard } from "./lib/write-guard"
@@ -421,26 +422,36 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   // tools are registered must abort that subscription too — otherwise a
   // half-registered plugin leaks an event listener for the lifetime of the server.
   // The event journal is one instance shared by the guard (reminder/compaction),
-  // the commands (command facts) and the tools (validation facts + stats view).
+  // the protocol guard (loop/artifact snapshots), the commands (command facts) and
+  // the tools (validation facts + stats view).
   const journal = new EventJournal(ctx.storage, readSessionJournalOptions(ctx.options, warn), warn)
-  const sessionBudget = await createSessionBudget(ctx, readSessionBudgetOptions(ctx.options, warn), locale, warn, {
+  // The protocol guard observes edit evaluations and root terminal events: it
+  // keeps the loop metric and queues the missing-cycle / missing-artifact
+  // warning for the root's next context. It never throws and stays a no-op on a
+  // host without the event stream — a missing API is reported, never fatal.
+  const protocolGuard = await createProtocolGuard(ctx, readProtocolGuardOptions(ctx.options, warn), locale, warn, {
     journal,
   })
   // The path-root write guard enforces the orchestrator's artifact-only edit
   // contract beyond what flat `permissions` can express (see `lib/write-guard.ts`).
   // It registers on the host's permission hook and stays a no-op on a host without
-  // that API — a missing hook is reported, never fatal. Registration happens
-  // before the tools so a later failure disposes the guard with the rest of the chain.
+  // that API — a missing hook is reported, never fatal. Its observer feeds the
+  // protocol guard's source-write counter for every agent.
   const writeGuard = await createWriteGuard(ctx, {
     locationDirectory: String(ctx.location.directory),
     warn,
+    onEvaluate: protocolGuard.recordWrite,
+  })
+  const sessionBudget = await createSessionBudget(ctx, readSessionBudgetOptions(ctx.options, warn), locale, warn, {
+    journal,
   })
   let toolsCleanup: () => void
   try {
-    toolsCleanup = await registerAuditTools(ctx, { sessionBudget, journal, warn })
+    toolsCleanup = await registerAuditTools(ctx, { sessionBudget, journal, protocolGuard, warn })
   } catch (error) {
-    await writeGuard.cleanup()
     await sessionBudget.cleanup()
+    await writeGuard.cleanup()
+    await protocolGuard.cleanup()
     throw error
   }
   let commandsCleanup: Plugin.Cleanup
@@ -448,8 +459,9 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
     commandsCleanup = await registerKitCommands(ctx, locale, journal)
   } catch (error) {
     toolsCleanup()
-    await writeGuard.cleanup()
     await sessionBudget.cleanup()
+    await writeGuard.cleanup()
+    await protocolGuard.cleanup()
     throw error
   }
   return async () => {
@@ -460,12 +472,16 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
         toolsCleanup()
       } finally {
         try {
-          await writeGuard.cleanup()
+          await sessionBudget.cleanup()
         } finally {
           try {
-            await journal.flush()
+            await writeGuard.cleanup()
           } finally {
-            await sessionBudget.cleanup()
+            try {
+              await protocolGuard.cleanup()
+            } finally {
+              await journal.flush()
+            }
           }
         }
       }

@@ -37,6 +37,7 @@ import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode/plugin"
 import { lintContext } from "./context-lint"
 import type { EventJournal } from "./event-journal"
+import type { ProtocolGuardReport } from "./protocol-guard"
 import { checkReport, type JsonSchemaNode, type ValidationCode } from "./report-schema"
 import { compactionLimitReached, type SessionBudgetReport } from "./session-budget"
 import { DEFAULT_EXCLUDE, isSnapshotFailure, snapshotTree } from "./snapshot"
@@ -534,6 +535,8 @@ export interface RegisterAuditToolsOptions {
   readonly schemasDirectory?: string
   /** Session counters from the runtime session guard; absent in isolation. */
   readonly sessionBudget?: SessionBudgetReport
+  /** Loop/artifact snapshot of the protocol guard; absent in isolation. */
+  readonly protocolGuard?: ProtocolGuardReport
   /** Persisted protocol journal, shared with the session guard and commands. */
   readonly journal?: EventJournal
   /** Warning channel of the plugin entry; a rejected compatibility alias is reported here. */
@@ -973,6 +976,7 @@ export async function registerAuditTools(
     }
     const journal =
       options.journal === undefined ? { available: false, counts: {}, events: [] } : await options.journal.read(target)
+    const protocol = options.protocolGuard === undefined ? undefined : await options.protocolGuard.snapshot(target)
     return json({
       ok: true,
       sessionID: target,
@@ -988,6 +992,7 @@ export async function registerAuditTools(
       tracked,
       guard,
       journal,
+      protocol: protocol ?? null,
       ...(getFn === undefined
         ? { session: null, limitations: ["session.get is unavailable in this build"] }
         : info === undefined
@@ -1065,9 +1070,11 @@ export async function registerAuditTools(
         "calls and capped tool outputs (totals and per normalized tool name), chars kept out of context, plus the " +
         "configured limits and toolsPerTurn. The optional `journal` field carries the persisted protocol events " +
         "({available, counts, events}); it is available:false when journaling is off or storage failed, never an " +
-        "E_NOT_FOUND. Read-only; counters belong to this plugin instance. `sessionID` may name any " +
+        "E_NOT_FOUND. The `protocol` field carries the loop/artifact snapshot of the protocol guard ({loop, writes, " +
+        "audits, pair, fix, handoff, state, reports, ...}), or null when the guard did not classify the session yet. " +
+        "Read-only; counters belong to this plugin instance. `sessionID` may name any " +
         "session on this server, not only a child of the caller. Returns JSON {ok, sessionID, counters, limits, overBudget, " +
-        "compactionLimitReached, toolsPerTurn, tracked, guard, journal, session?, limitations?} or a typed code " +
+        "compactionLimitReached, toolsPerTurn, tracked, guard, journal, protocol, session?, limitations?} or a typed code " +
         "(E_INPUT|E_NOT_FOUND|E_INTERNAL|E_NO_API|E_UNAVAILABLE|E_ABORTED).",
       input: SESSION_STATS_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },

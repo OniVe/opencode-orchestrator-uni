@@ -86,9 +86,9 @@ function createHarness(
   const commands = new Map<string, CommandDraft>()
   const prompts: unknown[] = []
   const storage = new Map<string, unknown>()
-  const sessionHooks = new Map<string, unknown>()
-  const toolHooks = new Map<string, unknown>()
-  const permissionHooks = new Map<string, unknown>()
+  const sessionHooks = new Map<string, unknown[]>()
+  const toolHooks = new Map<string, unknown[]>()
+  const permissionHooks = new Map<string, unknown[]>()
   const subscriptionSignals: AbortSignal[] = []
   let subscriptionSignal: AbortSignal | undefined
   let permissionDisposals = 0
@@ -160,13 +160,13 @@ function createHarness(
         return { id: "msg_test" }
       },
       hook: async (name: string, callback: unknown) => {
-        sessionHooks.set(name, callback)
+        sessionHooks.set(name, [...(sessionHooks.get(name) ?? []), callback])
         return { dispose: async () => {} }
       },
     },
     permission: {
       hook: async (name: string, callback: unknown) => {
-        permissionHooks.set(name, callback)
+        permissionHooks.set(name, [...(permissionHooks.get(name) ?? []), callback])
         return {
           dispose: async () => {
             permissionDisposals += 1
@@ -188,7 +188,7 @@ function createHarness(
     },
     tool: {
       hook: async (name: string, callback: unknown) => {
-        toolHooks.set(name, callback)
+        toolHooks.set(name, [...(toolHooks.get(name) ?? []), callback])
         return { dispose: async () => {} }
       },
       transform: async (callback: (editor: unknown) => void) => {
@@ -419,7 +419,9 @@ describe("opencode-orchestrator-uni", () => {
       effect: string
       message?: string
     }
-    const evaluate = permissionHooks.get("evaluate") as ((event: EvaluateEventDraft) => Promise<void>) | undefined
+    const evaluate = permissionHooks.get("evaluate")?.at(-1) as
+      | ((event: EvaluateEventDraft) => Promise<void>)
+      | undefined
     expect(evaluate).toBeDefined()
     if (evaluate === undefined) return
 
@@ -564,14 +566,16 @@ describe("opencode-orchestrator-uni", () => {
     ])
   })
 
-  test("setup registers the guard hooks and subscribes to compaction events", async () => {
+  test("setup registers the guard hooks and subscribes to guard events", async () => {
     const { sessionHooks, toolHooks, subscriptionSignals } = await runSetup({ locale: "ru" })
     // The compaction hook is registered on every host (it counts attempts and
     // provides liveness when the stream dies); the event stream is the primary
-    // source for confirmed compactions.
+    // source for confirmed compactions. The protocol guard registers a second
+    // context hook for its loop/artifact warning.
     expect([...sessionHooks.keys()].sort()).toEqual(["compaction", "context"])
+    expect(sessionHooks.get("context")).toHaveLength(2)
     expect([...toolHooks.keys()]).toEqual(["execute.after"])
-    expect(subscriptionSignals).toHaveLength(2) // session index + compaction events
+    expect(subscriptionSignals).toHaveLength(3) // session index + compaction events + protocol guard
   })
 
   test("a host without an event stream falls back to the compaction hook", async () => {
@@ -585,7 +589,7 @@ describe("opencode-orchestrator-uni", () => {
   test("cleanup aborts every guard event subscription", async () => {
     const harness = createHarness({ locale: "ru" })
     const cleanup = await trackSetup(harness.ctx)
-    expect(harness.subscriptionSignals).toHaveLength(2)
+    expect(harness.subscriptionSignals).toHaveLength(3)
     expect(harness.subscriptionSignals.every((signal) => signal.aborted)).toBe(false)
     await cleanup?.()
     expect(harness.subscriptionSignals.every((signal) => signal.aborted)).toBe(true)
