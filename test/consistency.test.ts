@@ -311,9 +311,9 @@ describe("agent prompt caps match the tool", () => {
 // R6-5/R7-7: both READMEs state the same shipped test count and the same file
 // count, and the English count equals the pinned constant, so a round that adds
 // tests cannot leave both locales stale at the same old number.
-const SHIPPED_TEST_COUNT = 474
+const SHIPPED_TEST_COUNT = 513
 describe("README test count", () => {
-  test("both READMEs agree on the shipped test count and 12 files", async () => {
+  test("both READMEs agree on the shipped test count and 13 files", async () => {
     const guards = [
       { name: "README.md", pattern: /\*\*(\d+) tests in (\d+) files\*\*/ },
       { name: "README.ru.md", pattern: /\*\*(\d+) тест(?:ов|а)? в (\d+) файлах\*\*/ },
@@ -330,8 +330,8 @@ describe("README test count", () => {
     expect(english.tests).toBeGreaterThan(0)
     expect(english.tests).toBe(russian.tests)
     expect(english.tests).toBe(SHIPPED_TEST_COUNT)
-    expect(english.files).toBe(12)
-    expect(russian.files).toBe(12)
+    expect(english.files).toBe(13)
+    expect(russian.files).toBe(13)
   })
 })
 

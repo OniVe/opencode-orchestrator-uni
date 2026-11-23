@@ -12,13 +12,13 @@
  *   value: `{ v: 1, counts: { <kind>: number }, events: JournalEvent[] }`
  *
  * `counts` is an all-time aggregate: it survives ring eviction, so a capped
- * journal still says how many reminders/compactions/commands/validations
- * happened. `events` keeps the newest `maxEvents` entries.
+ * journal still says how many reminders/compactions/commands/validations/loop/
+ * artifact facts happened. `events` keeps the newest `maxEvents` entries.
  *
- * The journal stores only whitelisted primitives of the four kinds below. It
+ * The journal stores only whitelisted primitives of the six kinds below. It
  * never stores prompt text, tool arguments, file paths or report bodies: a
  * caller that passes extra fields gets them dropped by `sanitizeEvent`, and the
- * four `append` call sites only pass the documented shape.
+ * append call sites only pass the documented shape.
  *
  * Everything here is fail-open. A storage failure produces one warning (never a
  * throw), the journal stops writing for the rest of the plugin instance, and
@@ -49,9 +49,21 @@ export interface SessionJournalConfig {
 }
 
 /** Protocol facts the journal understands; anything else is refused. */
-export type JournalKind = "reminder" | "compaction" | "command" | "validation"
+export type JournalKind = "reminder" | "compaction" | "command" | "validation" | "loop" | "artifact"
 
-const KINDS: ReadonlySet<string> = new Set<JournalKind>(["reminder", "compaction", "command", "validation"])
+const KINDS: ReadonlySet<string> = new Set<JournalKind>([
+  "reminder",
+  "compaction",
+  "command",
+  "validation",
+  "loop",
+  "artifact",
+])
+
+/** Loop classes reported by the protocol guard. */
+export type JournalLoop = "none" | "audit" | "audit+fix"
+
+const LOOPS: ReadonlySet<string> = new Set<JournalLoop>(["none", "audit", "audit+fix"])
 
 const COMMANDS: ReadonlySet<string> = new Set(["handoff", "spec", "agents-md"])
 
@@ -76,6 +88,22 @@ export type JournalEventInput =
       readonly code?: string
       readonly errorCount: number
       readonly warningCount: number
+    }
+  | {
+      readonly kind: "loop"
+      readonly loop: JournalLoop
+      readonly writes: number
+      readonly audits: number
+      readonly pair: boolean
+      readonly fix: boolean
+      readonly warning: boolean
+    }
+  | {
+      readonly kind: "artifact"
+      readonly handoff: boolean
+      readonly state: boolean
+      readonly reports: number
+      readonly warning: boolean
     }
 
 /** A stored event: the whitelisted payload plus the wall-clock time of the fact. */
@@ -186,6 +214,41 @@ export function sanitizeEvent(input: unknown, at: number = Date.now()): JournalE
         errorCount,
         warningCount,
       }
+    }
+    case "loop": {
+      const loop = record?.loop
+      const writes = record?.writes
+      const audits = record?.audits
+      const pair = record?.pair
+      const fix = record?.fix
+      const warning = record?.warning
+      if (
+        typeof loop !== "string" ||
+        !LOOPS.has(loop) ||
+        !isCount(writes) ||
+        !isCount(audits) ||
+        typeof pair !== "boolean" ||
+        typeof fix !== "boolean" ||
+        typeof warning !== "boolean"
+      ) {
+        return undefined
+      }
+      return { kind: "loop", at: timestamp, loop: loop as JournalLoop, writes, audits, pair, fix, warning }
+    }
+    case "artifact": {
+      const handoff = record?.handoff
+      const state = record?.state
+      const reports = record?.reports
+      const warning = record?.warning
+      if (
+        typeof handoff !== "boolean" ||
+        typeof state !== "boolean" ||
+        !isCount(reports) ||
+        typeof warning !== "boolean"
+      ) {
+        return undefined
+      }
+      return { kind: "artifact", at: timestamp, handoff, state, reports, warning }
     }
   }
   return undefined

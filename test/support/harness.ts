@@ -11,6 +11,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import type { EventJournal } from "../../lib/event-journal"
+import type { ProtocolGuardReport } from "../../lib/protocol-guard"
 import type { SessionBudgetReport } from "../../lib/session-budget"
 import { COMPATIBILITY_VALIDATE_REPORT, registerAuditTools, SESSION_INDEX_KEY, TOOL_NAMESPACE } from "../../lib/tools"
 
@@ -36,6 +37,8 @@ export interface HarnessOptions {
   readonly schemasDirectory?: string
   /** Session-budget report wired into `orch_uni_session_stats` (absent = E_UNAVAILABLE). */
   readonly sessionBudget?: SessionBudgetReport
+  /** Protocol guard snapshot wired into `session_stats.protocol`. */
+  readonly protocolGuard?: ProtocolGuardReport
   /** Persisted protocol journal, shared with the tools. */
   readonly journal?: EventJournal
   /** Reject every namespace-less `editor.add` (the compatibility alias). */
@@ -207,6 +210,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   const cleanup = await registerAuditTools(context, {
     ...(options.schemasDirectory === undefined ? {} : { schemasDirectory: options.schemasDirectory }),
     ...(options.sessionBudget === undefined ? {} : { sessionBudget: options.sessionBudget }),
+    ...(options.protocolGuard === undefined ? {} : { protocolGuard: options.protocolGuard }),
     ...(options.journal === undefined ? {} : { journal: options.journal }),
     ...(options.warn === undefined ? {} : { warn: options.warn }),
   })

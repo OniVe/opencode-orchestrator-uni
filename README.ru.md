@@ -149,13 +149,18 @@ opencode service restart
 - `sessionGuard` — напоминания о бюджете промпта и лимит компакций.
 - `toolOutputGuard` — урезает большие выводы `shell`/`bash`/`webfetch`.
 - `sessionJournal` — персист протокольных событий (напоминания, компакции,
-  команды, валидации) в хранилище плагина; включён по умолчанию, последние
-  200 событий на сессию.
+  команды, валидации, loop/artifact-снимки) в хранилище плагина; включён по
+  умолчанию, последние 200 событий на сессию.
+- `protocolGuard` — метрика цикла по правкам в исходники и артефактный гейт
+  root-сессии: предупреждение на следующем контексте, если правки прошли без
+  полного цикла `empiric`+`invariant` → `fix-runner` или если срез закончился
+  без артефакта handoff/state и без отчёта.
 
 Неверные значения игнорируются с предупреждением `[orchestrator.uni] …`. Полный
 справочник опций: [Модели](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#модели),
-[Локаль](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#локаль) и
-[Гигиена сессии](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#гигиена-сессии).
+[Локаль](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#локаль),
+[Гигиена сессии](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#гигиена-сессии) и
+[Цикл и артефакты](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/ru/reference.md#цикл-и-артефакты).
 
 <p align="right">(<a href="#readme-top">наверх</a>)</p>
 
@@ -236,7 +241,7 @@ npm run lint
 npm run lint:fix
 ```
 
-`npm test` сканирует только `./test/` и сейчас насчитывает **474 теста в 12 файлах** — 473 pass и 1 skip. Голый `bun test` из корня красный по замыслу: он
+`npm test` сканирует только `./test/` и сейчас насчитывает **513 тестов в 13 файлах** — 512 pass и 1 skip. Голый `bun test` из корня красный по замыслу: он
 подхватывает и специально падающие фикстуры в `eval/cases/`, и черновики в
 `lab/`; используйте `npm test`.
 
