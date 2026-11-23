@@ -1,6 +1,7 @@
 # Справочник
 
-Подробный справочник комплекта оркестратора: защита записи, пять инструментов,
+Подробный справочник комплекта оркестратора: защита записи, пять основных
+инструментов плюс discovery-инструмент `list_tools` и плоский compatibility-алиас,
 протокол сессии, настройка моделей и локали, правила приоритета.
 
 [Назад в README](../../README.ru.md)
@@ -65,23 +66,32 @@ hook `permission.hook("evaluate")` в `lib/write-guard.ts` с path-root
 
 ## Инструменты
 
-Плагин регистрирует пять детерминированных **read-only** инструментов в
-пространстве имён `orch_uni`.
+Плагин регистрирует пять основных детерминированных **read-only** инструментов в
+пространстве имён `orch_uni`, discovery-инструмент `list_tools` и один плоский
+compatibility-алиас `orch_uni_validate_report` для старых промптов. Канонический
+вызов — `tools.orch_uni.<name>({...})`; алиас — отдельная регистрация, приём
+которой на живом хосте `not_verified` (покрыт только unit-harness), поэтому
+промпты и доки всегда используют dot-форму.
 
-| Имя                        | Read-only | Что делает                                                                    |
-| -------------------------- | --------- | ----------------------------------------------------------------------------- |
-| `orch_uni_validate_report` | да        | Достаёт SGR JSON-блок отчёта, разрешает его схему, валидирует                 |
-| `orch_uni_context_lint`     | да        | Детерминированный аудит AGENTS.md/SPEC.md: бюджет, vague, ссылки, секции       |
-| `orch_uni_snapshot`        | да        | Детерминированная ревизия дерева каталогов (sha256 на файл + агрегатный хэш)  |
-| `orch_uni_sessions`        | да        | Дочерние сессии сессии: агент, модель, стоимость, токены, время               |
-| `orch_uni_session_stats`   | да        | Счётчики протокола сессии: промпт, компакции, тулы/ход, урезанные выводы       |
+| Канонический вызов               | Read-only | Что делает                                                                     |
+| -------------------------------- | --------- | ------------------------------------------------------------------------------ |
+| `tools.orch_uni.validate_report` | да        | Достаёт SGR JSON-блок отчёта, разрешает его схему, валидирует                  |
+| `tools.orch_uni.context_lint`    | да        | Детерминированный аудит AGENTS.md/SPEC.md: бюджет, vague, ссылки, секции        |
+| `tools.orch_uni.snapshot`        | да        | Детерминированная ревизия дерева каталогов (sha256 на файл + агрегатный хэш)   |
+| `tools.orch_uni.sessions`        | да        | Дочерние сессии сессии: агент, модель, стоимость, токены, время                |
+| `tools.orch_uni.session_stats`   | да        | Счётчики протокола сессии плюс персистентный журнал                            |
+| `tools.orch_uni.list_tools`      | да        | Канонические вызовы; id схем и минимальные примеры для `validate_report`        |
 
 Каждый инструмент отвечает JSON-текстом. Ошибки — **типизированные коды** внутри
 тела (`E_INPUT`, `E_NO_JSON`, …), а не исключения, чтобы агент мог ветвиться по
-коду, не разбирая прозу. Ни один из пяти ничего не пишет в воркспейс, хранилище
-сессий или конфигурацию.
+коду, не разбирая прозу. Ни один из шести ничего не пишет в воркспейс, хранилище
+сессий или конфигурацию. Плоский алиас `orch_uni_validate_report` исполняет ровно
+тот же валидатор; он существует только ради старых промптов. Регистрация
+best-effort: если хост отвергает инструмент без namespace, плагин пишет один
+warning и пропускает алиас; шесть канонических инструментов остаются
+зарегистрированными.
 
-### `orch_uni_validate_report`
+### `tools.orch_uni.validate_report`
 
 ```jsonc
 { "text": "<текст отчёта>" }              // или
@@ -89,24 +99,33 @@ hook `permission.hook("evaluate")` в `lib/write-guard.ts` с path-root
   "schema": "empiric/v1" }                // опционально: ожидаемый id схемы
 ```
 
-Укажите ровно одно из `text` / `path`. Инструмент берёт **последний** fenced-блок ```` ```json ````,
+Укажите ровно одно из `text` / `path`. Неизвестный аргумент `schema` отклоняется
+кодом `E_UNKNOWN_SCHEMA` **до** чтения файла; тело несёт `available` (id из
+комплекта) и `hint`. Затем инструмент берёт **последний** fenced-блок ```` ```json ````,
 который парсится и несёт поле `schema`, разрешает схему по этому полю и валидирует документ.
 
 ```jsonc
 { "valid": true, "schema": "empiric/v1", "errors": [], "warnings": [ … ] }
 { "valid": false, "code": "E_INVALID", "schema": "empiric/v1",
-  "errors": [ { "path": "$.findings[0].severity", "message": "expected one of …" } ],
+  "errors": [ { "path": "$.findings[0].severity", "message": "expected one of …",
+                "hint": "Field \"severity\" is not an allowed value; …" } ],
+  "hint": "Fix $.findings[0].severity first: …",
   "warnings": [] }
 ```
+
+Тело любой ошибки несёт `hint` (≤300 символов): скелет fenced-блока для
+`E_NO_JSON`, типовые ошибки JSON для `E_PARSE`, ожидаемый и фактический id плюс
+`available` для `E_SCHEMA_MISMATCH`, первую ошибку для `E_INVALID` — при этом у
+каждого элемента `errors[]` есть свой `hint`.
 
 | Код                 | Значение                                                             |
 | ------------------- | -------------------------------------------------------------------- |
 | `E_INPUT`           | Плохой вызов: нет/оба `text`/`path`, неверные типы, нечитаемый файл   |
-| `E_NO_JSON`         | Fenced-блок ```` ```json ```` не найден                              |
+| `E_NO_JSON`         | Fenced-блок ```` ```json ```` не найден; `hint` содержит скелет       |
 | `E_PARSE`           | Блок есть, но ни один не парсится как JSON                           |
-| `E_UNKNOWN_SCHEMA`  | Отчёт называет id, которого нет в комплекте (или не называет вовсе)   |
+| `E_UNKNOWN_SCHEMA`  | Неизвестный ожидаемый id (preflight) или id отчёта не из комплекта (см. `available`) |
 | `E_SCHEMA_MISMATCH` | Отчёт называет схему, отличную от ожидаемой                          |
-| `E_INVALID`         | Документ не удовлетворяет своей схеме (см. `errors`)                 |
+| `E_INVALID`         | Документ не удовлетворяет своей схеме (см. `errors[].hint`)          |
 | `E_SCHEMA_IO`       | Схемы комплекта недоступны или битые (см. `directory`, `file`)       |
 | `E_ABORTED`         | Сессия остановлена во время чтения отчёта                            |
 
@@ -121,11 +140,25 @@ claim'а `empiric` с `method` = `run|measure|compare_base`, элементы `s
 `agents/*.md`, которые остаются источником истины: тестовый набор парсит
 SGR-шаблон каждого агента и падает, когда поле промпта или значение enum не
 принимается его схемой. `context-lint-failure/v1` — типизированный конверт ошибки
-`orch_uni_context_lint`: у него нет шаблона агента, и отчётом он не является. Схемы
+`tools.orch_uni.context_lint`: у него нет шаблона агента, и отчётом он не является. Схемы
 разрешают `additionalProperties` — агенты могут
 добавлять свои поля (`verdict_label`, `check`, …).
 
-### `orch_uni_context_lint`
+### `tools.orch_uni.list_tools`
+
+```jsonc
+{}                              // только каталог
+{ "tool": "validate_report" }   // плюс id схем, обязательные поля и минимальные примеры
+```
+
+Возвращает `{ok, namespace, canonical, tools, compatibility, schemas?, exampleMaxChars?}`.
+`tools` перечисляет все имена с каноническим `call` (`tools.orch_uni.<name>({...})`)
+и кратким описанием. С `tool: "validate_report"` добавляется `schemas`: по записи
+на каждый id комплекта с `required` и минимальным валидным `example` (≤1200
+символов), чтобы модель могла починить отчёт без чтения этих доков. Неизвестный
+`tool` — это `E_INPUT` со списком доступных имён.
+
+### `tools.orch_uni.context_lint`
 
 ```jsonc
 { "path": "AGENTS.md" }                  // файл или каталог, относительно локации
@@ -198,7 +231,7 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
 цели, поэтому проза «Make sure …» — не команда. Скан от корня подхватывает и фикстуры вроде
 `eval/`; передайте явный путь, если нужны только канонические файлы.
 
-### `orch_uni_snapshot`
+### `tools.orch_uni.snapshot`
 
 ```jsonc
 { "path": "lab/stack-test", "exclude": ["tmp"] }   // exclude опционален и аддитивен
@@ -220,7 +253,7 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
   (падает весь снапшот; усечённый снапшот дал бы неверный агрегат). `E_NOT_FOUND`
   для отсутствующего пути или не-каталога, `E_ABORTED`, когда сессия остановлена.
 
-### `orch_uni_sessions`
+### `tools.orch_uni.sessions`
 
 ```jsonc
 {}                                           // дети вызывающей сессии
@@ -258,7 +291,7 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
 `E_INPUT` при некорректных аргументах, `E_NOT_FOUND`, когда родительской сессии
 нет, `E_ABORTED`, когда сессия остановлена.
 
-### `orch_uni_session_stats`
+### `tools.orch_uni.session_stats`
 
 ```jsonc
 {}                                  // счётчики вызывающей сессии
@@ -283,8 +316,24 @@ Commands, HTML-комментарий вроде `<!-- npm install -->` кома
              "toolOutputEnabled": true,
              "toolOutputTools": ["shell", "bash", "webfetch"],
              "compactionSource": "event", "eventLive": true,
-             "streamFailures": 0, "unkeyedCalls": 0 } }
+             "streamFailures": 0, "unkeyedCalls": 0 },
+  "journal": { "available": true,
+               "counts": { "reminder": 1, "compaction": 1, "command": 1, "validation": 2 },
+               "events": [ { "kind": "validation", "at": 1760000000000,
+                             "schema": "empiric/v1", "valid": true,
+                             "errorCount": 0, "warningCount": 1 } ] } }
 ```
+
+`journal` — необязательное обратно-совместимое поле: `{available, counts, events}`.
+`counts` — агрегат за всё время по видам (`reminder`, `compaction`, `command`,
+`validation`); `events` хранит последние `options.sessionJournal.maxEvents`
+(по умолчанию 200) записей, поэтому усечённый журнал всё равно отдаёт все факты в
+`counts`. Журнал лежит в хранилище плагина по ключу
+`orchestrator.uni/session-journal/v1/<sessionID>`; в нём только whitelisted
+примитивы — никогда текст промпта, аргументы инструментов, пути или тела отчётов;
+`session.deleted` удаляет его вместе со счётчиками. Если журнал выключен,
+запись в хранилище упала или у сессии ещё нет журнала, `available` равен `false`,
+а поле остаётся нормальной success-формой; это никогда не `E_NOT_FOUND`.
 
 `sessionID` может называть **любую сессию на этом сервере**, не только дочернюю
 вызывающего; это осознанно — по отчёту оркестратор контролирует все свои срезы.
@@ -379,14 +428,25 @@ Runtime-часть — три хука (`session.context`, `session.compaction`,
           "maxChars": 20000,
           "headChars": 4000,
           "tools": ["shell", "bash", "webfetch"]
-        }
+        },
+        "sessionJournal": { "enabled": true, "maxEvents": 200 }
       }
     }
   ]
 }
 ```
 
-Метрики среза — `orch_uni_session_stats`; закрытие среза — команда `/handoff`.
+**Журнал событий** (`options.sessionJournal`) — отдельный fail-open персист
+четырёх протокольных фактов: `reminder` (после реального push в системный
+промпт), `compaction` (подтверждённая или неудачная, после дедупликации),
+`command` (слэш-команда отработала) и `validation` (валидатор вернул ответ). Он
+не хранит текст промпта, аргументы инструментов, пути или тела отчётов, держит
+последние `maxEvents` на сессию (по умолчанию 200), при этом `counts` переживает
+вытеснение, и удаляется на `session.deleted`. Ошибка хранилища даёт один warning
+и выключает журнал для инстанса; `session_stats.journal.available` тогда `false`.
+Полностью выключается через `"sessionJournal": { "enabled": false }`.
+
+Метрики среза — `tools.orch_uni.session_stats`; закрытие среза — команда `/handoff`.
 
 ## Модели
 

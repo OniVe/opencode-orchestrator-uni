@@ -54,5 +54,23 @@
       },
       "summary": { "type": "string" }
     }
+  },
+  "example": {
+    "schema": "context-lint/v1",
+    "ok": true,
+    "verdict": "pass",
+    "closing_list": [],
+    "files": [
+      {
+        "path": "AGENTS.md",
+        "kind": "agents",
+        "lines": 42,
+        "words": 300,
+        "chars": 2100,
+        "tokens_est": 750,
+        "findings": []
+      }
+    ],
+    "summary": "AGENTS.md is within budget"
   }
 }

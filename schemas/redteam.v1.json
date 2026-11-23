@@ -51,5 +51,21 @@
         }
       }
     }
+  },
+  "example": {
+    "schema": "redteam/v1",
+    "verdict": "ready",
+    "closing_list": [],
+    "coverage_gaps": [],
+    "claims_attacked": [
+      {
+        "claim": "the tests cover the change",
+        "attack": "delete the assertion",
+        "outcome": "claim_confirmed",
+        "evidence": "the test fails without the fix"
+      }
+    ],
+    "findings": [],
+    "not_verified": []
   }
 }

@@ -9,6 +9,7 @@ import {
   extractJsonBlocks,
   type JsonSchemaNode,
   reportWarnings,
+  schemaErrorHint,
   selectReportJson,
   validateValue,
 } from "../lib/report-schema"
@@ -92,6 +93,14 @@ describe("schema selection", () => {
     expect(report.message).toContain("expected")
   })
 
+  test("an unknown expected schema is refused before extraction", () => {
+    // The id is a property of the call: no JSON block is needed to detect it.
+    const report = checkReport("no json here", { schemas, expectedSchema: "audit-nope/v1" })
+    expect(report.code).toBe("E_UNKNOWN_SCHEMA")
+    expect(report.available).toContain("meta/v1")
+    expect(report.hint).toContain("Available schemas")
+  })
+
   test("E_UNKNOWN_SCHEMA when the report names no schema and none is expected", () => {
     const report = checkReport(fence('{"verdict":"pass"}'), { schemas })
     expect(report.code).toBe("E_UNKNOWN_SCHEMA")
@@ -172,6 +181,36 @@ describe("validator subset", () => {
   test("a wrong node type stops descending", () => {
     const schema: JsonSchemaNode = { type: "object", properties: { a: { type: "string", enum: ["x"] } } }
     expect(validateValue({ a: 5 }, schema)).toHaveLength(1)
+  })
+})
+
+describe("repair hints", () => {
+  test("required, type, enum and additionalProperties have distinct hints", () => {
+    expect(schemaErrorHint({ path: "$.gate", message: "required field is missing" })).toContain('"gate"')
+    const type = schemaErrorHint({ path: "$.reports", message: "expected type array, got object" })
+    expect(type).toContain("wrong type")
+    expect(type).toContain("got object")
+    expect(schemaErrorHint({ path: "$.verdict", message: 'expected one of "pass", "fail", got "maybe"' })).toContain(
+      "enum values",
+    )
+    expect(schemaErrorHint({ path: "$.note", message: "additional property is not allowed" })).toContain(
+      "not in the schema",
+    )
+  })
+
+  test("a long message is clipped to the 300-char limit", () => {
+    const hint = schemaErrorHint({ path: "$.x", message: "z".repeat(400) })
+    expect(hint.length).toBe(300)
+    expect(hint.endsWith("...")).toBe(true)
+  })
+
+  test("checkReport adds a per-error hint and a top-level first-error hint", () => {
+    const value = { ...META_OK, verdict: "maybe", reports: [{ report: "x", result: "pass" }] }
+    const report = checkReport(fence(JSON.stringify(value)), { schemas })
+    expect(report.code).toBe("E_INVALID")
+    expect(report.errors.every((error) => typeof error.hint === "string")).toBe(true)
+    expect(report.hint).toContain("Fix $.")
+    expect(report.hint!.length).toBeLessThanOrEqual(300)
   })
 })
 

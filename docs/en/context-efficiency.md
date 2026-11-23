@@ -12,7 +12,7 @@ An instruction file is a budget of attention, not documentation. Every line is p
 | `SPEC.md` | 80–150 lines / ≤1.5k words | 2k words |
 | `ADR` | 30–60 lines / <700 tokens | 100 lines |
 
-`orch_uni_context_lint` applies one root budget (`max_lines`, 200 lines by default) and one SPEC word budget (`max_words`, 1500 by default — the target from the table; pass `max_words: 2000` for the ceiling). The per-level figures above are authoring guidance, not separate tool limits. The tool reports what it did not check (links outside the root, directories below depth 3, an unclosed fence) as INFO findings; a `pass` therefore never means "unverified".
+`tools.orch_uni.context_lint` applies one root budget (`max_lines`, 200 lines by default) and one SPEC word budget (`max_words`, 1500 by default — the target from the table; pass `max_words: 2000` for the ceiling). The per-level figures above are authoring guidance, not separate tool limits. The tool reports what it did not check (links outside the root, directories below depth 3, an unclosed fence) as INFO findings; a `pass` therefore never means "unverified".
 
 Selection rule: if a line is not testable, is inferable from code/linters, or is needed in fewer than half of sessions — delete it or move it to a link.
 
@@ -191,15 +191,15 @@ not_verified: <...>
 
 Before/after the same task in separate sessions:
 
-1. `orch_uni_session_stats`: `promptTokensLast/Max/Median`, `toolCallsByTool.read/grep/shell`, `toolCalls`, `toolsPerTurn`.
-2. Root and subagent session tokens (`orch_uni_sessions`): the brief must not shift the whole volume onto the children.
+1. `tools.orch_uni.session_stats`: `promptTokensLast/Max/Median`, `toolCallsByTool.read/grep/shell`, `toolCalls`, `toolsPerTurn`.
+2. Root and subagent session tokens (`tools.orch_uni.sessions`): the brief must not shift the whole volume onto the children.
 3. Goal: fewer `read/grep/shell` calls by the root and fewer root prompt tokens at the same brief quality.
 4. Routing: a narrow task — no child sessions; a broad task — one child with a brief ≤80 lines.
 
 ## Command /agents-md
 
 1. Decide the mode: audit an existing file or draft from scratch.
-2. For an audit: `orch_uni_context_lint` → `context-lint`; show the SGR and `closing_list`.
+2. For an audit: `tools.orch_uni.context_lint` → `context-lint`; show the SGR and `closing_list`.
 3. For a draft: collect facts and ask at most 8 questions; do not invent commands or paths.
 4. Fill the template; stay within 150–200 lines.
 5. Run the linter; show the diff and open questions.
@@ -210,7 +210,7 @@ Before/after the same task in separate sessions:
 1. Capture the brief and ask at most 5 clarifying questions.
 2. Non-goals, priorities and metrics are owned by the owner; do not invent them.
 3. Fill the template: EARS, AC with tests, invariants, traceability, DoD.
-4. Run `orch_uni_context_lint` and `context-lint`; show the diff and questions.
+4. Run `tools.orch_uni.context_lint` and `context-lint`; show the diff and questions.
 5. Change the canonical file only after approval.
 
 ## Review

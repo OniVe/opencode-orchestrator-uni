@@ -33,5 +33,25 @@
         }
       }
     }
+  },
+  "example": {
+    "schema": "factcheck/v1",
+    "verdict": "ok",
+    "claims": [
+      {
+        "claim": "the README lists the tools",
+        "status": "actual",
+        "evidence": "README.md:82",
+        "source": "docs"
+      }
+    ],
+    "promises": [
+      {
+        "promise": "auditors are read-only",
+        "origin": "README",
+        "status": "implemented",
+        "evidence": "permissions deny edit"
+      }
+    ]
   }
 }

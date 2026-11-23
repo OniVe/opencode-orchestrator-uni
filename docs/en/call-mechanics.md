@@ -191,11 +191,12 @@ Writers: Phase 3 creates/updates it; Phase 3.5 appends the verification statuses
 
 Persistence (all kit documents): the SGR reports of all roles, including **the SGR reports of `fix-runner`**, and the summary `summary-<id>.md` are kept in `reports/` (next to `case-<id>.md` and `risks-<id>.md`); the reports are the machine-readable input to the following phases (meta, the verifier), not just text in the chat.
 
-### The `orch_uni_*` tools (if registered by the plugin)
+### The `tools.orch_uni.*` tools (if registered by the plugin)
 
-- the state revision → `orch_uni_snapshot` (aggregate = the directory hash): recorded together with the verdict and the verification;
-- a role's report → `orch_uni_validate_report` (prefer `text`; files — `write`, not a shell heredoc: the Windows limit is 32,767): `valid=false` → a step defect, resume the same session and demand that the SGR be reissued; do not ignore `warnings`;
-- the roles' sessionIDs, their model and cost → `orch_uni_sessions`;
+- the canonical call of every tool and minimal report examples → `tools.orch_uni.list_tools` (use it before guessing a name or a schema);
+- the state revision → `tools.orch_uni.snapshot` (aggregate = the directory hash): recorded together with the verdict and the verification;
+- a role's report → `tools.orch_uni.validate_report` (prefer `text`; files — `write`, not a shell heredoc: the Windows limit is 32,767): `valid=false` → a step defect, resume the same session and demand that the SGR be reissued; do not ignore `warnings`;
+- the roles' sessionIDs, their model and cost → `tools.orch_uni.sessions`;
 - if the tools are unavailable, work manually, as before.
 
 ## 5. Failures and recovery

@@ -8,6 +8,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import plugin, { DOCS_DIRECTORY, type Locale, localeDirectory, PLUGIN_ID, REFERENCE_NAME } from "../index"
+import { JOURNAL_KEY_PREFIX } from "../lib/event-journal"
 import { WRITE_GUARD_MESSAGE } from "../lib/write-guard"
 import { agentFiles, docFiles } from "./support/locales"
 
@@ -76,6 +77,7 @@ function createHarness(
     readonly failingCommands?: boolean
     readonly failingDispose?: boolean
     readonly noCommandApi?: boolean
+    readonly failingPrompt?: boolean
   } = {},
 ) {
   const agents = new Map<string, AgentDraft>()
@@ -153,6 +155,7 @@ function createHarness(
     session: {
       get: async () => ({ location: { directory: process.cwd() } }),
       prompt: async (input: unknown) => {
+        if (faults.failingPrompt === true) throw new Error("prompt failed")
         prompts.push(input)
         return { id: "msg_test" }
       },
@@ -193,10 +196,7 @@ function createHarness(
           namespace: () => {},
           add: (tool: { name: string; options?: { namespace?: string } }) => {
             const namespace = tool.options?.namespace
-            tools.set(
-              namespace === undefined ? tool.name : `${namespace}.${tool.name}`.replace(/[^A-Za-z0-9_]/g, "_"),
-              tool,
-            )
+            tools.set(namespace === undefined ? tool.name : `${namespace}.${tool.name}`, tool)
           },
           list: () => [...tools.values()],
           get: (id: string) => tools.get(id),
@@ -232,6 +232,7 @@ function createHarness(
     toolHooks,
     permissionHooks,
     subscriptionSignals,
+    storage,
     get aborted() {
       return subscriptionSignal?.aborted ?? false
     },
@@ -243,7 +244,12 @@ function createHarness(
 
 async function runSetup(
   options?: unknown,
-  faults: { failingCommands?: boolean; failingDispose?: boolean; noCommandApi?: boolean } = {},
+  faults: {
+    failingCommands?: boolean
+    failingDispose?: boolean
+    noCommandApi?: boolean
+    failingPrompt?: boolean
+  } = {},
 ) {
   const harness = createHarness(options, faults)
   if (faults.noCommandApi === true) delete (harness.ctx as unknown as { command?: unknown }).command
@@ -548,10 +554,12 @@ describe("opencode-orchestrator-uni", () => {
     const { tools, warnings } = await runSetup()
     expect(warnings).toEqual([])
     expect([...tools.keys()].sort()).toEqual([
-      "orch_uni_context_lint",
-      "orch_uni_session_stats",
-      "orch_uni_sessions",
-      "orch_uni_snapshot",
+      "orch_uni.context_lint",
+      "orch_uni.list_tools",
+      "orch_uni.session_stats",
+      "orch_uni.sessions",
+      "orch_uni.snapshot",
+      "orch_uni.validate_report",
       "orch_uni_validate_report",
     ])
   })
@@ -615,6 +623,52 @@ describe("opencode-orchestrator-uni", () => {
     expect(String((prompts[0] as { text?: string }).text)).toContain("context-efficiency.md")
   })
 
+  test("a command journals exactly one fact and never the goal text", async () => {
+    const { commands, storage } = await runSetup()
+    const sentinel = "GOAL-SECRET-c41d"
+    await commands.get("handoff")!.execute({
+      sessionID: "ses_cmd",
+      prompt: { text: `/handoff ${sentinel}` },
+      delivery: "queue",
+    })
+    const document = storage.get(`${JOURNAL_KEY_PREFIX}ses_cmd`) as {
+      counts?: Record<string, number>
+      events?: { kind?: string; command?: string }[]
+    }
+    expect(document.counts).toEqual({ command: 1 })
+    expect(document.events).toHaveLength(1)
+    expect(document.events?.[0]).toMatchObject({ kind: "command", command: "handoff" })
+    expect(JSON.stringify(document)).not.toContain(sentinel)
+  })
+
+  test("a command whose prompt fails journals one skipped fact and still throws", async () => {
+    const { commands, storage } = await runSetup(undefined, { failingPrompt: true })
+    await expect(
+      commands.get("spec")!.execute({
+        sessionID: "ses_cmd_fail",
+        prompt: { text: "export orders" },
+        delivery: "queue",
+      }),
+    ).rejects.toThrow("prompt failed")
+    const document = storage.get(`${JOURNAL_KEY_PREFIX}ses_cmd_fail`) as {
+      counts?: Record<string, number>
+      events?: { kind?: string; command?: string; skipped?: boolean }[]
+    }
+    expect(document.counts).toEqual({ command: 1 })
+    expect(document.events).toHaveLength(1)
+    expect(document.events?.[0]).toMatchObject({ kind: "command", command: "spec", skipped: true })
+  })
+
+  test("sessionJournal.enabled=false keeps plugin storage empty", async () => {
+    const { commands, storage } = await runSetup({ sessionJournal: { enabled: false } })
+    await commands.get("spec")!.execute({
+      sessionID: "ses_cmd_off",
+      prompt: { text: "export orders" },
+      delivery: "queue",
+    })
+    expect([...storage.keys()]).toEqual([])
+  })
+
   for (const locale of ["ru", "en"] as const) {
     test(`/handoff writes the canonical path and asks before committing (${locale})`, async () => {
       const { commands, prompts } = await runSetup({ locale })
@@ -676,7 +730,7 @@ describe("opencode-orchestrator-uni", () => {
     // API must not take the whole kit down.
     const { agents, tools, warnings } = await runSetup({ locale: "ru" }, { noCommandApi: true })
     expect(agents.size).toBe(9)
-    expect(tools.has("orch_uni_context_lint")).toBe(true)
+    expect(tools.has("orch_uni.context_lint")).toBe(true)
     expect(warnings.some((line) => line.includes("command API"))).toBe(true)
   })
 

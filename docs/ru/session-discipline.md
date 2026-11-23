@@ -99,14 +99,18 @@
 
 | Метрика | Цель | Где смотреть |
 | --- | --- | --- |
-| Оценка промпта (медиана) | ≤ 150k | `orch_uni_session_stats` |
-| Компакций на срез | ≤ 1 | `orch_uni_session_stats` |
-| Инструментов на ход (`toolCalls/requests`, он же `toolsPerTurn`) | ≥ 2 | `orch_uni_session_stats` |
-| Доля урезанных выводов среди вызовов инструмента (`toolOutputsCappedByTool.shell / toolCallsByTool.shell`; так же `bash`, `webfetch`) | < 5% | `orch_uni_session_stats` |
+| Оценка промпта (медиана) | ≤ 150k | `tools.orch_uni.session_stats` |
+| Компакций на срез | ≤ 1 | `tools.orch_uni.session_stats` |
+| Инструментов на ход (`toolCalls/requests`, он же `toolsPerTurn`) | ≥ 2 | `tools.orch_uni.session_stats` |
+| Доля урезанных выводов среди вызовов инструмента (`toolOutputsCappedByTool.shell / toolCallsByTool.shell`; так же `bash`, `webfetch`) | < 5% | `tools.orch_uni.session_stats` |
 | Handoff в конце среза | есть | рабочее дерево |
 
-`orch_uni_session_stats` отдаёт счётчики текущего инстанса плагина и настроенные
+`tools.orch_uni.session_stats` отдаёт счётчики текущего инстанса плагина и настроенные
 лимиты; исторические прогоны считаются по базе сессий на стороне проекта.
+Необязательное поле `journal` в том же отчёте хранит протокольные факты
+(напоминания, компакции, команды, валидации) между перезагрузками плагина:
+`counts` — за всё время, `events` — последние 200, а отсутствующий или упавший
+журнал даёт `available: false`, а не ошибку.
 
 ## 8. Guard
 

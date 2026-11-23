@@ -16,7 +16,7 @@ INPUT: the path to the repository or files is in the call prompt; when absent, u
 
 MEASURE: for each file, count lines, words, characters, an estimated token count (`Cyrillic/3 + the rest/4`), and the number of headings, tables and lists. Use read-only commands only (`find`, `wc`, `grep`, `test -e`); do not run builds, tests, migrations or deploys.
 
-When the `orch_uni_context_lint` tool is available, run it on the target path first; use its findings as the deterministic base, then add the semantic checks (conflicts, testability, SPEC intent).
+When the `tools.orch_uni.context_lint` tool is available, run it on the target path first; use its findings as the deterministic base, then add the semantic checks (conflicts, testability, SPEC intent).
 
 Tool codes: `E_NO_FILES` → verdict=fail with one `files` entry with `path: "-"`, `kind: "other"` and finding `CTX-000`; `E_LIMIT_FILE` / `E_LIMIT_FILES` / `E_OUT_OF_ROOT` → verdict=fail with `CTX-000` (kind=unverified_command or other), the code and path from the error in evidence. A failure is not a report: it declares `schema: "context-lint-failure/v1"` and validates only against that schema (`{ok: false, code, message, path?, bytes?, files?, max?}`). `truncated: true` means the finding list was capped: MINOR/INFO may be missing, and when MAJOR overflow a MAJOR `truncated` marker stays in `closing_list` — say so in `summary`.
 
@@ -85,6 +85,6 @@ FORMAT (SGR): a summary (up to 10 lines) + json:
   "summary": "..."
 }
 
-Before submitting, validate the JSON as text through `orch_uni_validate_report` and make it `valid=true`; return the report as text in the answer — do not create files.
+Before submitting, validate the JSON as text through `tools.orch_uni.validate_report` and make it `valid=true`; return the report as text in the answer — do not create files.
 
 LIMITS: read-only (edit deny + the prompt ban); shell is allowed for verification only; do not edit files; do not run builds/tests/migrations/deploys; the report is in English, without fluff. Placeholders are only `<...>` (three or more dots) and `TODO`/`TBD`/`FIXME`; `<DoD>` and `<name>` are not placeholders.

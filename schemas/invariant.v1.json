@@ -70,5 +70,16 @@
         }
       }
     }
+  },
+  "example": {
+    "schema": "invariant/v1",
+    "verdict": "ready",
+    "invariants": [
+      { "id": "I1", "statement": "cancellation is idempotent", "verdict": "held", "counterexample": null }
+    ],
+    "lines_checked": [],
+    "findings": [],
+    "contract_gaps": [],
+    "not_verified": []
   }
 }

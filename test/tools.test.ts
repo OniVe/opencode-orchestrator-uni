@@ -7,13 +7,14 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { TOOL_IDS, TOOL_NAMESPACE } from "../lib/tools"
-import { createHarness, runTool } from "./support/harness"
+import { EventJournal } from "../lib/event-journal"
+import { COMPATIBILITY_VALIDATE_REPORT, TOOL_EFFECTIVE_IDS, TOOL_IDS, TOOL_NAMESPACE } from "../lib/tools"
+import { createHarness, memoryStorage, runTool } from "./support/harness"
 
 describe("audit tool registration", () => {
-  test("registers the five tools in the orch_uni namespace", async () => {
+  test("registers six namespaced tools and the one flat compatibility alias", async () => {
     const harness = await createHarness()
-    expect([...harness.tools.keys()].sort()).toEqual([...TOOL_IDS].sort())
+    expect([...harness.tools.keys()].sort()).toEqual([...TOOL_EFFECTIVE_IDS].sort())
     expect(harness.namespaces.map((entry) => entry.name)).toEqual([TOOL_NAMESPACE])
     for (const id of TOOL_IDS) {
       const tool = harness.tools.get(id)!
@@ -21,14 +22,27 @@ describe("audit tool registration", () => {
       expect(tool.description.length).toBeGreaterThan(40)
       expect(typeof tool.execute).toBe("function")
     }
+    const alias = harness.tools.get(COMPATIBILITY_VALIDATE_REPORT)!
+    expect(alias.options).toBeUndefined()
+    expect(alias.description).toContain("tools.orch_uni.validate_report")
+    expect(alias.description).toContain("not_verified")
+    harness.dispose()
+  })
+
+  test("every description names the canonical call and a short example", async () => {
+    const harness = await createHarness()
+    for (const name of TOOL_IDS) {
+      const tool = harness.tools.get(name)!
+      expect(tool.description, name).toContain(`Canonical call: tools.${name}({`)
+    }
     harness.dispose()
   })
 
   test("declares the documented input fields", async () => {
     const harness = await createHarness()
     const inputs = Object.fromEntries([...harness.tools].map(([id, tool]) => [id, tool.input]))
-    expect(Object.keys(inputs).sort()).toEqual([...TOOL_IDS].sort())
-    expect(inputs.orch_uni_validate_report).toEqual({
+    expect(Object.keys(inputs).sort()).toEqual([...TOOL_EFFECTIVE_IDS].sort())
+    expect(inputs["orch_uni.validate_report"]).toEqual({
       type: "object",
       properties: {
         text: { type: "string", description: expect.any(String) },
@@ -36,7 +50,7 @@ describe("audit tool registration", () => {
         schema: { type: "string", description: expect.any(String) },
       },
     })
-    expect(inputs.orch_uni_context_lint).toEqual({
+    expect(inputs["orch_uni.context_lint"]).toEqual({
       type: "object",
       properties: {
         path: { type: "string", description: expect.any(String) },
@@ -49,11 +63,30 @@ describe("audit tool registration", () => {
         max_total_findings: { type: "number", description: expect.any(String) },
       },
     })
-    expect((inputs.orch_uni_snapshot as { required: string[] }).required).toEqual(["path"])
-    expect((inputs.orch_uni_sessions as { properties: Record<string, unknown> }).properties).toEqual({
+    expect((inputs["orch_uni.snapshot"] as { required: string[] }).required).toEqual(["path"])
+    expect((inputs["orch_uni.sessions"] as { properties: Record<string, unknown> }).properties).toEqual({
       sessionID: { type: "string", description: expect.any(String) },
       recursive: { type: "boolean", description: expect.any(String) },
     })
+    expect((inputs["orch_uni.list_tools"] as { properties: Record<string, unknown> }).properties).toEqual({
+      tool: { type: "string", description: expect.any(String) },
+    })
+    expect(inputs[COMPATIBILITY_VALIDATE_REPORT]).toEqual(inputs["orch_uni.validate_report"])
+    harness.dispose()
+  })
+
+  test("a host that rejects flat tools still registers the six canonical tools", async () => {
+    const warnings: string[] = []
+    const harness = await createHarness({ rejectFlatTool: true, warn: (message) => warnings.push(message) })
+    expect([...harness.tools.keys()].sort()).toEqual([...TOOL_IDS].sort())
+    expect(harness.tools.has(COMPATIBILITY_VALIDATE_REPORT)).toBe(false)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]!.toLowerCase()).toContain("compatibility")
+    expect(warnings[0]!.toLowerCase()).toContain("flat")
+    expect(warnings[0]).toContain("tools.orch_uni.validate_report")
+    const text =
+      '```json\n{"schema":"meta/v1","verdict":"pass","gate":"pass","closing_list":[],"coverage_gaps":[],"reports":[]}\n```'
+    expect(await runTool(harness, "orch_uni.validate_report", { text })).toMatchObject({ valid: true })
     harness.dispose()
   })
 
@@ -153,6 +186,179 @@ describe("orch_uni_validate_report", () => {
       code: "E_UNKNOWN_SCHEMA",
     })
     harness.dispose()
+  })
+
+  test("preflights an unknown expected schema before reading the report file", async () => {
+    const harness = await createHarness()
+    const result = await runTool(harness, "orch_uni_validate_report", {
+      path: "no/such/report.md",
+      schema: "nope/v1",
+    })
+    expect(result).toMatchObject({ ok: false, code: "E_UNKNOWN_SCHEMA", schema: "nope/v1" })
+    expect(result.available).toContain("empiric/v1")
+    expect(String(result.hint)).toContain("empiric/v1")
+    harness.dispose()
+  })
+
+  test("failure bodies carry short repair hints", async () => {
+    const harness = await createHarness()
+    const noJson = await runTool(harness, "orch_uni_validate_report", { text: "plain prose" })
+    expect(noJson.code).toBe("E_NO_JSON")
+    expect(String(noJson.hint)).toContain("```json")
+    expect(String(noJson.hint)).toContain("closing fence")
+
+    const parse = await runTool(harness, "orch_uni_validate_report", { text: "```json\n{nope\n```" })
+    expect(parse.code).toBe("E_PARSE")
+    expect(String(parse.hint)).toContain("trailing commas")
+
+    const invalid = await runTool(harness, "orch_uni_validate_report", {
+      text: '```json\n{"schema":"meta/v1","verdict":"maybe"}\n```',
+    })
+    expect(invalid.code).toBe("E_INVALID")
+    expect(String(invalid.hint)).toContain("Fix $.")
+    const errors = invalid.errors as { hint?: string; path: string }[]
+    expect(errors.length).toBeGreaterThan(0)
+    for (const error of errors) {
+      expect(error.hint, error.path).toBeTruthy()
+      expect(error.hint!.length).toBeLessThanOrEqual(300)
+    }
+    expect(errors.some((error) => error.path === "$.verdict" && error.hint?.includes("enum"))).toBe(true)
+    expect(errors.some((error) => error.path === "$.gate" && error.hint?.toLowerCase().includes("required"))).toBe(true)
+
+    const mismatch = await runTool(harness, "orch_uni_validate_report", {
+      text: '```json\n{"schema":"meta/v1","verdict":"pass","gate":"pass","closing_list":[],"coverage_gaps":[],"reports":[]}\n```',
+      schema: "empiric/v1",
+    })
+    expect(mismatch.code).toBe("E_SCHEMA_MISMATCH")
+    expect(String(mismatch.hint)).toContain('"empiric/v1"')
+    expect(mismatch.available).toContain("empiric/v1")
+    harness.dispose()
+  })
+
+  test("the success shape stays {valid, schema, errors, warnings}", async () => {
+    const harness = await createHarness()
+    const text =
+      '```json\n{"schema":"meta/v1","verdict":"pass","gate":"pass","closing_list":[],"coverage_gaps":[],"reports":[]}\n```'
+    const result = await runTool(harness, "orch_uni_validate_report", { text })
+    expect(result).toEqual({ valid: true, schema: "meta/v1", errors: [], warnings: [] })
+    harness.dispose()
+  })
+
+  test("the flat alias is registered and executes the same validator", async () => {
+    const harness = await createHarness()
+    const alias = harness.tools.get(COMPATIBILITY_VALIDATE_REPORT)!
+    expect(alias.options).toBeUndefined()
+    const text =
+      '```json\n{"schema":"meta/v1","verdict":"pass","gate":"pass","closing_list":[],"coverage_gaps":[],"reports":[]}\n```'
+    const result = await runTool(harness, COMPATIBILITY_VALIDATE_REPORT, { text }, true)
+    expect(result).toEqual({ valid: true, schema: "meta/v1", errors: [], warnings: [] })
+    harness.dispose()
+  })
+})
+
+describe("orch_uni_list_tools", () => {
+  test("lists canonical calls and expands validate_report with examples", async () => {
+    const harness = await createHarness()
+    const catalogue = await runTool(harness, "orch_uni.list_tools", {})
+    expect(catalogue.namespace).toBe(TOOL_NAMESPACE)
+    const names = (catalogue.tools as { name: string }[]).map((tool) => tool.name)
+    expect(names).toEqual(["validate_report", "context_lint", "snapshot", "sessions", "session_stats", "list_tools"])
+    for (const tool of catalogue.tools as { call: string; summary: string }[]) {
+      expect(tool.call.startsWith("tools.orch_uni.")).toBe(true)
+      expect(tool.summary.length).toBeGreaterThan(20)
+    }
+    expect(catalogue.compatibility).toMatchObject({
+      [COMPATIBILITY_VALIDATE_REPORT]: { preferred: "tools.orch_uni.validate_report" },
+    })
+
+    const expanded = await runTool(harness, "orch_uni.list_tools", { tool: "validate_report" })
+    const schemas = expanded.schemas as { id: string; required: string[]; example: Record<string, unknown> }[]
+    expect(schemas.map((entry) => entry.id)).toContain("empiric/v1")
+    expect(schemas.map((entry) => entry.id)).toContain("context-lint-failure/v1")
+    const meta = schemas.find((entry) => entry.id === "meta/v1")!
+    expect(meta.required).toContain("schema")
+    expect(meta.example.schema).toBe("meta/v1")
+    // The example is directly usable as a report template.
+    const validated = await runTool(harness, "orch_uni_validate_report", {
+      text: `\`\`\`json\n${JSON.stringify(meta.example)}\n\`\`\``,
+      schema: "meta/v1",
+    })
+    expect(validated).toMatchObject({ valid: true, schema: "meta/v1" })
+
+    const unknown = await runTool(harness, "orch_uni.list_tools", { tool: "nope" })
+    expect(unknown).toMatchObject({ ok: false, code: "E_INPUT" })
+    expect(unknown.available).toContain("validate_report")
+    harness.dispose()
+  })
+})
+
+describe("event journal: validation", () => {
+  test("records exactly one fact per call and never copies report text", async () => {
+    const storage = new Map<string, unknown>()
+    const journal = new EventJournal(memoryStorage(storage))
+    const harness = await createHarness({ storage, journal })
+    const sentinel = "SENTINEL-REPORT-BODY-4f1c"
+    const text = [
+      "```json",
+      JSON.stringify({
+        schema: "meta/v1",
+        verdict: "pass",
+        gate: "pass",
+        closing_list: [],
+        coverage_gaps: [],
+        reports: [],
+        note: sentinel,
+      }),
+      "```",
+    ].join("\n")
+    expect(await runTool(harness, "orch_uni_validate_report", { text })).toMatchObject({ valid: true })
+    const unknown = await runTool(harness, "orch_uni_validate_report", {
+      path: "missing/report.md",
+      schema: "nope/v1",
+    })
+    expect(unknown).toMatchObject({ ok: false, code: "E_UNKNOWN_SCHEMA" })
+    await journal.flush()
+    const snapshot = await journal.read(harness.sessionID)
+    expect(snapshot.available).toBe(true)
+    expect(snapshot.counts.validation).toBe(2)
+    expect(snapshot.events).toHaveLength(2)
+    expect(snapshot.events[0]).toMatchObject({
+      kind: "validation",
+      schema: "meta/v1",
+      valid: true,
+      errorCount: 0,
+      warningCount: 0,
+    })
+    expect(snapshot.events[1]).toMatchObject({
+      kind: "validation",
+      schema: "nope/v1",
+      valid: false,
+      code: "E_UNKNOWN_SCHEMA",
+      errorCount: 0,
+      warningCount: 0,
+    })
+    expect(JSON.stringify([...storage.values()])).not.toContain(sentinel)
+    harness.dispose()
+  })
+})
+
+describe("event journal: two harness instances", () => {
+  test("a second harness with the same storage reads the first instance's journal", async () => {
+    const storage = new Map<string, unknown>()
+    const firstJournal = new EventJournal(memoryStorage(storage))
+    const first = await createHarness({ storage, journal: firstJournal })
+    const text =
+      '```json\n{"schema":"meta/v1","verdict":"pass","gate":"pass","closing_list":[],"coverage_gaps":[],"reports":[]}\n```'
+    expect(await runTool(first, "orch_uni_validate_report", { text })).toMatchObject({ valid: true })
+    first.dispose()
+
+    const secondJournal = new EventJournal(memoryStorage(storage))
+    const second = await createHarness({ storage, journal: secondJournal })
+    const snapshot = await secondJournal.read(second.sessionID)
+    expect(snapshot.available).toBe(true)
+    expect(snapshot.counts.validation).toBe(1)
+    expect(snapshot.events[0]).toMatchObject({ kind: "validation", schema: "meta/v1", valid: true })
+    second.dispose()
   })
 })
 

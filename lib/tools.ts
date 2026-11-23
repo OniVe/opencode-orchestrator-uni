@@ -1,10 +1,15 @@
 /**
  * tools — registration of the kit's deterministic, read-only audit tools.
  *
- * `registerAuditTools(ctx)` publishes five tools in the `orch_uni` namespace
- * (effective names `orch_uni_validate_report`, `orch_uni_context_lint`,
- * `orch_uni_snapshot`, `orch_uni_sessions`, `orch_uni_session_stats`) and returns
- * a cleanup that stops the background session-index subscription:
+ * `registerAuditTools(ctx)` publishes five core tools in the `orch_uni`
+ * namespace (canonical calls `tools.orch_uni.validate_report`,
+ * `tools.orch_uni.context_lint`, `tools.orch_uni.snapshot`,
+ * `tools.orch_uni.sessions`, `tools.orch_uni.session_stats`), a sixth
+ * discovery tool `tools.orch_uni.list_tools`, and one flat compatibility alias
+ * `orch_uni_validate_report`. The alias exists only because older prompts and
+ * docs named the validator as `orch_uni_validate_report`; its live-host
+ * registration is `not_verified` (the unit harness registers it, the packaged
+ * host has not been observed), so every prompt uses the canonical dot form.
  *
  * - `validate_report` — extract the SGR JSON block of an agent report, resolve
  *   its schema, validate it and report prompt-level warnings;
@@ -15,34 +20,57 @@
  *   aggregate hash) for "the state the verdict was fixed on";
  * - `sessions` — child sessions of a session (agent, model, cost, tokens, time),
  *   read through the plugin's session API only;
- * - `session_stats` — the session-protocol counters and limits of one session.
+ * - `session_stats` — the session-protocol counters and limits of one session,
+ *   plus the persisted protocol journal when there is one;
+ * - `list_tools` — the canonical call of every tool and, for
+ *   `validate_report`, the schema ids with minimal examples.
  *
  * Every tool answers with a JSON text body. Failures are typed (`E_*`) codes in
  * the body rather than thrown tool errors, so an agent can branch on the code.
- * All five are read-only: they never write to the workspace or the config; the
- * only state `sessions` keeps is a plugin-scoped session index in `ctx.storage`
- * (see the `sessions` tool notes below).
+ * All are read-only: they never write to the workspace or the config; the only
+ * state kept is the plugin-scoped session index (`sessions`) and the protocol
+ * journal read by `session_stats`, both in `ctx.storage` (see the notes below).
  */
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode/plugin"
 import { lintContext } from "./context-lint"
+import type { EventJournal } from "./event-journal"
 import { checkReport, type JsonSchemaNode, type ValidationCode } from "./report-schema"
 import { compactionLimitReached, type SessionBudgetReport } from "./session-budget"
 import { DEFAULT_EXCLUDE, isSnapshotFailure, snapshotTree } from "./snapshot"
 
-/** Tool namespace; effective names become `orch_uni_<name>`. */
+/** Tool namespace; canonical calls are `tools.orch_uni.<name>`. */
 export const TOOL_NAMESPACE = "orch_uni"
 
-/** Effective tool names as they appear to a model. */
-export const TOOL_IDS: readonly string[] = [
-  "orch_uni_validate_report",
-  "orch_uni_context_lint",
-  "orch_uni_snapshot",
-  "orch_uni_sessions",
-  "orch_uni_session_stats",
+/** Names inside the namespace, in registration order. */
+export const TOOL_NAMES: readonly string[] = [
+  "validate_report",
+  "context_lint",
+  "snapshot",
+  "sessions",
+  "session_stats",
+  "list_tools",
 ]
+
+/** Canonical tool ids as a model addresses them through the tool API. */
+export const TOOL_IDS: readonly string[] = TOOL_NAMES.map((name) => `${TOOL_NAMESPACE}.${name}`)
+
+/**
+ * The only flat compatibility alias: older prompts named the validator
+ * `orch_uni_validate_report`. It is registered a second time without a
+ * namespace; `not_verified` on a live host (the unit harness covers it).
+ */
+export const COMPATIBILITY_VALIDATE_REPORT = "orch_uni_validate_report"
+
+/** Flat alias → the canonical name it mirrors. */
+export const COMPATIBILITY_ALIASES: Readonly<Record<string, string>> = {
+  [COMPATIBILITY_VALIDATE_REPORT]: "validate_report",
+}
+
+/** Every effective id a model may see: canonical dot names plus the one alias. */
+export const TOOL_EFFECTIVE_IDS: readonly string[] = [...TOOL_IDS, COMPATIBILITY_VALIDATE_REPORT]
 
 /** Directory holding the shipped report schemas (`schemas/*.json`). */
 export const SCHEMAS_DIRECTORY = fileURLToPath(new URL("../schemas/", import.meta.url))
@@ -53,10 +81,17 @@ export const SESSION_INDEX_KEY = "session-index/v1"
 const SESSIONS_PAGE_SIZE = 200
 const SESSIONS_MAX_PAGES = 50
 
-/** `{ id, schema }` document shipped in `schemas/*.json`. */
+/** `{ id, schema, example? }` document shipped in `schemas/*.json`. */
 interface SchemaDocument {
   readonly id: string
   readonly schema: JsonSchemaNode
+  readonly example?: unknown
+}
+
+/** One loaded schema: the validator node and its optional minimal example. */
+export interface SchemaEntry {
+  readonly schema: JsonSchemaNode
+  readonly example?: unknown
 }
 
 function errorMessage(error: unknown): string {
@@ -85,10 +120,12 @@ export class SchemaIoError extends Error {
 }
 
 /**
- * Read every `schemas/*.json` file into an id → schema map. Files are read in
- * sorted order; a malformed document throws a `SchemaIoError` (fail-closed, typed).
+ * Read every `schemas/*.json` file into an id → `{schema, example}` map. Files
+ * are read in sorted order; a malformed document throws a `SchemaIoError`
+ * (fail-closed, typed). The example is optional at the loader level and checked
+ * by the test suite (every shipped example must validate against its schema).
  */
-export async function loadSchemas(directory: string = SCHEMAS_DIRECTORY): Promise<Map<string, JsonSchemaNode>> {
+export async function loadSchemaRegistry(directory: string = SCHEMAS_DIRECTORY): Promise<Map<string, SchemaEntry>> {
   let names: string[]
   try {
     const entries = await readdir(directory, { withFileTypes: true })
@@ -99,7 +136,7 @@ export async function loadSchemas(directory: string = SCHEMAS_DIRECTORY): Promis
   } catch (error) {
     throw new SchemaIoError(`cannot read schemas directory ${directory}: ${errorMessage(error)}`, directory)
   }
-  const schemas = new Map<string, JsonSchemaNode>()
+  const schemas = new Map<string, SchemaEntry>()
   for (const file of names) {
     const absolute = path.join(directory, file)
     let source: string
@@ -123,14 +160,23 @@ export async function loadSchemas(directory: string = SCHEMAS_DIRECTORY): Promis
     const schema = document?.schema
     if (typeof id !== "string" || typeof schema !== "object" || schema === null) {
       throw new SchemaIoError(
-        `schemas/${file} (${absolute}): expected { id: string, schema: object }`,
+        `schemas/${file} (${absolute}): expected { id: string, schema: object, example?: any }`,
         directory,
         absolute,
       )
     }
-    schemas.set(id, schema as JsonSchemaNode)
+    schemas.set(id, {
+      schema: schema as JsonSchemaNode,
+      ...(document?.example === undefined ? {} : { example: document.example }),
+    })
   }
   return schemas
+}
+
+/** Validator-facing view of the registry; the examples stay in `loadSchemaRegistry`. */
+export async function loadSchemas(directory: string = SCHEMAS_DIRECTORY): Promise<Map<string, JsonSchemaNode>> {
+  const registry = await loadSchemaRegistry(directory)
+  return new Map([...registry].map(([id, entry]) => [id, entry.schema]))
 }
 
 function json(value: unknown): { content: string } {
@@ -242,6 +288,63 @@ const SESSION_STATS_INPUT = {
     sessionID: { type: "string", description: "Session to report. Default: the calling session." },
   },
 } as const
+
+/** `list_tools` input contract. */
+const LIST_TOOLS_INPUT = {
+  type: "object",
+  properties: {
+    tool: {
+      type: "string",
+      description: 'Optional tool name to expand, e.g. "validate_report" (adds schema ids and minimal examples).',
+    },
+  },
+} as const
+
+/** Upper bound for one example in the `list_tools` answer. */
+export const MAX_TOOL_EXAMPLE_CHARS = 1200
+
+/** Canonical tool catalogue rendered by `list_tools`. */
+const TOOL_CATALOG: readonly { readonly name: string; readonly call: string; readonly summary: string }[] = [
+  {
+    name: "validate_report",
+    call: 'tools.orch_uni.validate_report({ text: "<report>" }) or ({ path: "reports/x.md", schema: "empiric/v1" })',
+    summary:
+      "Validate an SGR report: extract the last ```json block, resolve its schema, report errors, hints and warnings.",
+  },
+  {
+    name: "context_lint",
+    call: 'tools.orch_uni.context_lint({ path: "." })',
+    summary:
+      "Deterministic read-only audit of AGENTS.md/SPEC.md/CLAUDE.md: budget, vague phrases, links, sections, findings.",
+  },
+  {
+    name: "snapshot",
+    call: 'tools.orch_uni.snapshot({ path: "." })',
+    summary: "Revision of a directory tree: per-file sha256 plus one aggregate hash for the verdict.",
+  },
+  {
+    name: "sessions",
+    call: 'tools.orch_uni.sessions({ sessionID: "ses_...", recursive: true })',
+    summary: "List child sessions with agent, model, cost, tokens and time.",
+  },
+  {
+    name: "session_stats",
+    call: 'tools.orch_uni.session_stats({ sessionID: "ses_..." })',
+    summary: "Protocol counters, limits and the persisted event journal of one session.",
+  },
+  {
+    name: "list_tools",
+    call: 'tools.orch_uni.list_tools({ tool: "validate_report" })',
+    summary: "This catalogue, including schema ids and minimal examples for validate_report.",
+  },
+]
+
+/** Keep one example small enough to be pasted back as a starting template. */
+function boundedExample(example: unknown): unknown {
+  const text = JSON.stringify(example)
+  if (text === undefined) return null
+  return text.length <= MAX_TOOL_EXAMPLE_CHARS ? example : `${text.slice(0, MAX_TOOL_EXAMPLE_CHARS - 3)}...`
+}
 
 interface SessionInfoLike {
   readonly id?: string
@@ -431,6 +534,10 @@ export interface RegisterAuditToolsOptions {
   readonly schemasDirectory?: string
   /** Session counters from the runtime session guard; absent in isolation. */
   readonly sessionBudget?: SessionBudgetReport
+  /** Persisted protocol journal, shared with the session guard and commands. */
+  readonly journal?: EventJournal
+  /** Warning channel of the plugin entry; a rejected compatibility alias is reported here. */
+  readonly warn?: (message: string) => void
 }
 
 /**
@@ -447,14 +554,31 @@ export async function registerAuditTools(
   const schemasDirectory = options.schemasDirectory ?? SCHEMAS_DIRECTORY
   const directory = context.location.directory
   const session = context.session
+  const warn = options.warn ?? (() => {})
   const index = new SessionIndex(context.storage)
   await index.ensureLoaded()
   const subscription = new AbortController()
   const indexed = startSessionIndexSubscription(context, index, subscription.signal)
 
+  const readSchemas = async (): Promise<Map<string, JsonSchemaNode> | { readonly content: string }> => {
+    try {
+      return await loadSchemas(schemasDirectory)
+    } catch (error) {
+      if (error instanceof SchemaIoError) {
+        return failure(error.code, error.message, {
+          directory: error.directory,
+          ...(error.file === undefined ? {} : { file: error.file }),
+        })
+      }
+      return failure("E_SCHEMA_IO", `cannot load schemas from ${schemasDirectory}: ${errorMessage(error)}`, {
+        directory: schemasDirectory,
+      })
+    }
+  }
+
   const validateReport = async (
     input: unknown,
-    toolContext: { readonly signal: AbortSignal },
+    toolContext: { readonly signal: AbortSignal; readonly sessionID?: string },
   ): Promise<{ content: string }> => {
     const record = asRecord(input)
     if (record === undefined) return failure("E_INPUT", "input must be an object ({text?} or {path?})")
@@ -467,6 +591,43 @@ export async function registerAuditTools(
     if ((text === undefined) === (reportPath === undefined)) {
       return failure("E_INPUT", 'provide exactly one of "text" or "path"')
     }
+    let schemas: Map<string, JsonSchemaNode> | undefined
+    // One journal fact per validator answer; never the report text or a path.
+    const recordValidation = async (
+      schema: string,
+      valid: boolean,
+      code: string | undefined,
+      errorCount: number,
+      warningCount: number,
+    ): Promise<void> => {
+      if (options.journal === undefined) return
+      if (typeof toolContext.sessionID !== "string" || toolContext.sessionID === "") return
+      await options.journal.append(toolContext.sessionID, {
+        kind: "validation",
+        schema,
+        valid,
+        ...(code === undefined ? {} : { code }),
+        errorCount,
+        warningCount,
+      })
+    }
+    // Preflight: an expected schema id is checked before the report file is read,
+    // so a typo in the call is E_UNKNOWN_SCHEMA with the available ids, not a
+    // misleading "cannot read" when the path is wrong too.
+    if (expectedSchema !== undefined) {
+      const loaded = await readSchemas()
+      if (!(loaded instanceof Map)) return loaded
+      schemas = loaded
+      if (!schemas.has(expectedSchema)) {
+        const refusal = checkReport("", { schemas, expectedSchema })
+        await recordValidation(expectedSchema, false, refusal.code, 0, 0)
+        return failure(refusal.code ?? "E_UNKNOWN_SCHEMA", refusal.message ?? "unknown schema", {
+          schema: expectedSchema,
+          available: refusal.available,
+          hint: refusal.hint,
+        })
+      }
+    }
     let source = text as string
     if (reportPath !== undefined) {
       const absolute = resolveRoot(directory, reportPath)
@@ -477,21 +638,19 @@ export async function registerAuditTools(
       }
     }
     if (toolContext.signal.aborted) return failure("E_ABORTED", "validation aborted")
-    let schemas: Map<string, JsonSchemaNode>
-    try {
-      schemas = await loadSchemas(schemasDirectory)
-    } catch (error) {
-      if (error instanceof SchemaIoError) {
-        return failure(error.code, error.message, {
-          directory: error.directory,
-          ...(error.file === undefined ? {} : { file: error.file }),
-        })
-      }
-      return failure("E_SCHEMA_IO", `cannot load schemas from ${schemasDirectory}: ${errorMessage(error)}`, {
-        directory: schemasDirectory,
-      })
+    if (schemas === undefined) {
+      const loaded = await readSchemas()
+      if (!(loaded instanceof Map)) return loaded
+      schemas = loaded
     }
     const report = checkReport(source, { ...(expectedSchema === undefined ? {} : { expectedSchema }), schemas })
+    await recordValidation(
+      report.schema ?? expectedSchema ?? "unknown",
+      report.valid,
+      report.code,
+      report.errors.length,
+      report.warnings.length,
+    )
     return json(report)
   }
 
@@ -584,6 +743,63 @@ export async function registerAuditTools(
     return json(outcome)
   }
 
+  const listToolsTool = async (
+    input: unknown,
+    toolContext: { readonly signal?: AbortSignal } | undefined,
+  ): Promise<{ content: string }> => {
+    const record = input === undefined ? {} : asRecord(input)
+    if (record === undefined) return failure("E_INPUT", "input must be an object ({tool?})")
+    const { tool } = record
+    if (tool !== undefined && (typeof tool !== "string" || tool === "")) {
+      return failure("E_INPUT", '"tool" must be a non-empty string')
+    }
+    const wanted = tool as string | undefined
+    if (wanted !== undefined && !TOOL_NAMES.includes(wanted)) {
+      return failure("E_INPUT", `unknown tool "${wanted}"`, {
+        available: TOOL_NAMES,
+        hint: `Use tools.orch_uni.list_tools() or one of: ${TOOL_NAMES.join(", ")}.`,
+      })
+    }
+    const response: Record<string, unknown> = {
+      ok: true,
+      namespace: TOOL_NAMESPACE,
+      canonical: "tools.orch_uni.<name>({...})",
+      tools: TOOL_CATALOG.map((entry) => ({ name: entry.name, call: entry.call, summary: entry.summary })),
+      compatibility: {
+        [COMPATIBILITY_VALIDATE_REPORT]: {
+          preferred: "tools.orch_uni.validate_report",
+          note: "flat alias kept for older prompts; registration on a live host is not_verified",
+        },
+      },
+    }
+    if (wanted === "validate_report") {
+      if (toolContext?.signal?.aborted === true) return failure("E_ABORTED", "listing aborted")
+      let registry: Map<string, SchemaEntry>
+      try {
+        registry = await loadSchemaRegistry(schemasDirectory)
+      } catch (error) {
+        if (error instanceof SchemaIoError) {
+          return failure(error.code, error.message, {
+            directory: error.directory,
+            ...(error.file === undefined ? {} : { file: error.file }),
+          })
+        }
+        return failure("E_SCHEMA_IO", `cannot load schemas from ${schemasDirectory}: ${errorMessage(error)}`, {
+          directory: schemasDirectory,
+        })
+      }
+      response.schemas = [...registry].map(([id, entry]) => ({
+        id,
+        required: entry.schema.required ?? [],
+        example: boundedExample(entry.example),
+      }))
+      response.exampleMaxChars = MAX_TOOL_EXAMPLE_CHARS
+      response.hint =
+        'Paste one example into a fenced ```json block, replace the sample values, and keep the "schema" field. Warnings are advisory; errors block the report.'
+    }
+    return json(response)
+  }
+
   const sessionsTool = async (
     input: unknown,
     toolContext: { readonly signal: AbortSignal; readonly sessionID: string },
@@ -608,7 +824,7 @@ export async function registerAuditTools(
         sessionID: parentID,
         available: Object.keys(session as object).sort(),
         hint:
-          "orch_uni_sessions needs session.list({parentID}); ctx.session has no list() here, and ctx.event.subscribe() " +
+          "tools.orch_uni.sessions needs session.list({parentID}); ctx.session has no list() here, and ctx.event.subscribe() " +
           "was unavailable too, so children cannot be discovered. The context-scan fallback (subagent tool parts in " +
           "ctx.session.context) was evaluated and rejected: it misses in-flight children and any history dropped by " +
           "compaction. See README «Tools».",
@@ -755,6 +971,8 @@ export async function registerAuditTools(
         return failure("E_NOT_FOUND", `session ${target} was not found`, { sessionID: target })
       }
     }
+    const journal =
+      options.journal === undefined ? { available: false, counts: {}, events: [] } : await options.journal.read(target)
     return json({
       ok: true,
       sessionID: target,
@@ -769,6 +987,7 @@ export async function registerAuditTools(
       toolsPerTurn: counters.requests > 0 ? Math.round((counters.toolCalls / counters.requests) * 100) / 100 : 0,
       tracked,
       guard,
+      journal,
       ...(getFn === undefined
         ? { session: null, limitations: ["session.get is unavailable in this build"] }
         : info === undefined
@@ -786,6 +1005,7 @@ export async function registerAuditTools(
     editor.add({
       name: "context_lint",
       description:
+        'Canonical call: tools.orch_uni.context_lint({ path: "." }). ' +
         "Deterministic, read-only audit of AGENTS.md/SPEC.md/CLAUDE.md: line/token/word budget, distinct vague phrases, duplicate lines, " +
         "broken relative links, placeholders, dates in the first three lines, required sections, AC test columns. " +
         "A directory target is scanned to depth 3 and capped at max_files (the walk stops at the first file above the limit); " +
@@ -806,9 +1026,12 @@ export async function registerAuditTools(
     editor.add({
       name: "validate_report",
       description:
+        'Canonical call: tools.orch_uni.validate_report({ text: "<report>" }) or ' +
+        '({ path: "reports/empiric-r1.md", schema: "empiric/v1" }). ' +
         "Validate an SGR report: extract the last ```json block, resolve its schema, validate it and list prompt-level warnings. " +
-        "Read-only. Returns JSON {valid, schema, errors, warnings} or a typed code " +
-        "(E_INPUT|E_NO_JSON|E_PARSE|E_UNKNOWN_SCHEMA|E_SCHEMA_MISMATCH|E_INVALID|E_SCHEMA_IO|E_ABORTED).",
+        "Read-only. Returns JSON {valid, schema, errors, warnings}; a failure body carries a code, a short hint, the error list " +
+        "(each error has a hint) and, for schema problems, the available schema ids. " +
+        "Typed codes: E_INPUT|E_NO_JSON|E_PARSE|E_UNKNOWN_SCHEMA|E_SCHEMA_MISMATCH|E_INVALID|E_SCHEMA_IO|E_ABORTED.",
       input: VALIDATE_REPORT_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },
       execute: validateReport,
@@ -816,6 +1039,7 @@ export async function registerAuditTools(
     editor.add({
       name: "snapshot",
       description:
+        'Canonical call: tools.orch_uni.snapshot({ path: "." }). ' +
         "Deterministic revision of a directory tree: per-file sha256 + aggregate hash of sorted `<path>\\0<sha256>\\n` lines. " +
         "Read-only, excludes node_modules/.git/.ae by default, limits 5000 files and 50 MiB per file.",
       input: SNAPSHOT_INPUT,
@@ -825,6 +1049,7 @@ export async function registerAuditTools(
     editor.add({
       name: "sessions",
       description:
+        "Canonical call: tools.orch_uni.sessions({ recursive: true }). " +
         "List child sessions of a session (sessionID, parentID, agent, model, title, cost, tokens, created, updated). " +
         "Defaults to the calling session; `recursive: true` walks the whole subtree. Read-only.",
       input: SESSIONS_INPUT,
@@ -834,17 +1059,57 @@ export async function registerAuditTools(
     editor.add({
       name: "session_stats",
       description:
+        'Canonical call: tools.orch_uni.session_stats({ sessionID: "ses_..." }). ' +
         "Session protocol counters of a session: requests, estimated prompt tokens (last/max), budget band, confirmed " +
         "compactions and compaction attempts, failed compactions, the live compaction source, reminders injected, tool " +
         "calls and capped tool outputs (totals and per normalized tool name), chars kept out of context, plus the " +
-        "configured limits and toolsPerTurn. Read-only; counters belong to this plugin instance. `sessionID` may name any " +
+        "configured limits and toolsPerTurn. The optional `journal` field carries the persisted protocol events " +
+        "({available, counts, events}); it is available:false when journaling is off or storage failed, never an " +
+        "E_NOT_FOUND. Read-only; counters belong to this plugin instance. `sessionID` may name any " +
         "session on this server, not only a child of the caller. Returns JSON {ok, sessionID, counters, limits, overBudget, " +
-        "compactionLimitReached, toolsPerTurn, tracked, guard, session?, limitations?} or a typed code " +
+        "compactionLimitReached, toolsPerTurn, tracked, guard, journal, session?, limitations?} or a typed code " +
         "(E_INPUT|E_NOT_FOUND|E_INTERNAL|E_NO_API|E_UNAVAILABLE|E_ABORTED).",
       input: SESSION_STATS_INPUT,
       options: { namespace: TOOL_NAMESPACE, codemode: true },
       execute: sessionStatsTool,
     })
+    editor.add({
+      name: "list_tools",
+      description:
+        'Canonical call: tools.orch_uni.list_tools({ tool: "validate_report" }). ' +
+        "Discovery tool: returns the namespace, the canonical call and a one-line summary of every tool, and — with " +
+        'tool:"validate_report" — the shipped schema ids with required fields and one minimal valid example each ' +
+        `(examples are capped at ${MAX_TOOL_EXAMPLE_CHARS} characters). Read-only.`,
+      input: LIST_TOOLS_INPUT,
+      options: { namespace: TOOL_NAMESPACE, codemode: true },
+      execute: listToolsTool,
+    })
+    // Compatibility alias only: older prompts named the validator
+    // `orch_uni_validate_report`. It is registered a second time without a
+    // namespace so the flat name stays callable; `not_verified` on a live host
+    // (the harness registers it, the packaged host has not been observed), and
+    // every prompt/doc prefers `tools.orch_uni.validate_report`. The registration
+    // is best-effort: a host that rejects namespace-less tools must not take the
+    // six working namespaced tools down with it.
+    try {
+      editor.add({
+        name: COMPATIBILITY_VALIDATE_REPORT,
+        description:
+          "Compatibility flat alias of tools.orch_uni.validate_report for older prompts. " +
+          'Prefer the canonical call: tools.orch_uni.validate_report({ text: "<report>" }) or ' +
+          '({ path: "reports/x.md", schema: "empiric/v1" }). Same input and output as validate_report. ' +
+          "If the host rejects a namespace-less registration, this alias is skipped with one warning and the " +
+          "canonical tools.orch_uni.validate_report remains available. Registration of this flat name on a live " +
+          "host is not_verified.",
+        input: VALIDATE_REPORT_INPUT,
+        execute: validateReport,
+      })
+    } catch (error) {
+      warn(
+        `compatibility flat alias ${COMPATIBILITY_VALIDATE_REPORT} skipped: the host rejected a namespace-less ` +
+          `tool registration (${errorMessage(error)}); use tools.orch_uni.validate_report`,
+      )
+    }
   })
 
   return () => {

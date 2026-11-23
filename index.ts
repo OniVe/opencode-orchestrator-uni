@@ -5,7 +5,7 @@
  * built-in audit loop, the read-only audit subagents (`factcheck`,
  * `empiric`, `invariant`, `arbiter`, `meta`,
  * `redteam`, `context-lint`), and the `fix-runner` writer subagent — plus the `audit-kit`
- * document reference and the kit's deterministic `orch_uni_*` tools, straight from
+ * document reference and the kit's deterministic `tools.orch_uni.*` tools, straight from
  * this TypeScript entry point.
  *
  * The package is loaded natively by OpenCode's Bun runtime: `exports` points at
@@ -53,6 +53,7 @@ import { fileURLToPath } from "node:url"
 import type { Agent, Model, Plugin, Reference } from "@opencode/plugin"
 import matter from "gray-matter"
 import { registerKitCommands } from "./lib/commands"
+import { EventJournal, readSessionJournalOptions } from "./lib/event-journal"
 import { createSessionBudget, readSessionBudgetOptions, safeJson } from "./lib/session-budget"
 import { registerAuditTools } from "./lib/tools"
 import { createWriteGuard } from "./lib/write-guard"
@@ -411,15 +412,20 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
     editor.add(REFERENCE_NAME, docsReference)
   })
 
-  // Deterministic, read-only audit tools: `orch_uni_validate_report`,
-  // `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions`,
-  // `orch_uni_session_stats` (see `lib/tools.ts` and README «Tools»). The session
+  // Deterministic, read-only audit tools: five core tools in `orch_uni`, the
+  // `list_tools` discovery tool and the one flat `orch_uni_validate_report`
+  // compatibility alias (see `lib/tools.ts` and README «Tools»). The session
   // budget registers the protocol hooks (context/compaction/tool output); the
   // tools cleanup stops the background session-index subscription; the commands
   // cleanup disposes the command transform registration. A failure after the
   // tools are registered must abort that subscription too — otherwise a
   // half-registered plugin leaks an event listener for the lifetime of the server.
-  const sessionBudget = await createSessionBudget(ctx, readSessionBudgetOptions(ctx.options, warn), locale, warn)
+  // The event journal is one instance shared by the guard (reminder/compaction),
+  // the commands (command facts) and the tools (validation facts + stats view).
+  const journal = new EventJournal(ctx.storage, readSessionJournalOptions(ctx.options, warn), warn)
+  const sessionBudget = await createSessionBudget(ctx, readSessionBudgetOptions(ctx.options, warn), locale, warn, {
+    journal,
+  })
   // The path-root write guard enforces the orchestrator's artifact-only edit
   // contract beyond what flat `permissions` can express (see `lib/write-guard.ts`).
   // It registers on the host's permission hook and stays a no-op on a host without
@@ -431,7 +437,7 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   })
   let toolsCleanup: () => void
   try {
-    toolsCleanup = await registerAuditTools(ctx, { sessionBudget })
+    toolsCleanup = await registerAuditTools(ctx, { sessionBudget, journal, warn })
   } catch (error) {
     await writeGuard.cleanup()
     await sessionBudget.cleanup()
@@ -439,7 +445,7 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
   }
   let commandsCleanup: Plugin.Cleanup
   try {
-    commandsCleanup = await registerKitCommands(ctx, locale)
+    commandsCleanup = await registerKitCommands(ctx, locale, journal)
   } catch (error) {
     toolsCleanup()
     await writeGuard.cleanup()
@@ -456,7 +462,11 @@ async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | undefined> {
         try {
           await writeGuard.cleanup()
         } finally {
-          await sessionBudget.cleanup()
+          try {
+            await journal.flush()
+          } finally {
+            await sessionBudget.cleanup()
+          }
         }
       }
     }

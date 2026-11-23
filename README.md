@@ -79,7 +79,7 @@ see [Write Guard](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/d
 | Layer | What ships |
 | --- | --- |
 | Agents | `orchestrator` (primary); read-only `factcheck`, `empiric`, `invariant`, `arbiter`, `meta`, `redteam`, `context-lint`; writer `fix-runner` |
-| Tools | Five read-only tools: `orch_uni_validate_report`, `orch_uni_context_lint`, `orch_uni_snapshot`, `orch_uni_sessions`, `orch_uni_session_stats` |
+| Tools | Five core read-only tools in the `orch_uni` namespace (`tools.orch_uni.validate_report`, `context_lint`, `snapshot`, `sessions`, `session_stats`), the `tools.orch_uni.list_tools` discovery tool, and one flat compatibility alias `orch_uni_validate_report` for older prompts |
 | Commands | Three slash commands: `/agents-md`, `/spec`, `/handoff` |
 | Reference | Process documents exposed as the `audit-kit` reference; deep details in [Reference](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md) |
 
@@ -145,6 +145,8 @@ All options are optional and live on the plugin entry:
   `"provider/model[#variant]"` or `{ providerID, model, variant }` form.
 - `sessionGuard` — prompt-budget reminders and the compaction limit.
 - `toolOutputGuard` — caps large `shell`/`bash`/`webfetch` output.
+- `sessionJournal` — persists protocol events (reminders, compactions, commands,
+  validations) in plugin storage; enabled by default, newest 200 events per session.
 
 Invalid values are ignored with an `[orchestrator.uni] …` warning. Full option
 reference: [Models](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md#models),
@@ -198,8 +200,8 @@ writes; `shell` stays allowed for verification (accepted risk I-M15).
 
 | Command      | What it does                                                                                                                                                     |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/agents-md` | Injects the AGENTS.md audit/draft workflow: `context-efficiency.md` template, `orch_uni_context_lint`, `context-lint`, approval before writing.                  |
-| `/spec`      | Injects the SPEC.md workflow: brief, clarifying questions, EARS/AC/traceability, `orch_uni_context_lint`, `context-lint`, approval before writing.               |
+| `/agents-md` | Injects the AGENTS.md audit/draft workflow: `context-efficiency.md` template, `tools.orch_uni.context_lint`, `context-lint`, approval before writing.                  |
+| `/spec`      | Injects the SPEC.md workflow: brief, clarifying questions, EARS/AC/traceability, `tools.orch_uni.context_lint`, `context-lint`, approval before writing.               |
 | `/handoff`   | Injects the slice-closing workflow: session and working-tree facts, the `session-discipline.md` handoff template, writes `docs/planning/handoff-<YYYY-MM-DD>.md`. |
 
 A command is a prompt, not a writer: it injects a workflow into the current
@@ -210,7 +212,8 @@ session, and the orchestrator follows the usual evidence and approval rules.
 ## Reference
 
 The deep reference lives in [`docs/en/reference.md`](https://github.com/OniVe/opencode-orchestrator-uni/blob/main/docs/en/reference.md):
-write guard, all five tools with schemas and limits, session hygiene, models,
+write guard, the five core tools plus `list_tools` and the compatibility alias
+with schemas and limits, session hygiene, models,
 locale, precedence, and notes.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -229,7 +232,7 @@ npm run lint
 npm run lint:fix
 ```
 
-`npm test` scans only `./test/` and now runs **438 tests in 11 files** — 437 pass
+`npm test` scans only `./test/` and now runs **474 tests in 12 files** — 473 pass
 and 1 skip. A bare `bun test` from the root is red by design: it also picks up
 intentionally failing fixtures under `eval/cases/` and drafts under `lab/`; use
 `npm test`.

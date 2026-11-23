@@ -16,6 +16,7 @@ import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, 
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
+import { EventJournal } from "../lib/event-journal"
 import {
   asyncIteratorOf,
   closeIteratorQuietly,
@@ -32,7 +33,7 @@ import {
   createSessionBudget as startSessionBudget,
   toolResultText,
 } from "../lib/session-budget"
-import { createHarness } from "./support/harness"
+import { createHarness, memoryStorage, runTool } from "./support/harness"
 
 type HookCallback = (input: unknown) => unknown
 
@@ -87,6 +88,7 @@ interface BudgetHarness {
   readonly hooks: Map<string, HookCallback>
   readonly disposed: string[]
   readonly events: EventStream
+  readonly storage: Map<string, unknown>
   readonly subscribed: () => boolean
   readonly aborted: () => boolean
 }
@@ -104,10 +106,21 @@ function createBudgetHarness(options: BudgetHarnessOptions = {}): BudgetHarness 
   const hooks = new Map<string, HookCallback>()
   const disposed: string[] = []
   const events = new EventStream()
+  const storage = new Map<string, unknown>()
   let subscribed = false
   let signal: AbortSignal | undefined
   const ctx: Record<string, unknown> = {
     location: { directory: options.workspace ?? process.cwd() },
+    storage: {
+      get: async (key: string) => storage.get(key),
+      set: async (key: string, value: unknown) => {
+        storage.set(key, value)
+      },
+      remove: async (key: string) => {
+        storage.delete(key)
+      },
+      scan: async () => ({ entries: [] }),
+    },
     session: {
       hook: async (name: string, callback: HookCallback) => {
         if (options.failingHooks === true) throw new Error("hook registration failed")
@@ -146,6 +159,7 @@ function createBudgetHarness(options: BudgetHarnessOptions = {}): BudgetHarness 
     hooks,
     disposed,
     events,
+    storage,
     subscribed: () => subscribed,
     aborted: () => signal?.aborted ?? false,
   }
@@ -1915,6 +1929,67 @@ describe("closeIteratorQuietly", () => {
   })
 })
 
+describe("event journal: guard facts", () => {
+  test("one reminder event per delivered reminder, none for a quiet or repeated band", async () => {
+    const harness = createBudgetHarness()
+    const journal = new EventJournal(harness.ctx.storage)
+    const budget = await createSessionBudget(harness.ctx, config(), "ru", () => {}, { journal })
+    const hook = harness.hooks.get("session.context") as HookCallback
+    const s = sessionFor("journal_reminder")
+
+    await hook(contextInput(s, 1000))
+    await journal.flush()
+    expect((await journal.read(s)).events).toEqual([])
+
+    await hook(contextInput(s, 600_000))
+    await hook(contextInput(s, 620_000))
+    await hook(contextInput(s, 1_100_000))
+    await journal.flush()
+    const snapshot = await journal.read(s)
+    expect(snapshot.counts.reminder).toBe(2)
+    expect(snapshot.events).toHaveLength(2)
+    expect(snapshot.events[0]).toMatchObject({ kind: "reminder", band: 1 })
+    expect(snapshot.events[1]).toMatchObject({ kind: "reminder", band: 2 })
+    await budget.cleanup()
+  })
+
+  test("compaction events are journaled once after the existing deduplication", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const journal = new EventJournal(harness.ctx.storage)
+    const budget = await createSessionBudget(harness.ctx, config(), "ru", () => {}, { journal })
+    const s = sessionFor("journal_compaction")
+
+    harness.events.push({ id: "evt_j_failed", type: "session.compaction.failed", data: { sessionID: s } })
+    harness.events.push({ id: "evt_j_ended", type: "session.compaction.ended", data: { sessionID: s } })
+    harness.events.push({ id: "evt_j_ended", type: "session.compaction.ended", data: { sessionID: s } })
+    await drain(harness)
+    await journal.flush()
+    const snapshot = await journal.read(s)
+    expect(snapshot.events).toHaveLength(2)
+    expect(snapshot.events[0]).toMatchObject({ kind: "compaction", count: 0, failed: true })
+    expect(snapshot.events[1]).toMatchObject({ kind: "compaction", count: 1, limitReached: true })
+    expect(snapshot.events[1]).not.toHaveProperty("failed")
+    await budget.cleanup()
+  })
+
+  test("session.deleted removes the persisted journal with the counters", async () => {
+    const harness = createBudgetHarness({ events: true })
+    const journal = new EventJournal(harness.ctx.storage)
+    const budget = await createSessionBudget(harness.ctx, config(), "ru", () => {}, { journal })
+    const s = sessionFor("journal_deleted")
+    await journal.append(s, { kind: "reminder", band: 1 })
+    expect((await journal.read(s)).events).toHaveLength(1)
+
+    harness.events.push({ type: "session.deleted", data: { sessionID: s } })
+    await drain(harness)
+    await journal.flush()
+    expect((await journal.read(s)).events).toEqual([])
+    expect(harness.storage.size).toBe(0)
+    expect(budget.tracked(s)).toBe(false)
+    await budget.cleanup()
+  })
+})
+
 describe("orch_uni_session_stats", () => {
   const counters: SessionBudgetCounters = {
     sessionID: "ses_test",
@@ -1992,6 +2067,27 @@ describe("orch_uni_session_stats", () => {
       toolOutputsCappedByTool: { shell: 2, read: 0 },
     })
     expect(body.limits).toMatchObject({ promptTokensSoft: 150_000, maxCompactions: 1 })
+    expect(body.journal).toEqual({ available: false, counts: {}, events: [] })
+    harness.dispose()
+  })
+
+  test("reports the persisted journal when one is wired", async () => {
+    const storage = new Map<string, unknown>()
+    const journal = new EventJournal(memoryStorage(storage))
+    await journal.append("ses_test", {
+      kind: "validation",
+      schema: "meta/v1",
+      valid: true,
+      errorCount: 0,
+      warningCount: 2,
+    })
+    const harness = await createHarness({ sessionBudget: report(), journal, storage })
+    const body = await runTool(harness, "orch_uni_session_stats", { sessionID: "ses_test" })
+    expect(body.journal).toMatchObject({
+      available: true,
+      counts: { validation: 1 },
+      events: [{ kind: "validation", schema: "meta/v1", valid: true, warningCount: 2 }],
+    })
     harness.dispose()
   })
 

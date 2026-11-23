@@ -21,7 +21,7 @@ import {
   SUPPORTED_KEYWORDS,
   validateValue,
 } from "../lib/report-schema"
-import { loadSchemas, SCHEMAS_DIRECTORY } from "../lib/tools"
+import { loadSchemaRegistry, loadSchemas, SCHEMAS_DIRECTORY } from "../lib/tools"
 import { agentFiles as localeAgentFiles, promptTemplates } from "./support/locales"
 
 /**
@@ -105,6 +105,16 @@ describe("shipped report schemas", () => {
         expect(SUPPORTED_KEYWORDS.has(keyword), `${id} uses unsupported keyword "${keyword}"`).toBe(true)
       }
       expect((schema as { type?: unknown }).type, `${id} is an object schema`).toBe("object")
+    }
+  })
+
+  test("every schema carries a minimal example that validates against it", async () => {
+    const registry = await loadSchemaRegistry(SCHEMAS_DIRECTORY)
+    expect(registry.size).toBe(EXPECTED_SCHEMAS.length)
+    for (const [id, entry] of registry) {
+      expect(entry.example, `${id} carries a top-level example`).toBeDefined()
+      expect(validateValue(entry.example, entry.schema), `${id} example`).toEqual([])
+      expect(JSON.stringify(entry.example).length, `${id} example stays small`).toBeLessThanOrEqual(1200)
     }
   })
 

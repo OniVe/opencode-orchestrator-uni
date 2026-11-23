@@ -25,5 +25,11 @@
       "files": { "type": "number" },
       "max": { "type": "number" }
     }
+  },
+  "example": {
+    "schema": "context-lint-failure/v1",
+    "ok": false,
+    "code": "E_NOT_FOUND",
+    "message": "AGENTS.md was not found"
   }
 }
