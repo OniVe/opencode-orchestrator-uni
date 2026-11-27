@@ -311,7 +311,7 @@ describe("agent prompt caps match the tool", () => {
 // R6-5/R7-7: both READMEs state the same shipped test count and the same file
 // count, and the English count equals the pinned constant, so a round that adds
 // tests cannot leave both locales stale at the same old number.
-const SHIPPED_TEST_COUNT = 513
+const SHIPPED_TEST_COUNT = 521
 describe("README test count", () => {
   test("both READMEs agree on the shipped test count and 13 files", async () => {
     const guards = [
@@ -352,6 +352,33 @@ describe("handoff path is canonical", () => {
     for (const file of files) {
       const source = await readFile(file, "utf8")
       expect(source, `${path.relative(KIT_ROOT, file)} names ${HANDOFF_PATH}`).toContain(HANDOFF_PATH)
+    }
+  })
+})
+
+describe("auditor efficiency markers", () => {
+  test("both locales' auditors carry the budget header, 150, snapshot and not_verified", async () => {
+    const headers = {
+      ru: /БЮДЖЕТ И СТОП-ПРАВИЛА/,
+      en: /BUDGET AND STOP RULES/,
+    } as const
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const id of ["empiric", "invariant"]) {
+        const markdown = await readFile(path.join(AGENTS_DIRECTORY, locale, `${id}.md`), "utf8")
+        const file = `${locale}/${id}.md`
+        expect(markdown, `${file} budget header`).toMatch(headers[locale])
+        expect(markdown, `${file} names 150`).toContain("150")
+        expect(markdown, `${file} names the snapshot tool`).toContain("tools.orch_uni.snapshot")
+        expect(markdown, `${file} names not_verified`).toContain("not_verified")
+      }
+    }
+  })
+
+  test("both locales' orchestrators pass the snapshot revision and the 150-call budget", async () => {
+    for (const locale of SUPPORTED_LOCALES) {
+      const markdown = await readFile(path.join(AGENTS_DIRECTORY, locale, "orchestrator.md"), "utf8")
+      expect(markdown, `${locale}/orchestrator.md names the snapshot tool`).toContain("tools.orch_uni.snapshot")
+      expect(markdown, `${locale}/orchestrator.md names 150`).toContain("150")
     }
   })
 })

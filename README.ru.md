@@ -148,6 +148,9 @@ opencode service restart
   `"provider/model[#variant]"` или `{ providerID, model, variant }`.
 - `sessionGuard` — напоминания о бюджете промпта и лимит компакций.
 - `toolOutputGuard` — урезает большие выводы `shell`/`bash`/`webfetch`.
+- `auditBudget` — одно мягкое напоминание `empiric`/`invariant` на 150
+  tool-вызовов; инструменты не блокирует. По умолчанию:
+  `{ enabled: true, softToolCalls: 150, agents: ["empiric", "invariant"] }`.
 - `sessionJournal` — персист протокольных событий (напоминания, компакции,
   команды, валидации, loop/artifact-снимки) в хранилище плагина; включён по
   умолчанию, последние 200 событий на сессию.
@@ -241,7 +244,7 @@ npm run lint
 npm run lint:fix
 ```
 
-`npm test` сканирует только `./test/` и сейчас насчитывает **513 тестов в 13 файлах** — 512 pass и 1 skip. Голый `bun test` из корня красный по замыслу: он
+`npm test` сканирует только `./test/` и сейчас насчитывает **521 тест в 13 файлах** — 520 pass и 1 skip. Голый `bun test` из корня красный по замыслу: он
 подхватывает и специально падающие фикстуры в `eval/cases/`, и черновики в
 `lab/`; используйте `npm test`.
 

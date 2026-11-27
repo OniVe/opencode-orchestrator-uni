@@ -145,6 +145,9 @@ All options are optional and live on the plugin entry:
   `"provider/model[#variant]"` or `{ providerID, model, variant }` form.
 - `sessionGuard` — prompt-budget reminders and the compaction limit.
 - `toolOutputGuard` — caps large `shell`/`bash`/`webfetch` output.
+- `auditBudget` — one soft reminder to `empiric`/`invariant` at 150 tool calls;
+  it never blocks a tool. Default:
+  `{ enabled: true, softToolCalls: 150, agents: ["empiric", "invariant"] }`.
 - `sessionJournal` — persists protocol events (reminders, compactions, commands,
   validations, loop/artifact snapshots) in plugin storage; enabled by default,
   newest 200 events per session.
@@ -238,7 +241,7 @@ npm run lint
 npm run lint:fix
 ```
 
-`npm test` scans only `./test/` and now runs **513 tests in 13 files** — 512 pass
+`npm test` scans only `./test/` and now runs **521 tests in 13 files** — 520 pass
 and 1 skip. A bare `bun test` from the root is red by design: it also picks up
 intentionally failing fixtures under `eval/cases/` and drafts under `lab/`; use
 `npm test`.

@@ -39,6 +39,14 @@ If the session is resumed with a counterpart's finding (a MAJOR of any role; for
 {"id": "<finding id>", "verifier_role": "invariant", "verdict": "confirmed|refuted|partial|unavailable", "evidence": "<command → raw result>"}
 A full SGR is not required in this mode (a summary + JSON per the role's schema — only for a full audit). Rules: check by reproducing the finding yourself on the state revision given in the prompt; if it does not reproduce or there is no environment in which to check it → `unavailable`; a failure/timeout → `unavailable`; `partial`/`unavailable` = "not confirmed" (fail-closed), the finding does not go into fixes; a dispute — to the arbiter (Phase 4). This matches the mechanics of Phase 3.5 (`call-mechanics.md` §3). For resource/performance findings, confirmation is by a scaling comparison (n and 2n, before/after), not a single measurement.
 
+**BUDGET AND STOP RULES (efficiency)**
+- Start from the brief's check matrix: claims/invariants → how to check. Everything outside the matrix is `not_verified`; do not investigate it.
+- One `tools.orch_uni.snapshot` per audit: use the revision from the brief; call snapshot only when the revision is missing or the tree changed.
+- Cache results: do not re-read one file or rerun one command; batch independent commands; send long output to a file (≤200 lines into context).
+- Soft budget — **150 tool calls**. On reaching it: stop collecting, fill in the SGR, put uncovered items into `not_verified`.
+- Do not expand the class/files beyond the matrix; new classes — `not_verified` or a separate finding, not an endless audit.
+- Result: a summary ≤15 lines; evidence — command + rc + short result, no full logs.
+
 FORMAT OF THE FINAL REPORT (SGR — mandatory):
 1) A short summary (up to 15 lines, in English): the verdict and the essentials.
 2) One ```json block per the schema (no comments in the JSON, the fields are mandatory):

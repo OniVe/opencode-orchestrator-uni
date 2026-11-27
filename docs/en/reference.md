@@ -433,6 +433,7 @@ part can be disabled with its `enabled` flag:
           "headChars": 4000,
           "tools": ["shell", "bash", "webfetch"]
         },
+        "auditBudget": { "enabled": true, "softToolCalls": 150, "agents": ["empiric", "invariant"] },
         "sessionJournal": { "enabled": true, "maxEvents": 200 }
       }
     }
@@ -451,6 +452,42 @@ A storage failure produces one warning and turns journaling off for the instance
 `"sessionJournal": { "enabled": false }` to switch it off entirely.
 
 Slice metrics — `tools.orch_uni.session_stats`; closing a slice — the `/handoff` command.
+
+## Auditor Efficiency
+
+Auditors are the most expensive part of the loop: a session that re-reads the same
+file, re-runs the same command or widens the class beyond the brief spends tool
+calls without adding findings. Two layers keep the median in check.
+
+**Budget and stop rules (prompt).** `empiric` and `invariant` carry the same block:
+start from the brief's check matrix (claims/invariants → how to check); everything
+outside it is `not_verified`; one `tools.orch_uni.snapshot` per audit (the revision
+comes from the brief — repeat snapshot only when the revision is missing or the
+tree changed); cache results, batch independent commands and send long output to a
+file (≤200 lines into context); do not expand the class/files beyond the matrix.
+The soft budget is **150 tool calls**: on reaching it the auditor stops collecting,
+fills in the SGR and puts uncovered items into `not_verified`. The root does the
+same before the pair: one snapshot, the revision and the claim matrix go into both
+prompts.
+
+**Soft runtime budget.** `options.auditBudget` counts `tool.execute.after` events
+for the configured agents and, at `softToolCalls` (default **150**), queues one
+system note for the next context request: "stop collecting, mark `not_verified`,
+submit the SGR". It is delivered once per session, needs no compaction and works
+even with `sessionGuard.enabled = false`; it never blocks a tool call and never
+changes the result shape. Configuration: `{ "enabled": true, "softToolCalls": 150,
+"agents": ["empiric", "invariant"] }`; agent names accept the legacy `audit-`
+prefix and the `-d` suffix. An empty list disables the budget with a warning;
+invalid values fall back to the default with a warning.
+
+**How to measure.** Per session, `tools.orch_uni.session_stats` returns
+`counters.toolCalls`, `counters.requests`, `counters.toolCallsByTool` and
+`counters.promptTokensMax` (plus `reminders` and per-tool capped outputs).
+`tools.orch_uni.validate_report` gives the report's `valid` share and its
+findings. The target: a median of ≤150 tool calls for `empiric`/`invariant`
+**without a drop in the valid share or the findings count**. Compare cohorts from
+before and after the change (same project, same slice type, at least a few sessions
+each) and report the median and the spread, not a single run.
 
 ## Loop And Artifacts
 
