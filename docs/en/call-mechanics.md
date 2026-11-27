@@ -223,6 +223,8 @@ Persistence (all kit documents): the SGR reports of all roles, including **the S
 | a loop round (summary+fixes+repeat) | 10–20 min |
 | the red team (the gates, Phase 8) | hours |
 
+- The auditor budget is **150 tool calls** (soft, `options.auditBudget`): at the limit — an SGR with uncovered items in `not_verified`, not more collection. The root passes the revision and the claim matrix to the children from one `tools.orch_uni.snapshot` (reference, "Auditor Efficiency").
+
 ## 7. Process invariants
 
 - The root does not audit and does not substitute for the verdicts; there is a single writer **per workspace** — `fix-runner` (medium/large ones) or `general` (large tasks outside the audit mode); the root writes only audit/session-state artifacts; several `fix-runner` instances — in parallel only in separate worktrees, with the root consolidating afterwards.

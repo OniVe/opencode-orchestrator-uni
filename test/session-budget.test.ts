@@ -21,6 +21,7 @@ import {
   asyncIteratorOf,
   closeIteratorQuietly,
   compactionLimitReached,
+  DEFAULT_AUDIT_BUDGET,
   DEFAULT_SESSION_GUARD,
   DEFAULT_TOOL_OUTPUT_GUARD,
   estimateTokens,
@@ -234,6 +235,7 @@ function config(overrides: Partial<SessionBudgetConfig> = {}): SessionBudgetConf
   return {
     session: { ...DEFAULT_SESSION_GUARD, ...overrides.session },
     toolOutput: { ...DEFAULT_TOOL_OUTPUT_GUARD, ...overrides.toolOutput },
+    auditBudget: { ...DEFAULT_AUDIT_BUDGET, ...overrides.auditBudget },
   }
 }
 
@@ -399,6 +401,47 @@ describe("options", () => {
     expect(warnings).toHaveLength(7)
     expect(warnings.every((line) => line.includes("options."))).toBe(true)
   })
+
+  test("audit budget defaults, agent normalization and the upper clamp", () => {
+    const parsed = readSessionBudgetOptions(undefined, () => {})
+    expect(parsed.auditBudget).toEqual(DEFAULT_AUDIT_BUDGET)
+
+    const warnings: string[] = []
+    const overridden = readSessionBudgetOptions(
+      { auditBudget: { softToolCalls: 500, agents: [" audit-empiric ", "invariant-d", "empiric", ""] } },
+      (message) => warnings.push(message),
+    )
+    expect(overridden.auditBudget).toEqual({ enabled: true, softToolCalls: 500, agents: ["empiric", "invariant"] })
+    expect(warnings).toEqual([])
+
+    const clamped = readSessionBudgetOptions({ auditBudget: { softToolCalls: 5000 } }, (message) =>
+      warnings.push(message),
+    )
+    expect(clamped.auditBudget.softToolCalls).toBe(2000)
+    expect(warnings).toEqual([])
+  })
+
+  test("invalid audit budget fields fall back with warnings; an empty list disables", () => {
+    const warnings: string[] = []
+    const invalid = readSessionBudgetOptions(
+      { auditBudget: { enabled: "on", softToolCalls: 10, agents: "empiric" } },
+      (message) => warnings.push(message),
+    )
+    expect(invalid.auditBudget).toEqual(DEFAULT_AUDIT_BUDGET)
+    expect(warnings).toHaveLength(3)
+
+    const emptyWarnings: string[] = []
+    const empty = readSessionBudgetOptions({ auditBudget: { agents: [] } }, (message) => emptyWarnings.push(message))
+    expect(empty.auditBudget.enabled).toBe(false)
+    expect(empty.auditBudget.agents).toEqual([])
+    expect(emptyWarnings).toHaveLength(1)
+    expect(emptyWarnings[0]).toContain("disabled")
+
+    const nonObjectWarnings: string[] = []
+    const fallback = readSessionBudgetOptions({ auditBudget: true }, (message) => nonObjectWarnings.push(message))
+    expect(fallback.auditBudget).toEqual(DEFAULT_AUDIT_BUDGET)
+    expect(nonObjectWarnings).toHaveLength(1)
+  })
 })
 
 describe("estimateTokens", () => {
@@ -411,6 +454,122 @@ describe("estimateTokens", () => {
   test("does not loop on a repeated object", () => {
     const shared = { text: "abcd" }
     expect(estimateTokens([shared, shared])).toBe(1)
+  })
+})
+
+function auditToolCall(sessionID: string, agent: string, tool = "read") {
+  return {
+    tool,
+    sessionID,
+    agent,
+    messageID: "msg",
+    id: randomUUID(),
+    input: {},
+    status: "completed",
+    result: { content: "ok" },
+  }
+}
+
+async function callAuditTools(hook: HookCallback, sessionID: string, agent: string, count: number): Promise<void> {
+  for (let index = 0; index < count; index += 1) await hook(auditToolCall(sessionID, agent))
+}
+
+describe("audit budget", () => {
+  test("warns once at the soft threshold: 149 quiet, 150 warns, 151 does not repeat", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(harness.ctx, config(), "ru")
+    const tool = harness.hooks.get("tool.execute.after") as HookCallback
+    const context = harness.hooks.get("session.context") as HookCallback
+    const s = sessionFor("audit_threshold")
+
+    await callAuditTools(tool, s, "empiric", 149)
+    const before = contextInput(s, 100)
+    await context(before)
+    expect(before.system).toHaveLength(0)
+
+    await callAuditTools(tool, s, "empiric", 1)
+    const at = contextInput(s, 100)
+    await context(at)
+    expect(at.system).toHaveLength(1)
+    expect(at.system[0]?.text).toContain("[Бюджет аудита]")
+    expect(at.system[0]?.text).toContain("150")
+    expect(at.system[0]?.text).toContain("not_verified")
+    expect(at.system[0]!.text.length).toBeLessThanOrEqual(300)
+
+    await callAuditTools(tool, s, "empiric", 1)
+    const after = contextInput(s, 100)
+    await context(after)
+    expect(after.system).toHaveLength(0)
+    expect(budget.stats(s).toolCalls).toBe(151)
+    expect(budget.stats(s).reminders).toBe(1)
+  })
+
+  test("agent names normalize; fix-runner, meta and build never get the note", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({
+        auditBudget: { ...DEFAULT_AUDIT_BUDGET, agents: ["audit-empiric", "invariant-d", "invariant"] },
+      }),
+      "en",
+    )
+    const tool = harness.hooks.get("tool.execute.after") as HookCallback
+    const context = harness.hooks.get("session.context") as HookCallback
+
+    const prefixed = sessionFor("audit_prefixed")
+    await callAuditTools(tool, prefixed, "audit-empiric", 150)
+    const first = contextInput(prefixed, 100)
+    await context(first)
+    expect(first.system).toHaveLength(1)
+    expect(first.system[0]?.text).toContain("[Audit budget]")
+    expect(first.system[0]?.text).toContain("not_verified")
+
+    const suffixed = sessionFor("audit_suffixed")
+    await callAuditTools(tool, suffixed, "AUDIT-invariant-d", 150)
+    const second = contextInput(suffixed, 100)
+    await context(second)
+    expect(second.system).toHaveLength(1)
+
+    for (const agent of ["fix-runner", "meta", "build"]) {
+      const other = sessionFor("audit_other")
+      await callAuditTools(tool, other, agent, 160)
+      const quiet = contextInput(other, 100)
+      await context(quiet)
+      expect(quiet.system, agent).toHaveLength(0)
+    }
+    expect(budget.stats(prefixed).reminders).toBe(1)
+  })
+
+  test("a disabled audit budget never queues a note", async () => {
+    const harness = createBudgetHarness()
+    await createSessionBudget(harness.ctx, config({ auditBudget: { ...DEFAULT_AUDIT_BUDGET, enabled: false } }), "en")
+    const tool = harness.hooks.get("tool.execute.after") as HookCallback
+    const context = harness.hooks.get("session.context") as HookCallback
+    const s = sessionFor("audit_disabled")
+
+    await callAuditTools(tool, s, "empiric", 160)
+    const input = contextInput(s, 100)
+    await context(input)
+    expect(input.system).toHaveLength(0)
+  })
+
+  test("the note is delivered even when sessionGuard is disabled", async () => {
+    const harness = createBudgetHarness()
+    const budget = await createSessionBudget(
+      harness.ctx,
+      config({ session: { ...DEFAULT_SESSION_GUARD, enabled: false } }),
+      "ru",
+    )
+    const tool = harness.hooks.get("tool.execute.after") as HookCallback
+    const context = harness.hooks.get("session.context") as HookCallback
+    const s = sessionFor("audit_guard_off")
+
+    await callAuditTools(tool, s, "invariant", 150)
+    const input = contextInput(s, 600_000)
+    await context(input)
+    expect(input.system).toHaveLength(1)
+    expect(input.system[0]?.text).toContain("[Бюджет аудита]")
+    expect(budget.stats(s).band).toBe(0)
   })
 })
 

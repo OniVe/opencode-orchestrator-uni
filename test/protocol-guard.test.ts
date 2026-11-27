@@ -868,6 +868,7 @@ describe("protocol guard: session_stats protocol field", () => {
       config: {
         session: { enabled: true, promptTokensSoft: 150_000, maxCompactions: 1 },
         toolOutput: { enabled: false, maxChars: 20_000, headChars: 4_000, tools: [] as readonly string[] },
+        auditBudget: { enabled: false, softToolCalls: 150, agents: [] as readonly string[] },
       },
       stats: (sessionID: string) => ({ ...counters, sessionID }),
       tracked: () => true,

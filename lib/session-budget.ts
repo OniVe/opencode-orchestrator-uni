@@ -24,7 +24,8 @@
  *   The full output is written to a temp file; the model gets a head plus the
  *   path. Only tools that produce read-only text (shell/bash/webfetch by
  *   default) are capped — `read`, `execute` (Code Mode), edit tools and the
- *   kit's own tools keep their contract.
+ *   kit's own tools keep their contract. The same hook counts tool calls per
+ *   auditor and queues one soft-budget note at `auditBudget.softToolCalls`.
  *
  * Everything here is fail-open: a hook error leaves the request/tool result
  * untouched and increments `errors`, because a broken guard must never break the
@@ -54,6 +55,13 @@ export const DEFAULT_TOOL_OUTPUT_GUARD = {
   tools: ["shell", "bash", "webfetch"],
 } as const
 
+/** Soft auditor budget defaults: one warning at 150 tool calls for the audit pair. */
+export const DEFAULT_AUDIT_BUDGET = {
+  enabled: true,
+  softToolCalls: 150,
+  agents: ["empiric", "invariant"],
+} as const
+
 export interface SessionGuardConfig {
   readonly enabled: boolean
   readonly promptTokensSoft: number
@@ -67,9 +75,16 @@ export interface ToolOutputGuardConfig {
   readonly tools: readonly string[]
 }
 
+export interface AuditBudgetConfig {
+  readonly enabled: boolean
+  readonly softToolCalls: number
+  readonly agents: readonly string[]
+}
+
 export interface SessionBudgetConfig {
   readonly session: SessionGuardConfig
   readonly toolOutput: ToolOutputGuardConfig
+  readonly auditBudget: AuditBudgetConfig
 }
 
 /** Where compaction counts come from: the event stream, or the legacy hook fallback. */
@@ -117,6 +132,10 @@ interface MutableCounters {
   tentative: boolean
   reminders: number
   toolCalls: number
+  /** The auditor budget warning already fired for this session (once per session). */
+  auditBudgetWarned: boolean
+  /** The auditor budget warning is waiting for the next context request. */
+  pendingAuditBudget: boolean
   outputsCapped: number
   outputCharsSaved: number
   errors: number
@@ -184,6 +203,7 @@ const DEFAULT_RUNTIME: SessionBudgetRuntime = {}
 const DEFAULT_CONFIG: SessionBudgetConfig = {
   session: DEFAULT_SESSION_GUARD,
   toolOutput: DEFAULT_TOOL_OUTPUT_GUARD,
+  auditBudget: DEFAULT_AUDIT_BUDGET,
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -278,19 +298,57 @@ function isProtectedTool(name: string): boolean {
 }
 
 /**
- * Parse `options.sessionGuard` / `options.toolOutputGuard` from the plugin
- * entry. Invalid fields are reported and replaced by the defaults; the guard
- * never fails setup because of a typo in the config.
+ * Audit agent ids may arrive with the legacy `audit-` prefix and/or the role's
+ * `-d` suffix. Both the configured list and the runtime `agent` field go through
+ * the same normal form.
+ */
+function normalizeAuditAgent(value: string): string {
+  let name = value.trim().toLowerCase()
+  while (name.startsWith("audit-")) name = name.slice("audit-".length)
+  while (name.endsWith("-d")) name = name.slice(0, -"-d".length)
+  return name
+}
+
+/** `options.auditBudget.agents`: a non-empty, normalized, deduplicated list. */
+function readAuditAgents(value: unknown, warn: Warn): readonly string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    warn(
+      `options.auditBudget.agents: expected an array of strings, got ${safeJson(value)}, ` +
+        `using ${DEFAULT_AUDIT_BUDGET.agents.join("|")}`,
+    )
+    return undefined
+  }
+  const agents: string[] = []
+  for (const item of value) {
+    const name = normalizeAuditAgent(item)
+    if (name !== "" && !agents.includes(name)) agents.push(name)
+  }
+  if (agents.length === 0) {
+    warn("options.auditBudget.agents: the list is empty, the audit budget is disabled")
+    return []
+  }
+  return agents
+}
+
+/**
+ * Parse `options.sessionGuard` / `options.toolOutputGuard` / `options.auditBudget`
+ * from the plugin entry. Invalid fields are reported and replaced by the
+ * defaults; the guard never fails setup because of a typo in the config.
  */
 export function readSessionBudgetOptions(options: unknown, warn: Warn): SessionBudgetConfig {
   const root = asRecord(options)
   const sessionRaw = asRecord(root?.sessionGuard)
   const outputRaw = asRecord(root?.toolOutputGuard)
+  const auditRaw = asRecord(root?.auditBudget)
   if (root?.sessionGuard !== undefined && sessionRaw === undefined) {
     warn("options.sessionGuard: expected an object, ignored")
   }
   if (root?.toolOutputGuard !== undefined && outputRaw === undefined) {
     warn("options.toolOutputGuard: expected an object, ignored")
+  }
+  if (root?.auditBudget !== undefined && auditRaw === undefined) {
+    warn("options.auditBudget: expected an object, ignored")
   }
 
   const session: SessionGuardConfig = {
@@ -364,6 +422,25 @@ export function readSessionBudgetOptions(options: unknown, warn: Warn): SessionB
     warn,
   )
 
+  let auditAgents: readonly string[] = DEFAULT_AUDIT_BUDGET.agents
+  const parsedAgents = readAuditAgents(auditRaw?.agents, warn)
+  if (parsedAgents !== undefined) auditAgents = parsedAgents
+  const softToolCalls = Math.min(
+    2000,
+    Math.floor(
+      finiteNumber(
+        auditRaw?.softToolCalls,
+        DEFAULT_AUDIT_BUDGET.softToolCalls,
+        20,
+        "options.auditBudget.softToolCalls",
+        warn,
+      ),
+    ),
+  )
+  const auditEnabled =
+    booleanOption(auditRaw?.enabled, DEFAULT_AUDIT_BUDGET.enabled, "options.auditBudget.enabled", warn) &&
+    auditAgents.length > 0
+
   return {
     session,
     toolOutput: {
@@ -376,6 +453,11 @@ export function readSessionBudgetOptions(options: unknown, warn: Warn): SessionB
       maxChars,
       headChars: Math.min(headChars, maxChars),
       tools,
+    },
+    auditBudget: {
+      enabled: auditEnabled,
+      softToolCalls,
+      agents: auditAgents,
     },
   }
 }
@@ -461,6 +543,20 @@ function tentativeCompactionText(locale: Locale): string {
   return (
     "[Session hygiene] Compaction attempt in progress, confirmation pending. " +
     "Pin decisions, risks and the next step to the handoff; do not trust the summary."
+  )
+}
+
+/** One soft-budget note per auditor session; the text stays under 300 characters. */
+function auditBudgetText(locale: Locale, toolCalls: number, softToolCalls: number): string {
+  if (locale === "ru") {
+    return (
+      `[Бюджет аудита] ${toolCalls} tool-вызовов (мягкий лимит ${softToolCalls}). ` +
+      "Останови сбор, зафиксируй not_verified по непокрытым пунктам и сдай SGR."
+    )
+  }
+  return (
+    `[Audit budget] ${toolCalls} tool calls (soft limit ${softToolCalls}). ` +
+    "Stop collecting, mark uncovered items as not_verified and submit the SGR."
   )
 }
 
@@ -828,6 +924,8 @@ export async function createSessionBudget(
   const outputGuardEnabled = outputRoot !== undefined && config.toolOutput.tools.length > 0
 
   const states = new Map<string, MutableCounters>()
+  /** Normalized once: a hand-built config must not skip the parser's normal form. */
+  const auditAgents = new Set(config.auditBudget.agents.map(normalizeAuditAgent).filter((name) => name !== ""))
   /** Persisted protocol journal; absent in isolation and in older tests. */
   const journal = runtime.journal
   /** `sessionID → realpath` of its private directory, evicted with `session.deleted`. */
@@ -856,6 +954,8 @@ export async function createSessionBudget(
         tentative: false,
         reminders: 0,
         toolCalls: 0,
+        auditBudgetWarned: false,
+        pendingAuditBudget: false,
         outputsCapped: 0,
         outputCharsSaved: 0,
         errors: 0,
@@ -999,40 +1099,54 @@ export async function createSessionBudget(
           if (tokens > state.promptTokensMax) state.promptTokensMax = tokens
           state.samples.push(tokens)
           if (state.samples.length > 256) state.samples.shift()
-          if (!config.session.enabled) return
 
           const parts: string[] = []
-          const band = Math.floor((tokens - 1) / config.session.promptTokensSoft)
-          const level = band > state.band ? band : state.band
-          if (band > state.band) {
-            parts.push(reminderText(locale, band, config))
+          // The audit-budget note is evaluated before the session-guard flag:
+          // disabling the prompt/compaction policy must not swallow it.
+          const auditPending = state.pendingAuditBudget
+          if (auditPending) {
+            parts.push(auditBudgetText(locale, state.toolCalls, config.auditBudget.softToolCalls))
           }
-          // Confirmed note first: only `session.compaction.ended` raises
-          // `pendingConfirmed`, so the number and the limit are facts even if the
-          // event stream died after the event arrived. Otherwise an attempt note
-          // goes out without a number and without a limit claim.
-          const confirmedNote = state.pendingConfirmed > 0
-          const tentativeNote = !confirmedNote && state.tentative
-          if (confirmedNote) {
-            parts.push(compactionText(locale, state.pendingConfirmed, config))
-          } else if (tentativeNote) {
-            parts.push(tentativeCompactionText(locale))
+          let level = state.band
+          let deliveredCompactions = 0
+          let sessionNote = false
+          if (config.session.enabled) {
+            const band = Math.floor((tokens - 1) / config.session.promptTokensSoft)
+            if (band > state.band) {
+              parts.push(reminderText(locale, band, config))
+              level = band
+            }
+            // Confirmed note first: only `session.compaction.ended` raises
+            // `pendingConfirmed`, so the number and the limit are facts even if the
+            // event stream died after the event arrived. Otherwise an attempt note
+            // goes out without a number and without a limit claim.
+            const confirmedNote = state.pendingConfirmed > 0
+            const tentativeNote = !confirmedNote && state.tentative
+            if (confirmedNote) {
+              parts.push(compactionText(locale, state.pendingConfirmed, config))
+              deliveredCompactions = state.pendingConfirmed
+            } else if (tentativeNote) {
+              parts.push(tentativeCompactionText(locale))
+            }
+            sessionNote = confirmedNote || tentativeNote
           }
           if (parts.length === 0) return
           input.system.push(...parts.map((text) => ({ type: "text" as const, text })))
           // Marks move only after the reminder was actually delivered to the
           // request: a host whose `system` array rejects the push (frozen/foreign
           // array) must not lose the note for this level forever.
-          const deliveredCompactions = confirmedNote ? state.pendingConfirmed : 0
-          state.band = level
-          if (confirmedNote) state.pendingConfirmed = 0
-          if (confirmedNote || tentativeNote) state.tentative = false
+          if (config.session.enabled) {
+            state.band = level
+            if (deliveredCompactions > 0) state.pendingConfirmed = 0
+            if (sessionNote) state.tentative = false
+          }
+          if (auditPending) state.pendingAuditBudget = false
           state.reminders += parts.length
           // One journal event per delivered request, not per part: the fact is
           // "a reminder went out at this level", not "two strings were pushed".
           void journal?.append(sessionID, {
             kind: "reminder",
-            band: level,
+            band: state.band,
             ...(deliveredCompactions > 0 ? { compactionCount: deliveredCompactions } : {}),
           })
         } catch {
@@ -1071,7 +1185,7 @@ export async function createSessionBudget(
 
     registrations.push(
       await ctx.tool.hook("execute.after", async (input) => {
-        const payload = input as { sessionID?: unknown } | null | undefined
+        const payload = input as { sessionID?: unknown; agent?: unknown } | null | undefined
         if (payload === null || payload === undefined) return
         const sessionID = payload.sessionID
         if (typeof sessionID !== "string" || sessionID === "") {
@@ -1083,6 +1197,18 @@ export async function createSessionBudget(
         try {
           state = stateFor(sessionID)
           state.toolCalls += 1
+          // Soft auditor budget: one pending note per session, delivered on the
+          // next context request. The counter keeps moving; nothing is blocked.
+          const agent = typeof payload.agent === "string" ? normalizeAuditAgent(payload.agent) : ""
+          if (
+            config.auditBudget.enabled &&
+            !state.auditBudgetWarned &&
+            auditAgents.has(agent) &&
+            state.toolCalls >= config.auditBudget.softToolCalls
+          ) {
+            state.auditBudgetWarned = true
+            state.pendingAuditBudget = true
+          }
           const name = normalizeToolName(String(input.tool))
           state.toolCallsByTool[name] = (state.toolCallsByTool[name] ?? 0) + 1
           state.toolOutputsCappedByTool[name] ??= 0
